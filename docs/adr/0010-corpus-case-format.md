@@ -50,10 +50,15 @@ be right. It loses here specifically because the corpus's value comes from being
 
 | Option | Pros | Cons |
 | ------ | ---- | ---- |
-| **A. BLAKE3 in counter mode over 32-byte blocks** | `blake3` is already an adopted dependency. Externally specified, so the output is stable across platforms, architectures and compiler versions forever. Uniform output means a hole of zeros is detectable with overwhelming probability, and the content is incompressible, so a `gzip-on-range` bug cannot hide in it. Fast enough to verify a full 1 GB file. | A hash call per 32 bytes is slower than a cheap PRNG; measured at roughly 1–2 GB/s per core, which is above the throughput a test needs. |
-| B. A hand-rolled PRNG (xorshift, PCG) seeded per block | Faster, trivial to implement. | Stability depends on our own code being bug-compatible with itself forever, and statistical quality is our problem. A PRNG with a short period or a weak low bit could mask exactly the corruption we are hunting. |
-| C. `rand`'s `StdRng` | Convenient. | **Explicitly not reproducible across versions** — `rand` reserves the right to change `StdRng`'s algorithm. That single property disqualifies it. |
-| D. A stored fixture file | Simplest of all. | A 1 GB binary in git, per size we want to test. |
+| **A. One seekable BLAKE3 XOF stream per seed** | `blake3` is already an adopted dependency, and the extendable-output mode is part of the published BLAKE3 specification, so output is stable across platforms, architectures and compiler versions. The XOF is seekable in constant time, so the whole construction is "seek to the offset and read" — no block arithmetic at all. Uniform output means a hole of zeros is detectable with overwhelming probability, and the content is incompressible, so a `gzip-on-range` bug cannot hide in it. **Measured 0.88 GiB/s** sequential and 107 ns for an isolated single-byte read. | Reading one byte still costs a hash initialisation. Irrelevant: bulk work goes through the fill path. |
+| B. BLAKE3 in counter mode over fixed blocks | Same stability argument. | Strictly worse on both axes that matter. **Measured 0.25 GiB/s at a 32-byte block** and 0.86 GiB/s at 1024, so it is never faster than A, and it reintroduces block-index arithmetic — an off-by-one there corrupts only *some* offsets, which is precisely the failure mode this generator exists to detect. |
+| C. A hand-rolled PRNG (xorshift, PCG) | Faster still, trivial to implement. | Stability depends on our own code staying bug-compatible with itself forever, and statistical quality becomes our problem. A PRNG with a short period or a weak low bit could mask exactly the corruption we are hunting. |
+| D. `rand`'s `StdRng` | Convenient. | **Explicitly not reproducible across versions** — `rand` reserves the right to change `StdRng`'s algorithm. That single property disqualifies it. |
+| E. A stored fixture file | Simplest of all. | A 1 GB binary in git, per size we want to test. |
+
+Measurements are from `tests/corpus`, release profile, one core, generating 1 GiB in 1 MiB
+buffers. They were taken *before* this ADR was accepted and before any case existed, which is
+the only point at which the choice is free.
 
 ## Decision
 
@@ -63,11 +68,14 @@ by a single generic runner that fails closed.**
 ### The generator, stated exactly
 
 ```text
-BLOCK            = 32
-block_index(off) = off / BLOCK
-block(seed, i)   = blake3(seed.to_le_bytes() ++ i.to_le_bytes())    // two u64 LE, 16 bytes in
-byte(seed, off)  = block(seed, block_index(off))[off % BLOCK]
+stream(seed)     = BLAKE3 extendable output of seed.to_le_bytes()   // 8 bytes in
+byte(seed, off)  = stream(seed)[off]                                 // XOF seek, O(1)
 ```
+
+Two lines, and no arithmetic of our own. That is the point: the generator is the corpus's
+oracle, so a bug *in the oracle* is the one bug that cannot be caught by the corpus. The
+construction with the fewest moving parts is the correct one even before its speed advantage is
+counted. BLAKE3's XOF is defined over a 2^64-byte output space, so every `u64` offset is valid.
 
 This definition is **frozen**. It is named `blake3-ctr-v1` and every case states the generator
 it uses. A future generator gets a *new name* and coexists; this one is never redefined,
@@ -158,10 +166,12 @@ Three specific signals, in order of likelihood:
    that category. Response: keep YAML for the case *inventory* and the uniform assertions, and
    move the server behaviour entirely into Rust — the countability is the part worth keeping,
    not the YAML.
-2. **The generator becomes the bottleneck.** If content generation costs more than 20% of
-   corpus wall-clock time when the S4 benchmark work starts, define `blake3-ctr-v2` over a
-   larger block or a cheaper construction, add it alongside, and migrate cases deliberately.
-   Never redefine `v1`.
+2. **The generator becomes the bottleneck.** 0.88 GiB/s on one core is comfortably above what
+   S1–S3 need and above a 1 Gbps benchmark condition, but it is not above a 10 Gbps one. If
+   content generation costs more than 20% of corpus wall-clock time when the S4 benchmark work
+   starts, define `blake3-ctr-v2` — parallel XOF fills across a thread pool would be the first
+   thing to try, since the seek makes the stream trivially partitionable — add it alongside, and
+   migrate cases deliberately. **Never redefine `v1`.**
 3. **A corruption finding turns out to be the generator's fault.** If any reported corruption
    is ever traced to the generator rather than the engine, that is a correctness emergency for
    the whole corpus strategy: every past green result is suspect. Response is to freeze the

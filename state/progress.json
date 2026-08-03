@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T12:52:00Z",
+  "updated_at": "2026-08-03T13:26:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -389,13 +389,13 @@
         {
           "id": "S1-T6",
           "title": "Pathology server: deterministic PRNG content, HTTP/1.1 and HTTP/2, and the ranges/framing/redirects behaviours",
-          "status": "todo",
-          "proof": "tests/corpus/server/tests/determinism.rs — the byte at an arbitrary offset is computable from (seed, offset) without materialising the file, matches what the server serves, and is identical across two independent runs and both protocols",
+          "status": "in_progress",
+          "proof": "tests/corpus/tests/content_generator.rs (12 tests): the construction is pinned against an independent reimplementation of the ADR-0010 spec, anchored to the published BLAKE3 empty-input test vector, and asserted to have no zero runs (a hole would hide in one) and entropy > 7.99 bits/byte (a gzipped body could pass for a plausible length in compressible content). first_mismatch reports an exact absolute offset, verified against an injected 4 KiB hole. STILL OUTSTANDING for this task: the HTTP/1.1 and HTTP/2 servers and the ranges/framing/redirects behaviours.",
           "files": [
             "tests/corpus/server/"
           ],
           "blocked_by": "S1-T5",
-          "notes": null,
+          "notes": "Content generator DONE and committed. Server NOT started. Next concrete step: hand-rolled HTTP/1.1 server over tokio TcpListener (hand-rolled because pathologies like a wrong Content-Length, no length and no chunked framing, and a mid-body close cannot be expressed through a conforming HTTP library), then HTTP/2 via hyper over cleartext h2c. Decision to record when the server lands: the corpus uses plaintext h1 and h2c rather than TLS, because docs/09 section 7 requires local offline tests and TLS would add certificate management for no S1 coverage gain; ALPN negotiation belongs to the protocols category in S5.",
           "invariants": []
         },
         {
