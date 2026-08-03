@@ -20,6 +20,11 @@ downpour-types = { path = "crates/downpour-types" }
 anyhow = "1.0"
 async-trait = "0.1.91"
 blake3 = "1.8.5"
+# Zero dependencies, and already in our tree via hyper, so using it directly costs nothing
+# transitively. Needed because Retry-After may be an HTTP-date as well as delay-seconds
+# (RFC 9110 §10.2.3), and a parser that only handled integers would silently retry early against
+# a server that had asked for longer.
+httpdate = "1.0.3"
 http-body-util = "0.1.4"
 hyper = "1.11.0"
 hyper-util = "0.1.20"

@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T23:20:00Z",
+  "updated_at": "2026-08-03T23:55:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -548,11 +548,14 @@
         {
           "id": "S1-T15",
           "title": "Retry and back-off: the 'robust' half of the stage title is not implemented",
-          "status": "todo",
+          "status": "in_progress",
           "proof": "Corpus cases in a new `connections`-adjacent set plus unit tests on the back-off calculator: a connection reset mid-body is retried and the download still completes byte-exactly; a 503 with Retry-After is honoured to the second and not retried early; a 429 without Retry-After backs off exponentially with jitter; 5xx is retried up to MAX_RETRIES then reported Stalled; a 4xx other than 401/403/408/410/429 is NOT retried; and back-off is per-origin, so N concurrent workers do not each retry independently against a rate-limited origin. Each case mutation-checked by disabling the retry path.",
-          "files": [],
+          "files": [
+            "crates/downpour-http/src/retry.rs",
+            "crates/downpour-http/tests/retry_policy.rs"
+          ],
           "blocked_by": null,
-          "notes": "FOUND BY AUDIT 2026-08-03, and this is the largest genuine gap in S1. docs/03-transfer-engine-spec.md §7 specifies a full retry and back-off table and NONE of it is implemented - grepping crates/ for retry|backoff|jitter finds only doc comments that REFERENCE §7 while doing nothing. The stage is titled 'ROBUST single-stream HTTP/1.1 + HTTP/2 downloader'. Today a single transient connection reset fails the whole download with no attempt to recover, which is not robust by any reading, and it is the most common real-world failure a download manager exists to survive. TransferError::TruncatedBody already carries the delivered byte count precisely so a retry can resume from it, so the error taxonomy is ready and only the policy is missing. Note §9's parameters: MAX_RETRIES 5, STALL_WINDOW 30 s, back-off base 500 ms capped at 30 s, jittered.",
+          "notes": "POLICY DONE, WIRING NOT. crates/downpour-http/src/retry.rs implements the whole §7 table as a PURE function, proven by crates/downpour-http/tests/retry_policy.rs (15 tests), mutation-checked three ways: ignoring Retry-After turns exactly the 6 Retry-After tests red, removing the jitter turns the jitter test red, and dropping the 408 arm turns the classification table red. Covered: MAX_RETRIES 5 / base 500 ms / cap 30 s from §9; jittered exponential growth; Retry-After as delay-seconds AND as an HTTP-date (RFC 9110 §10.2.3 allows both, and a parser handling only integers would silently retry early against a server that asked for longer); a malformed Retry-After falling back to computed back-off rather than to 'retry now'; an absurd value clamped so a hostile origin cannot wedge the engine; the full status table including 408 as a TIMEOUT rather than an ordinary client error; and 401/403/410 excluded because they belong to the refresh flow (I-8), not to retrying the same URL. RetryState is keyed BY ORIGIN from the start, per §7's closing line, because retrofitting that after S3 opens N connections means finding every call site under pressure. WHAT REMAINS, and it is the part that makes S1-C7 true: nothing calls this yet. SingleStream::download must loop over attempts, and the pathology server needs a way to inject a transient failure (a mid-body connection reset, and a 503 carrying Retry-After) so the behaviour can be proven end to end rather than only in the unit. DELIBERATE S1 CONSTRAINT to record before writing that loop: the retry must restart from byte 0, NOT resume from the bytes already on disk. Resuming requires validating the representation has not changed (If-Range against a strong validator), which is I-3 and belongs to S2. Resuming without it would splice two versions of a file at exactly the expected size - the precise corruption I-3 exists to prevent. So S1's retry is correct-but-wasteful on purpose, and S2 upgrades it.",
           "invariants": []
         },
         {

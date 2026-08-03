@@ -30,6 +30,7 @@ pub mod download;
 pub mod error;
 pub mod h1h2;
 pub mod protocol;
+pub mod retry;
 pub mod sink;
 
 pub use download::{DownloadError, SingleStream};
@@ -38,4 +39,5 @@ pub use h1h2::{H1H2Backend, TransportMode};
 pub use protocol::{
     BackendCapabilities, ProbeRequest, RangeOutcome, RangeRequest, TransferProtocol,
 };
+pub use retry::{RetryDecision, RetryPolicy, RetryState, TransientKind};
 pub use sink::{RangeSink, SinkError, SinkTarget};
