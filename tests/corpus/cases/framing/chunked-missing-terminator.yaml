@@ -1,0 +1,22 @@
+id: chunked-missing-terminator
+category: framing
+description: >
+  A chunked response that never sends its terminating zero-length chunk, then closes. Unlike
+  `chunked-short-but-well-formed`, this is invalid at the protocol level, and it is caught by the
+  transport rather than by verify-before-rename — it fails at the PROBE, before any file is created,
+  because an origin that cannot frame a one-byte response correctly is broken for every request.
+  The reported kind is the generic `transport`: the framing error comes from inside the HTTP stack
+  and distinguishing it would mean matching on that library's error internals, which is deliberately
+  avoided here (the same reason `truncated_body` is derived from a length already known rather than
+  from the library's error shape).
+references: ["RFC 9112 §7.1", "INVARIANTS.md#i-4"]
+
+server:
+  content: { size: 256KiB, seed: 91 }
+  framing: chunked
+  omit_chunked_terminator: true
+
+expect:
+  final_state: failed
+  error_kind: transport
+  file_renamed: false

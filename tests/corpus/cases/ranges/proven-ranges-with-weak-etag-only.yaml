@@ -1,0 +1,17 @@
+id: proven-ranges-with-weak-etag-only
+category: ranges
+description: >
+  Ranges are proven, but the only validator offered is a weak `ETag`. A weak validator may compare
+  equal across representations that differ byte for byte, so it must not be recorded as usable —
+  while range support, which is a separate question entirely, stays proven.
+references: ["RFC 9110 §8.8.3", "RFC 9110 §13.1.5", "INVARIANTS.md#i-3"]
+
+server:
+  content: { size: 128KiB, seed: 87 }
+  ranges: supported
+  etag: 'W/"weak-v1"'
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: proven

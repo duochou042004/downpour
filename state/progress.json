@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T20:55:00Z",
+  "updated_at": "2026-08-03T21:40:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -261,7 +261,7 @@
     {
       "id": "S1",
       "name": "Robust single-stream HTTP/1.1 + HTTP/2 downloader",
-      "status": "active",
+      "status": "gate-review",
       "started_at": "2026-08-03T11:44:43Z",
       "completed_at": null,
       "spec": "docs/03-transfer-engine-spec.md",
@@ -276,8 +276,8 @@
         {
           "id": "S1-C2",
           "text": "The capability probe correctly classifies range support on every 'ranges' corpus case",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "15 cases in tests/corpus/cases/ranges/, all passing, each asserting expect.range_support explicitly so the classification is checked rather than inferred from the download succeeding. They cover every range behaviour the pathology server can produce - correct 206, Accept-Ranges absent, Accept-Ranges lies, 206-with-whole-body, shifted Content-Range, omitted Content-Range, three malformed Content-Range shapes, unknown total length, multipart/byteranges for a single range, totals both overstated and understated - plus the proven path over h2c and with no validator and with a weak-ETag-only validator. Exactly one behaviour yields Proven; the other fourteen do not, and five of those answer with 206. HONEST LIMIT: the category is 15 against docs/09 section 3.2's initial target of 25. What is covered is every classification path the corpus can currently express; the remainder need features from later stages (multi-range requests, If-Range, CDN edge disagreement) and are tracked as B-13.",
           "invariants": [
             "I-6"
           ]
@@ -301,15 +301,15 @@
         {
           "id": "S1-C5",
           "text": "'redirects' and 'framing' corpus categories pass",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "Both categories are at or over docs/09 section 3.2's target and every case passes under `just gate`. framing 17/15: gzip-on-range, brotli, uppercase and padded non-identity tokens, a list containing identity, identity accepted in uppercase and padded form, chunked, close-delimited, chunked-short-but-well-formed, chunked-missing-terminator, truncated body, truncated after one byte, wrong Content-Length, HTML-instead-of-file, zero-length representation, and a body with no HTTP/1.1 length signal over h2c. redirects 10/10: mixed-status chain, 303, 308, loop bounded by the hop limit, chain over h2c, chain ending at an origin without range support, redirect with no Location, redirect to an unusable Location, cross-host handoff, and a cross-host chain that keeps its intra-origin hops. The last two assert expect.crosses_origin, without which they passed even with the cross-origin wiring disabled.",
           "invariants": []
         },
         {
           "id": "S1-C6",
           "text": "Zero silent corruption across the S1 corpus subset",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "42 corpus cases, 0 silent-corruption findings, and the detector is proven able to fire rather than merely observed passing: ServerSpec::corrupt_from makes the server return the right length with inverted content from 32 KiB on, and tests/corpus/tests/runner_self_test.rs::the_runner_detects_a_server_that_serves_corrupt_bytes asserts the runner reports SILENT CORRUPTION naming byte 32768. Mutation-checked: disabling the comparison turns exactly that test red. The comparison is imposed by the runner on every case and is not a key a case can set (ADR-0010). Broadest single statement: 1 000 000 000 bytes byte-exact over HTTP/1.1 and h2c via `just corpus-slow`. metrics.silent_corruption_findings is 0, which the validator treats as a release blocker if it ever is not.",
           "invariants": [
             "I-1",
             "I-4"
@@ -468,13 +468,13 @@
         {
           "id": "S1-T11",
           "title": "Write the S1 corpus cases for the ranges, framing and redirects categories",
-          "status": "in_progress",
-          "proof": "27 cases written and passing, verified by tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes which reports the count it actually ran (27). Three companion tests keep the inventory honest: ids must be unique and match their filenames, each case must sit in its category's directory (so `ls cases/ranges | wc -l` stays a true count), and metrics.corpus_cases_total is pinned to the on-disk count. NOT YET SUFFICIENT for the stage gate - see notes.",
+          "status": "done",
+          "proof": "42 cases under tests/corpus/cases/, all passing, verified by tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes which reports the count it actually ran. Per category: ranges 15, framing 17, redirects 10 (docs/09 section 3.2 targets 25/15/10, so framing and redirects are at or over target and ranges is short - see backlog B-13). Three companion tests keep the inventory honest: unique ids matching filenames, each case in its category's directory, and metrics.corpus_cases_total pinned to the on-disk count. Every case was mutation-checked by breaking the server behaviour it names.",
           "files": [
             "tests/corpus/cases/"
           ],
           "blocked_by": "S1-T10",
-          "notes": "30 of roughly 50 cases: ranges 12/25, framing 10/15, redirects 8/10 against docs/09 section 3.2's targets. All pass, all mutation-checked. BOTH SERVER-SIDE BLOCKERS ARE NOW CLOSED - B-10 (cross-host redirects, via a second PathologyServer the runner wires up) and B-11 (multipart/byteranges for a single-range request). What remains for S1-C2, C5 and C6 is case-writing only: no further server or runner work is needed for the three S1 categories except a TLS listener for protocol downgrade, which belongs to B-8/S5. READ THIS BEFORE WRITING MORE CASES: the first cross-host case proved nothing. With one origin serving both the redirect and the content, chain length and filename are identical whether or not the chain leaves the origin, so a mutation disabling the wiring still passed. Any case whose pathology is not visible in the outcome needs an expectation naming the pathology directly - that is what expect.crosses_origin is for. Mutation-check each new case by breaking the server behaviour it names and confirming the case, and only that case, goes red.",
+          "notes": null,
           "invariants": [
             "I-5",
             "I-6"
@@ -1243,6 +1243,13 @@
       "found_in_stage": "S1",
       "target_stage": null,
       "rationale": "invariants_covered gets quoted as release evidence, so an inflated count is worse than a low one"
+    },
+    {
+      "id": "B-13",
+      "text": "The ranges corpus category is at 15 cases against docs/09 section 3.2's initial target of 25. Every classification path the corpus can currently express is covered, so the shortfall is pathologies needing features that do not exist yet: multi-range requests and multipart responses with more than one part (S3), If-Range and validator-conditional ranges (S2), CDN edge disagreement between HEAD and GET across two origins, and a proxy that strips Accept-Ranges (S8). Grow the category as those stages land rather than padding it with further malformed-header variants, which belong at the parser's unit layer per docs/09 section 1.",
+      "found_in_stage": "S1",
+      "target_stage": "S3",
+      "rationale": "S1-C2 is met as worded but the category is not exhaustive; recording the gap keeps that visible"
     }
   ],
   "session_log": [
@@ -1426,11 +1433,27 @@
         "state/progress.json"
       ],
       "left_in_progress": "12/13 tasks done, S1-T11 the only one open. Exit criteria 3/6 (C1, C3, C4). C2, C5 and C6 remain unmet by choice: 30 of ~50 cases, at ranges 12/25, framing 10/15, redirects 8/10. No further server or runner work is needed for those three categories - it is case-writing from here, and each new case must be mutation-checked. MR !1 open against develop, CI green on 0307050."
+    },
+    {
+      "at": "2026-08-03T21:40:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "S1-T11 done; S1 proposed for gate review with 13/13 tasks and 6/6 criteria. Corpus grew 30 to 42 cases: framing 17/15 and redirects 10/10 are at or over docs/09 target, ranges 15/25 is short and the gap is recorded as B-13 rather than padded. Added server support for redirect Location pathologies (omitted, unusable) and for omitting the chunked terminator, which covered three error variants that had no test at all. TWO CASES CAUGHT PROVING LESS THAN THEY CLAIMED, both by mutation rather than by review: the first cross-host redirect case passed with the cross-origin wiring disabled (chain length and filename are identical either way; fixed with expect.crosses_origin), and content-encoding-uppercase/padded passed under a case-sensitive untrimmed check, because a stricter check also rejects them - case folding and trimming can only be proved on the ACCEPT side, so identity-uppercase and identity-padded were added and the two descriptions corrected to stop overclaiming. Also corrected one expectation I had written before observing: a truncated chunked response is well-formed and short, so it is caught by verify-before-rename as `incomplete`, not by the transport as `truncated_body`.",
+      "tasks_touched": [
+        "S1-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/cases/",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1 is in gate-review awaiting a human decision; do NOT advance current_stage without it. CI CONSTRAINT: the GitLab account's CI minutes are exhausted - pipeline 2727438932 failed with ci_quota_exceeded on the harness jobs. All CODE is CI-verified green (4924ac5, the last commit containing code, passed all ten jobs); everything since touches only progress.json and corpus YAML plus test-only server code, verified locally by `just gate` and `just corpus-slow`. Do not 'fix' that failure by changing CI config. If the gate is approved, S2 is next: docs/04-storage-and-recovery-spec.md, and B-5/B-6/B-7 all name work it must pick up."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 30,
-    "corpus_cases_passing": 30,
+    "corpus_cases_total": 42,
+    "corpus_cases_passing": 42,
     "sim_seeds_fixed": 0,
     "invariants_covered": 3,
     "invariants_total": 14,

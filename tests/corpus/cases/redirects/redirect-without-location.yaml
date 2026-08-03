@@ -1,0 +1,18 @@
+id: redirect-without-location
+category: redirects
+description: >
+  A 302 with no `Location` header at all — the status says "go elsewhere" and names nowhere. Seen
+  from misconfigured reverse proxies. The engine must fail with a reason that says so, rather than
+  treating the empty body as the file, retrying the same URL forever, or reporting a generic
+  transport error that sends the user looking in the wrong place.
+references: ["RFC 9110 §10.2.2", "RFC 9110 §15.4"]
+
+server:
+  content: { size: 64KiB, seed: 71 }
+  redirect_chain: [302]
+  redirect_location: omitted
+
+expect:
+  final_state: failed
+  error_kind: redirect_without_location
+  file_renamed: false

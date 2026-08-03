@@ -1,0 +1,19 @@
+id: content-range-total-understated
+category: ranges
+description: >
+  The probe's `Content-Range` is well formed and consistent with the request, so range support is
+  proven — but its stated total is far SMALLER than the representation. The transfer is then bounded
+  by a length the server itself supplied, and the body overruns it. The engine must refuse the
+  excess rather than write past the end of what it reserved: in a segmented transfer that overrun
+  would land in the next segment's range, which is I-2. The mirror image of
+  `content-range-total-overstated`.
+references: ["RFC 9110 §14.4", "INVARIANTS.md#i-2"]
+
+server:
+  content: { size: 128KiB, seed: 85 }
+  ranges: !literal-content-range { value: "bytes 0-0/64" }
+
+expect:
+  final_state: failed
+  error_kind: over_delivery
+  file_renamed: false

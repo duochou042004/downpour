@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use crate::content::{Content, GENERATOR_V1};
-use crate::server::{Framing, Protocol, RangeBehaviour, ServerSpec};
+use crate::server::{Framing, Protocol, RangeBehaviour, RedirectLocation, ServerSpec};
 
 /// One corpus case.
 #[derive(Debug, Clone, Deserialize)]
@@ -140,6 +140,12 @@ pub struct ServerCase {
     /// Serve the entry path as a redirect that points at itself, so only a hop limit can stop it.
     #[serde(default)]
     pub redirect_loop: bool,
+    /// Omit the terminating zero-length chunk of a chunked response, then close.
+    #[serde(default)]
+    pub omit_chunked_terminator: bool,
+    /// What redirect hops put in their `Location` header.
+    #[serde(default)]
+    pub redirect_location: RedirectLocationCase,
     /// Send the redirect chain to a **second origin**, which serves the content.
     ///
     /// One server serves one origin, so the runner starts two: the first only redirects, the
@@ -169,6 +175,19 @@ pub enum ProtocolCase {
     /// HTTP/2 as h2c. Backlog B-8: not h2 over TLS, so ALPN is out of scope until S5.
     #[serde(rename = "http/2")]
     Http2,
+}
+
+/// What a redirect hop puts in its `Location` header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RedirectLocationCase {
+    /// A usable target.
+    #[default]
+    Normal,
+    /// No `Location` header at all.
+    Omitted,
+    /// A `Location` that is not a usable URL.
+    Unusable,
 }
 
 /// The representation to generate.
@@ -494,6 +513,12 @@ impl Case {
                 .body
                 .as_ref()
                 .map(|text| text.as_bytes().to_vec()),
+            omit_chunked_terminator: self.server.omit_chunked_terminator,
+            redirect_location: match self.server.redirect_location {
+                RedirectLocationCase::Normal => RedirectLocation::Normal,
+                RedirectLocationCase::Omitted => RedirectLocation::Omitted,
+                RedirectLocationCase::Unusable => RedirectLocation::Unusable,
+            },
             redirect_loop: self.server.redirect_loop,
             // Filled in by the runner, which is the only thing that knows the other origin's URL.
             redirect_final_target: None,

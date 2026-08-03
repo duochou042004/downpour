@@ -1,0 +1,16 @@
+id: content-encoding-list-with-identity
+category: framing
+description: >
+  `Content-Encoding: gzip, identity` — a list, where one member is harmless and the other is not.
+  A check that looked for "identity" anywhere in the value, rather than requiring the whole value to
+  be identity, would accept this and write compressed bytes at a raw offset.
+references: ["RFC 9110 §8.4", "INVARIANTS.md#i-5"]
+
+server:
+  content: { size: 64KiB, seed: 83 }
+  content_encoding: "gzip, identity"
+
+expect:
+  final_state: failed
+  error_kind: unexpected_content_encoding
+  file_renamed: false

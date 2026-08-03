@@ -42,6 +42,22 @@ pub enum Protocol {
     H2c,
 }
 
+/// What a redirect hop puts in its `Location` header.
+///
+/// Both malformed variants are cheap for a server to produce and are seen in the wild from
+/// misconfigured reverse proxies. Neither leaves the client anywhere to go, so the engine has to
+/// fail with a reason rather than following nothing or retrying forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RedirectLocation {
+    /// A usable target.
+    #[default]
+    Normal,
+    /// A redirect status with **no** `Location` header at all.
+    Omitted,
+    /// A `Location` that is not a usable URL.
+    Unusable,
+}
+
 /// How the server treats a `Range` request.
 ///
 /// Every variant other than [`Self::Supported`] is a documented real-world pathology, and each
@@ -140,6 +156,14 @@ pub struct ServerSpec {
     pub status_override: Option<u16>,
     /// Serve these bytes instead of generated content — an HTML login page, for instance.
     pub body_override: Option<Vec<u8>>,
+    /// Omit the terminating zero-length chunk of a chunked response, then close.
+    ///
+    /// Distinct from `truncate_body_after`, which produces a *well-formed* chunked response that is
+    /// merely short. Without the terminator the message is incomplete at the protocol level, which
+    /// a conforming client should detect from the framing rather than from a size comparison.
+    pub omit_chunked_terminator: bool,
+    /// How redirect hops report their destination.
+    pub redirect_location: RedirectLocation,
     /// Where the last redirect hop points, instead of this server's own content.
     ///
     /// Set by the runner to another origin's URL, which is how a cross-host redirect is expressed:
@@ -180,6 +204,8 @@ impl Default for ServerSpec {
             truncate_body_after: None,
             status_override: None,
             body_override: None,
+            omit_chunked_terminator: false,
+            redirect_location: RedirectLocation::Normal,
             redirect_final_target: None,
             redirect_loop: false,
             corrupt_from: None,
@@ -423,12 +449,20 @@ fn plan(spec: &ServerSpec, path: &str, range_header: Option<&str>) -> Plan {
                 .clone()
                 .unwrap_or_else(|| CONTENT_PATH.to_owned())
         };
+        let mut headers = vec![("Content-Length".to_owned(), "0".to_owned())];
+        match spec.redirect_location {
+            RedirectLocation::Normal => headers.push(("Location".to_owned(), next)),
+            // No Location at all: the status says "go elsewhere" and names nowhere.
+            RedirectLocation::Omitted => {}
+            // A scheme-only string cannot be resolved against the current URL, so it is not a
+            // usable target however leniently it is read.
+            RedirectLocation::Unusable => {
+                headers.push(("Location".to_owned(), "http://".to_owned()));
+            }
+        }
         return Plan {
             status,
-            headers: vec![
-                ("Location".to_owned(), next),
-                ("Content-Length".to_owned(), "0".to_owned()),
-            ],
+            headers,
             body: None,
             literal_body: None,
         };
@@ -741,7 +775,8 @@ async fn serve_http11(
                 framing,
                 Framing::CloseDelimited | Framing::WrongContentLength { .. }
             )
-            || truncated;
+            || truncated
+            || spec.omit_chunked_terminator;
         if must_close {
             let _ = stream.shutdown().await;
             return;
@@ -791,6 +826,10 @@ async fn write_chunked(
         stream.write_all(piece).await?;
         stream.write_all(b"\r\n").await?;
         written = written.saturating_add(u64::try_from(piece.len()).unwrap_or(0));
+    }
+    if spec.omit_chunked_terminator {
+        // Leave the message unterminated and let the caller close the connection.
+        return Ok(());
     }
     stream.write_all(b"0\r\n\r\n").await
 }
