@@ -1,0 +1,189 @@
+# Downpour CI. See docs/adr/0011-ci-on-github-actions.md for why this looks the way it does.
+#
+# The short version, from measuring the GitLab pipeline this replaces (28.4 min of billed compute
+# per run, cache achieving nothing):
+#
+#   * ONE Rust job, not four. fmt, clippy, tests and doctests share a single compile and a single
+#     cache restore. The old pipeline compiled the workspace three times and then ran the corpus
+#     tests twice, because `nextest --workspace` already includes them.
+#   * Tools arrive as PREBUILT BINARIES via taiki-e/install-action. `cargo install cargo-audit`
+#     was 370-511 s of compiling ~300 crates (aws-lc-sys needs C++/cmake, gix is a Git
+#     implementation) — every single run, because ~/.cargo/bin was not cached.
+#   * Swatinem/rust-cache, which caches ~/.cargo INCLUDING bin/, keys on the toolchain, and
+#     refuses to save a broken build.
+#   * The harness jobs use no toolchain at all, so a progress-file typo fails in ten seconds
+#     rather than ten minutes.
+
+name: CI
+
+on:
+  push:
+    branches: [master, develop, "feature/**", "fix/**", "docs/**", "chore/**"]
+  pull_request:
+    branches: [master, develop]
+  # Nightly: the same gates plus the 1 GB transfers, which are too slow for every push.
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+# Supersede a running pipeline when a newer commit arrives. This is what `interruptible: true` did
+# on GitLab, and it is the reason several Stage 1 pipelines were cancelled rather than wasted.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental compilation helps local development and hurts CI: it costs time and inflates the
+  # cache. rust-cache also sets this, but being explicit means it holds for every step.
+  CARGO_INCREMENTAL: "0"
+  # Debug info for test binaries is the single biggest contributor to target/ size, and every byte
+  # is paid for twice — once pushing the cache and once pulling it.
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_NET_RETRY: "3"
+  RUSTUP_MAX_RETRIES: "3"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # ---------------------------------------------------------------- harness (no Rust)
+  # The gates that make the project's records honest. Deliberately first and deliberately
+  # toolchain-free: these catch the mistakes an agent actually makes, and they must fail fast.
+  harness:
+    name: harness (progress, agent assets, docs, shell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: state/progress.json is valid
+        run: node scripts/check-progress.mjs
+
+      - name: Codex plugin assets match the canonical .claude/ ones
+        # If these drift, the two agents follow different rulebooks (HARNESS.md §6).
+        run: bash scripts/sync-agent-assets.sh --check
+
+      - name: Relative markdown links resolve
+        run: bash scripts/check-links.sh
+
+      - name: shellcheck
+        run: shellcheck -S warning scripts/*.sh .claude/hooks/*.sh .githooks/*
+
+      - name: No secrets committed
+        # docs/10-security-privacy-legal.md: no tokens, keys, or user data in the repository, ever.
+        run: |
+          if git grep -nIE '(BEGIN [A-Z ]*PRIVATE KEY|glpat-[A-Za-z0-9_-]{20}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36})' \
+               -- ':!*.gitignore' ':!.github/workflows/*' ':!.gitlab-ci.yml*'; then
+            echo "::error::Potential secret committed. See SECURITY.md."
+            exit 1
+          fi
+          echo "no secrets found"
+
+  # ---------------------------------------------------------------- rust (one job, one compile)
+  rust:
+    name: rust (fmt, clippy, tests, doctests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # rust-toolchain.toml is the single source of truth for the version, components and targets
+      # (channel 1.97.1, rustfmt + clippy). Running rustup explicitly rather than letting the first
+      # cargo invocation do it keeps the toolchain install out of the middle of a timed step, and
+      # rust-cache keys on the resulting rustc version.
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Only master and develop write to the cache. Feature branches restore a warm cache but
+          # do not each evict the others from the 10 GB budget.
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop' }}
+
+      # Prebuilt binary from GitHub Releases. Compiling this was minutes per run.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy -D warnings
+        # --all-targets so tests and examples are linted too; the workspace lint table denies the
+        # truncating numeric casts that would silently corrupt a file offset.
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: cargo nextest run --workspace
+        # --workspace covers downpour-corpus, so there is no separate corpus job. The 1 GB cases
+        # are #[ignore]d and run by the scheduled slow-corpus job below.
+        run: cargo nextest run --locked --workspace --profile ci
+
+      - name: cargo test --doc
+        # nextest cannot run doctests, so this stays separate. It reuses the same target/.
+        run: cargo test --locked --workspace --doc
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextest-junit
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------- security
+  security:
+    name: security (deny, audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # A distinct key: this job builds nothing, so sharing the rust job's cache would mean
+          # pulling a large target/ it has no use for.
+          shared-key: security
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop' }}
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+
+      - name: cargo deny
+        # Guarded because deny.toml is backlog B-2 and does not exist yet. Once it does, this
+        # enforces the Apache-2.0-compatible licence policy from ADR-0006.
+        run: |
+          if [ -f deny.toml ]; then
+            cargo deny check licenses bans sources advisories
+          else
+            echo "::notice::deny.toml does not exist yet (backlog B-2); skipping cargo deny"
+          fi
+
+      - name: cargo audit
+        run: cargo audit --deny warnings
+
+  # ---------------------------------------------------------------- slow corpus (not per-push)
+  # The 1 GB transfers that prove S1-C1. Kept off the per-push path so every-push work stays inside
+  # the five-minute budget in docs/09-testing-strategy.md §6.
+  slow-corpus:
+    name: slow corpus (1 GB transfers)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: slow-corpus
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: 1 GB over HTTP/1.1 and HTTP/2
+        run: cargo nextest run --locked -p downpour-corpus --release --run-ignored all

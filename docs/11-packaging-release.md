@@ -57,8 +57,12 @@ footprint until the first connection. Not before the lifecycle is otherwise soli
 
 ## 4. Build and release pipeline
 
-GitLab CI (`.gitlab-ci.yml`). The pipeline is guarded on `Cargo.toml` existing, so
-the Rust jobs activate in Stage 1 without a pipeline edit.
+GitHub Actions (`.github/workflows/ci.yml`). CI moved there from GitLab in Stage 1 after the
+400-minute free quota was exhausted; standard runners are free and unmetered for public
+repositories. GitLab remains a push mirror with its pipeline disabled — the configuration is kept
+current at `.gitlab-ci.yml.disabled` so re-enabling is a rename. Both are optimised the same way:
+one Rust job rather than four, prebuilt tool binaries rather than `cargo install`, and a cache that
+includes `~/.cargo/bin`. See **ADR-0011** for the measurements that drove this.
 
 ```
 push / PR        → fmt, clippy, unit, property, corpus (fast), deny, audit

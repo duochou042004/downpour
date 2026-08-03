@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T21:40:00Z",
+  "updated_at": "2026-08-03T22:30:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -53,7 +53,7 @@
           "id": "S0-C6",
           "text": "Repository skeleton complete: LICENSE, SECURITY.md, CONTRIBUTING.md, CI workflow",
           "met": true,
-          "evidence": "LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md, .gitlab-ci.yml all present at root",
+          "evidence": "LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md all present at root; CI workflow present. NOTE: the CI workflow was .gitlab-ci.yml when S0 closed and is now .github/workflows/ci.yml, with the GitLab config retained at .gitlab-ci.yml.disabled (ADR-0011). The criterion is still satisfied; only the path changed.",
           "invariants": []
         }
       ],
@@ -179,7 +179,7 @@
           "id": "S0-T11",
           "title": "Add the CI workflow skeleton (fmt, clippy, test, check-progress)",
           "status": "done",
-          "proof": ".gitlab-ci.yml present; harness stage (progress, agent-assets, docs-links) runs on every commit; rust jobs guarded on Cargo.toml existing",
+          "proof": "CI workflow present with a harness stage that runs on every commit and Rust jobs guarded on Cargo.toml existing. Originally .gitlab-ci.yml; superseded in S1 by .github/workflows/ci.yml after the GitLab quota was exhausted (ADR-0011). The GitLab config is kept current and disabled at .gitlab-ci.yml.disabled.",
           "files": [],
           "blocked_by": null,
           "notes": null,
@@ -261,7 +261,7 @@
     {
       "id": "S1",
       "name": "Robust single-stream HTTP/1.1 + HTTP/2 downloader",
-      "status": "gate-review",
+      "status": "active",
       "started_at": "2026-08-03T11:44:43Z",
       "completed_at": null,
       "spec": "docs/03-transfer-engine-spec.md",
@@ -510,6 +510,20 @@
           "invariants": [
             "I-1"
           ]
+        },
+        {
+          "id": "S1-T14",
+          "title": "Migrate CI to GitHub Actions and fix the pipeline that burned 400 GitLab minutes",
+          "status": "in_progress",
+          "proof": null,
+          "files": [
+            ".github/workflows/ci.yml",
+            ".gitlab-ci.yml.disabled",
+            "docs/adr/0011-ci-on-github-actions.md"
+          ],
+          "blocked_by": null,
+          "notes": "Measured the old pipeline before changing it: 1706 s = 28.4 min billed per run, which is 14 runs per 400-minute quota. Root causes, all confirmed in the config rather than guessed: (1) `cargo install` appeared 6 times and ~/.cargo/bin was NOT in cache.paths, so cargo-nextest/deny/audit were recompiled from source in every job of every run - cargo-audit alone was 370-511 s because it pulls ~300 crates including aws-lc-sys (C++/cmake) and gix; (2) four separate Rust jobs each compiled the workspace, and `unit` ran nextest --workspace while `corpus` re-ran the same corpus tests with -p downpour-corpus, 633 s of pure duplication; (3) fmt and clippy shared a cache key within one stage and clobbered each other. Comparing three consecutive pipelines proved the cache achieved nothing: unit 671/599/440 s, corpus 639/432/634 s, audit 511/501/370 s, and clippy got SLOWER at 98/116/136 s. NEXT STEP: push to GitHub and measure the cold and warm run. Not done until measured - the whole point is that the previous config was never measured.",
+          "invariants": []
         }
       ]
     },
@@ -1091,6 +1105,13 @@
       "status": "proposed",
       "superseded_by": null,
       "stage": "S1"
+    },
+    {
+      "id": "ADR-0011",
+      "title": "CI on GitHub Actions; GitLab kept as a mirror with CI disabled",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S1"
     }
   ],
   "risks": [
@@ -1250,6 +1271,13 @@
       "found_in_stage": "S1",
       "target_stage": "S3",
       "rationale": "S1-C2 is met as worded but the category is not exhaustive; recording the gap keeps that visible"
+    },
+    {
+      "id": "B-14",
+      "text": "Third-party GitHub Actions are pinned to major versions (actions/checkout@v7, actions/upload-artifact@v7, Swatinem/rust-cache@v2, taiki-e/install-action@v2), which trusts the tag to keep pointing somewhere safe. Before CI ever produces release artifacts, pin every third-party action to a full commit SHA - ADR-0011's first reversal trigger. Also configure branch protection on GitHub (master: no direct push; develop: require the CI check), because the GitLab protection that ADR-0003's release story assumes does not carry across hosts.",
+      "found_in_stage": "S1",
+      "target_stage": "S1",
+      "rationale": "Losing master protection in the move would be a silent regression in the release story"
     }
   ],
   "session_log": [
