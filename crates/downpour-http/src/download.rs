@@ -22,6 +22,7 @@ use url::Url;
 
 use crate::error::{ProbeError, TransferError};
 use crate::protocol::{ProbeRequest, RangeRequest, TransferProtocol};
+use crate::retry::{RetryDecision, RetryPolicy, RetryState, TransientKind};
 use crate::sink::{RangeSink, SinkError, SinkTarget};
 
 /// Extension for a download in progress. Never the final name (I-4).
@@ -30,24 +31,81 @@ pub const PART_EXTENSION: &str = "dppart";
 /// A whole-file, single-connection download.
 pub struct SingleStream<B> {
     backend: B,
+    policy: RetryPolicy,
 }
 
 impl<B: TransferProtocol> SingleStream<B> {
-    /// Wrap a backend.
+    /// Wrap a backend, with the retry policy from `docs/03-transfer-engine-spec.md` §9.
     pub fn new(backend: B) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            policy: RetryPolicy::default(),
+        }
     }
 
-    /// Probe `url`, fetch it into `target_dir`, verify it, and give it its final name.
+    /// Override the retry policy. Tests use this to shrink the delays.
+    #[must_use]
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Probe, fetch, verify and rename — retrying transient failures per §7.
     ///
-    /// Returns the path the file ended up at. On failure the `.dppart` file is left in place when
-    /// it holds bytes worth resuming from, and the final name is never created.
+    /// **Each attempt restarts from byte 0**, and that is deliberate rather than lazy. Resuming from
+    /// the bytes already in the `.dppart` requires proving the remote representation has not changed
+    /// in the meantime, which means `If-Range` against a strong validator — that is I-3, and it
+    /// arrives with the rest of the resume machinery in S2. Resuming without it would splice two
+    /// versions of a file together at exactly the expected size, which is the specific corruption
+    /// I-3 exists to prevent. So S1's retry is correct-but-wasteful on purpose.
     ///
     /// # Errors
     ///
-    /// Anything that stops a verified file existing: a probe rejection, a transport failure, a
-    /// body shorter than the probe established, or a target that already exists.
+    /// The last error seen, once the failure is not retryable or the budget is spent.
     pub async fn download(&self, url: Url, target_dir: &Path) -> Result<PathBuf, DownloadError> {
+        // Keyed by origin, not by attempt, because that is what §7 requires once S3 opens N
+        // connections. With one worker it is a map of size one.
+        let mut retries = RetryState::new();
+        let origin = format!("{}://{}", url.scheme(), url.authority());
+
+        loop {
+            let error = match self.attempt(url.clone(), target_dir).await {
+                Ok(path) => {
+                    retries.reset(&origin);
+                    return Ok(path);
+                }
+                Err(error) => error,
+            };
+
+            let Some(kind) = transient_kind_of(&error) else {
+                return Err(error);
+            };
+            // `record_failure` returns the count including this one, so the attempt index the policy
+            // sees is one less.
+            let failures = retries.record_failure(&origin);
+            let attempt = failures.saturating_sub(1);
+
+            match self.policy.decide(kind, attempt, retry_after_of(&error)) {
+                RetryDecision::RetryAfter(delay) => {
+                    tracing::warn!(
+                        url = %url,
+                        attempt = failures,
+                        delay_ms = delay.as_millis(),
+                        error = %error,
+                        "transient failure; retrying from byte 0"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                RetryDecision::GiveUp => return Err(error),
+            }
+        }
+    }
+
+    /// One attempt: probe, fetch, verify, rename.
+    ///
+    /// `File::create` truncates, so every attempt begins with an empty `.dppart` — see
+    /// [`Self::download`] for why restarting rather than resuming is the correct S1 behaviour.
+    async fn attempt(&self, url: Url, target_dir: &Path) -> Result<PathBuf, DownloadError> {
         let remote = self.backend.probe(ProbeRequest::new(url)).await?;
 
         // Already sanitised by the probe, so it is exactly one path component and cannot escape
@@ -193,6 +251,46 @@ fn classify_io(offset: u64, error: std::io::Error) -> SinkError {
             offset,
             source: error,
         },
+    }
+}
+
+/// Which transient class an error belongs to, or `None` if retrying cannot help.
+///
+/// The mapping is the table in `docs/03-transfer-engine-spec.md` §7. `NeedsRefresh` is absent on
+/// purpose: a `401`, `403` or `410` means the URL or credential went stale, and the answer is the
+/// refresh flow (I-8) which keeps the bytes already fetched — not hammering the same dead URL.
+fn transient_kind_of(error: &DownloadError) -> Option<TransientKind> {
+    match error {
+        DownloadError::Probe(ProbeError::Transport { .. })
+        | DownloadError::Transfer(TransferError::Transport { .. }) => {
+            Some(TransientKind::ConnectionReset)
+        }
+        DownloadError::Probe(ProbeError::Timeout { .. })
+        | DownloadError::Transfer(TransferError::Timeout { .. }) => Some(TransientKind::Timeout),
+        DownloadError::Transfer(TransferError::TruncatedBody { .. }) => {
+            Some(TransientKind::TruncatedBody)
+        }
+        // A body shorter than the probe established, caught at verification rather than by the
+        // transport. Same underlying cause, so the same treatment.
+        DownloadError::Incomplete { .. } => Some(TransientKind::TruncatedBody),
+        DownloadError::Probe(ProbeError::UnexpectedStatus { status, .. })
+        | DownloadError::Transfer(TransferError::UnexpectedStatus { status, .. }) => {
+            TransientKind::from_status(*status)
+        }
+        // Everything else is a decision, not an accident: a refused encoding, a login page, an
+        // occupied target, a full disk. Retrying changes none of them.
+        _ => None,
+    }
+}
+
+/// The `Retry-After` the server sent, if the error carries one.
+fn retry_after_of(error: &DownloadError) -> Option<&str> {
+    match error {
+        DownloadError::Probe(ProbeError::UnexpectedStatus { retry_after, .. })
+        | DownloadError::Transfer(TransferError::UnexpectedStatus { retry_after, .. }) => {
+            retry_after.as_deref()
+        }
+        _ => None,
     }
 }
 

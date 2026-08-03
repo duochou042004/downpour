@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T00:35:00Z",
+  "updated_at": "2026-08-04T01:30:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -261,7 +261,7 @@
     {
       "id": "S1",
       "name": "Robust single-stream HTTP/1.1 + HTTP/2 downloader",
-      "status": "active",
+      "status": "gate-review",
       "started_at": "2026-08-03T11:44:43Z",
       "completed_at": null,
       "spec": "docs/03-transfer-engine-spec.md",
@@ -318,8 +318,8 @@
         {
           "id": "S1-C7",
           "text": "A transient transport failure mid-body is retried and the download still completes byte-correctly; Retry-After is honoured exactly; back-off is per-origin",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "Three corpus cases plus 15 unit tests. framing/transient-reset-is-retried: the first body request is truncated mid-transfer and the connection closed, and the download recovers to a byte-exact file - with expect.min_requests: 3 asserting a retry actually happened, without which the case would pass just as well if nothing had broken. framing/repeated-resets-exhaust-the-budget: every body fails, and the engine gives up after MAX_RETRIES instead of looping, leaving no final name (I-4). connections/retry-after-is-honoured: a 503 with Retry-After: 1 is waited out rather than replaced by our own back-off. crates/downpour-http/tests/retry_policy.rs pins the rest without a network: exact honouring of both delay-seconds and HTTP-date forms, malformed values falling back to computed back-off, absurd values clamped, the full status table including 408 as a timeout, and per-origin rather than per-worker accounting. All mutation-checked.",
           "invariants": [
             "I-1"
           ]
@@ -548,14 +548,16 @@
         {
           "id": "S1-T15",
           "title": "Retry and back-off: the 'robust' half of the stage title is not implemented",
-          "status": "in_progress",
-          "proof": "Corpus cases in a new `connections`-adjacent set plus unit tests on the back-off calculator: a connection reset mid-body is retried and the download still completes byte-exactly; a 503 with Retry-After is honoured to the second and not retried early; a 429 without Retry-After backs off exponentially with jitter; 5xx is retried up to MAX_RETRIES then reported Stalled; a 4xx other than 401/403/408/410/429 is NOT retried; and back-off is per-origin, so N concurrent workers do not each retry independently against a rate-limited origin. Each case mutation-checked by disabling the retry path.",
+          "status": "done",
+          "proof": "crates/downpour-http/tests/retry_policy.rs (15 unit tests on the pure policy) plus three corpus cases that prove recovery end to end: framing/transient-reset-is-retried, framing/repeated-resets-exhaust-the-budget, connections/retry-after-is-honoured. The success case would have been VACUOUS on its own - it expects , which also happens when the injected failure does nothing - so expect.min_requests was added to the case format and the runner now asserts the server saw at least 3 requests (probe + failed body + retried body). Mutation-checked three ways: disabling the retry loop makes both retry cases fail WITH the min_requests message naming that no retry occurred; making the server never inject the failure makes the exhaustion case fail AND trips min_requests on the success case; and neutralising the magic-byte sniff makes the lying-content-type case fail. The corpus runner uses RetryPolicy::fast_for_tests because truncation cases now legitimately retry five times first, which at the spec's real delays cost 72 s for the case set - it is 6.6 s now, and the real values stay pinned by the unit tests. max_server_delay is deliberately NOT shortened, so retry-after-is-honoured still waits the full second the server asked for.",
           "files": [
             "crates/downpour-http/src/retry.rs",
-            "crates/downpour-http/tests/retry_policy.rs"
+            "crates/downpour-http/src/download.rs",
+            "crates/downpour-http/tests/retry_policy.rs",
+            "tests/corpus/src/server.rs"
           ],
           "blocked_by": null,
-          "notes": "POLICY DONE, WIRING NOT. crates/downpour-http/src/retry.rs implements the whole §7 table as a PURE function, proven by crates/downpour-http/tests/retry_policy.rs (15 tests), mutation-checked three ways: ignoring Retry-After turns exactly the 6 Retry-After tests red, removing the jitter turns the jitter test red, and dropping the 408 arm turns the classification table red. Covered: MAX_RETRIES 5 / base 500 ms / cap 30 s from §9; jittered exponential growth; Retry-After as delay-seconds AND as an HTTP-date (RFC 9110 §10.2.3 allows both, and a parser handling only integers would silently retry early against a server that asked for longer); a malformed Retry-After falling back to computed back-off rather than to 'retry now'; an absurd value clamped so a hostile origin cannot wedge the engine; the full status table including 408 as a TIMEOUT rather than an ordinary client error; and 401/403/410 excluded because they belong to the refresh flow (I-8), not to retrying the same URL. RetryState is keyed BY ORIGIN from the start, per §7's closing line, because retrofitting that after S3 opens N connections means finding every call site under pressure. WHAT REMAINS, and it is the part that makes S1-C7 true: nothing calls this yet. SingleStream::download must loop over attempts, and the pathology server needs a way to inject a transient failure (a mid-body connection reset, and a 503 carrying Retry-After) so the behaviour can be proven end to end rather than only in the unit. DELIBERATE S1 CONSTRAINT to record before writing that loop: the retry must restart from byte 0, NOT resume from the bytes already on disk. Resuming requires validating the representation has not changed (If-Range against a strong validator), which is I-3 and belongs to S2. Resuming without it would splice two versions of a file at exactly the expected size - the precise corruption I-3 exists to prevent. So S1's retry is correct-but-wasteful on purpose, and S2 upgrades it.",
+          "notes": null,
           "invariants": []
         },
         {
@@ -577,11 +579,14 @@
         {
           "id": "S1-T17",
           "title": "Detect an HTML error page by magic bytes, not only by Content-Type",
-          "status": "todo",
-          "proof": "A corpus case in `session` serving an HTML login page with Content-Type: application/octet-stream, asserting error_kind looks_like_error_page and that no file is created. Mutation-checked by removing the sniff.",
-          "files": [],
+          "status": "done",
+          "proof": "tests/corpus/cases/session/html-body-with-a-lying-content-type - a login page served as application/octet-stream, which the Content-Type check cannot catch because the header claims binary. body_looks_like_a_web_page sniffs the first chunk BEFORE it reaches the sink, so nothing is written; the case asserts error_kind looks_like_error_page and file_renamed false. Mutation-checked: neutralising the sniff makes the HTML get written to disk and the case reports both the wrong outcome and an I-4 violation. Deliberately conditional on the declared type being absent or generic - an explicit text/html is already refused at the probe, and firing on a type we have no reason to doubt would reject legitimate files whose first byte is '<'.",
+          "files": [
+            "crates/downpour-http/src/h1h2.rs",
+            "tests/corpus/cases/session/html-body-with-a-lying-content-type.yaml"
+          ],
           "blocked_by": null,
-          "notes": "FOUND BY AUDIT 2026-08-03. docs/03 §2.1 step 7 says the check is on 'content-type, OR magic bytes'. Only content-type is implemented (looks_like_a_web_page in h1h2.rs). A server that returns a login page with Content-Type: application/octet-stream - which happens, and is precisely the case where the user's session has expired - is not caught, so the HTML page gets written under the requested filename and the download reports success. Small fix, real hole.",
+          "notes": null,
           "invariants": []
         }
       ]
@@ -1575,11 +1580,33 @@
         "state/progress.json"
       ],
       "left_in_progress": "S1 is 15/17 tasks and 7/8 criteria. OPEN: S1-T15 (wire the retry policy into SingleStream::download and add server support for injecting a mid-body reset and a 503 with Retry-After - this is what makes S1-C7 true; note the DELIBERATE constraint that S1's retry must restart from byte 0, because resuming needs If-Range against a strong validator and that is I-3/S2) and S1-T17 (detect an HTML page by magic bytes, not only Content-Type). CI now runs on GitHub Actions only; GitLab is a mirror whose config is kept current and disabled at gitlab-ci.yml.disabled. Do NOT re-enable GitLab CI - the quota is exhausted. Branch protection is configured on GitHub. B-14 remains open for pinning actions to commit SHAs before any release artifacts are built."
+    },
+    {
+      "at": "2026-08-04T01:30:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "Closed the two gaps the audit found, so S1 is 17/17 tasks and 8/8 criteria. S1-T15: wired the retry policy into SingleStream::download and taught the pathology server to inject transient failures (truncate mid-body and close, or answer 503 with Retry-After), consuming a budget shared ACROSS connections because a retry opens a new one. Each attempt restarts from byte 0 on purpose - resuming needs If-Range against a strong validator, which is I-3 and belongs to S2, and resuming without it splices two file versions at exactly the expected size. S1-T17: added the magic-byte half of the HTML check, sniffing the first chunk before it reaches the sink. The important find: framing/transient-reset-is-retried was VACUOUS as first written. It expects `completed`, which is also what happens when the injected failure does nothing, so it asserted nothing about recovery - the same trap as the first cross-host case. Added expect.min_requests, and mutation-checking now reports 'saw 2; no retry occurred' instead of passing. Also: truncation cases legitimately retry five times now, which cost 72 s at the spec's real delays, so the runner uses RetryPolicy::fast_for_tests while the unit tests keep the real values pinned. max_server_delay is untouched so retry-after-is-honoured still waits the second the server asked for.",
+      "tasks_touched": [
+        "S1-T15",
+        "S1-T17"
+      ],
+      "files_touched": [
+        "crates/downpour-http/src/retry.rs",
+        "crates/downpour-http/src/download.rs",
+        "crates/downpour-http/src/h1h2.rs",
+        "crates/downpour-http/src/error.rs",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/cases/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1 is in GATE-REVIEW: 17/17 tasks, 8/8 criteria, awaiting a human decision. current_stage is deliberately still S1 - advancement is not an agent's call (HARNESS.md §2). Known limits recorded rather than hidden: the ranges category is 15 against docs/09's initial target of 25 (B-13; every classification path the corpus can express is covered, the rest needs S2/S3 features), the corpus is cleartext h1/h2c rather than h2-over-TLS with ALPN (B-8), and third-party GitHub Actions are pinned to major versions rather than commit SHAs (B-14, must change before any release artifacts). If the gate is approved, S2 is docs/04-storage-and-recovery-spec.md, and B-5, B-6, B-7 and B-16 all name work it must pick up - including upgrading S1's restart-from-zero retry into a real resume once If-Range exists."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 42,
-    "corpus_cases_passing": 42,
+    "corpus_cases_total": 46,
+    "corpus_cases_passing": 46,
     "sim_seeds_fixed": 0,
     "invariants_covered": 3,
     "invariants_total": 14,

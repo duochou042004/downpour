@@ -20,6 +20,7 @@
 //! negotiation and `Alt-Svc` are `protocols`-category concerns and belong to S5.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use std::pin::Pin;
@@ -156,6 +157,21 @@ pub struct ServerSpec {
     pub status_override: Option<u16>,
     /// Serve these bytes instead of generated content — an HTML login page, for instance.
     pub body_override: Option<Vec<u8>>,
+    /// Fail this many *body* requests transiently before serving correctly.
+    ///
+    /// A failing request is truncated mid-body and the connection closed, which is what a reset looks
+    /// like to a client. Only requests whose planned body exceeds one byte are counted, so the
+    /// one-byte capability probe is untouched and the failure lands where it is interesting — in the
+    /// transfer. This is what proves the retry policy actually recovers rather than merely deciding
+    /// (docs/03 §7, exit criterion S1-C7).
+    pub transient_body_failures: u32,
+    /// Answer this many requests with `transient_status` and a `Retry-After` header before serving
+    /// correctly. Proves `Retry-After` is honoured rather than replaced by our own back-off.
+    pub transient_status_failures: u32,
+    /// The `Retry-After` value sent with those failures.
+    pub transient_retry_after: Option<String>,
+    /// The status those failures carry. `503` unless a case says otherwise.
+    pub transient_status: u16,
     /// Omit the terminating zero-length chunk of a chunked response, then close.
     ///
     /// Distinct from `truncate_body_after`, which produces a *well-formed* chunked response that is
@@ -204,6 +220,10 @@ impl Default for ServerSpec {
             truncate_body_after: None,
             status_override: None,
             body_override: None,
+            transient_body_failures: 0,
+            transient_status_failures: 0,
+            transient_retry_after: None,
+            transient_status: 503,
             omit_chunked_terminator: false,
             redirect_location: RedirectLocation::Normal,
             redirect_final_target: None,
@@ -235,6 +255,32 @@ impl RecordedRequest {
     }
 }
 
+/// How many transient failures each budget still owes.
+///
+/// Shared across connections on purpose: a retry opens a new connection, and a per-connection counter
+/// would let every attempt fail forever, which would prove the opposite of what the case intends.
+#[derive(Debug)]
+struct TransientBudget {
+    body: AtomicU32,
+    status: AtomicU32,
+}
+
+impl TransientBudget {
+    fn new(spec: &ServerSpec) -> Self {
+        Self {
+            body: AtomicU32::new(spec.transient_body_failures),
+            status: AtomicU32::new(spec.transient_status_failures),
+        }
+    }
+
+    /// Claim one failure from `counter`, returning whether one was available.
+    fn claim(counter: &AtomicU32) -> bool {
+        counter
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+}
+
 /// A running pathology server. Stops when dropped.
 pub struct PathologyServer {
     addr: SocketAddr,
@@ -262,9 +308,11 @@ impl PathologyServer {
         let spec = Arc::new(spec);
         let requests = Arc::new(Mutex::new(Vec::new()));
 
+        let budget = Arc::new(TransientBudget::new(&spec));
         let accept_task = tokio::spawn({
             let spec = Arc::clone(&spec);
             let requests = Arc::clone(&requests);
+            let budget = Arc::clone(&budget);
             async move {
                 loop {
                     let Ok((stream, _peer)) = listener.accept().await else {
@@ -272,10 +320,15 @@ impl PathologyServer {
                     };
                     let spec = Arc::clone(&spec);
                     let requests = Arc::clone(&requests);
+                    let budget = Arc::clone(&budget);
                     tokio::spawn(async move {
                         match spec.protocol {
-                            Protocol::Http11 => serve_http11(stream, &spec, &requests).await,
-                            Protocol::H2c => serve_h2c(stream, &spec, &requests).await,
+                            Protocol::Http11 => {
+                                serve_http11(stream, &spec, &requests, &budget).await;
+                            }
+                            Protocol::H2c => {
+                                serve_h2c(stream, &spec, &requests, &budget).await;
+                            }
                         }
                     });
                 }
@@ -665,6 +718,7 @@ async fn serve_http11(
     mut stream: TcpStream,
     spec: &ServerSpec,
     requests: &Arc<Mutex<Vec<RecordedRequest>>>,
+    budget: &Arc<TransientBudget>,
 ) {
     let mut buffered: Vec<u8> = Vec::new();
 
@@ -713,9 +767,36 @@ async fn serve_http11(
             });
         }
 
-        let plan = plan(spec, &path, range_header.as_deref());
-        let full_len = planned_body_len(spec, &plan);
-        let send_len = bytes_to_write(spec, &plan);
+        let mut plan = plan(spec, &path, range_header.as_deref());
+        let mut full_len = planned_body_len(spec, &plan);
+        let mut send_len = bytes_to_write(spec, &plan);
+
+        // A transient status failure: answer with the configured status and Retry-After, spending one
+        // unit of budget. Checked before the body failure so a case can use either independently.
+        let mut forced_close = false;
+        if spec.transient_status_failures > 0 && TransientBudget::claim(&budget.status) {
+            let mut headers = vec![("Content-Length".to_owned(), "0".to_owned())];
+            if let Some(after) = &spec.transient_retry_after {
+                headers.push(("Retry-After".to_owned(), after.clone()));
+            }
+            plan = Plan {
+                status: spec.transient_status,
+                headers,
+                body: None,
+                literal_body: Some(Vec::new()),
+            };
+            full_len = 0;
+            send_len = 0;
+        } else if spec.transient_body_failures > 0
+            && full_len > 1
+            && TransientBudget::claim(&budget.body)
+        {
+            // Truncate mid-body and close: to the client this is a connection reset part way
+            // through, which is the failure the retry policy exists for. Only bodies longer than one
+            // byte qualify, so the capability probe is never the victim.
+            send_len = full_len / 2;
+            forced_close = true;
+        }
         let truncated = send_len < full_len;
 
         // A redirect or an override answers with its own framing; only a content response takes
@@ -776,6 +857,7 @@ async fn serve_http11(
                 Framing::CloseDelimited | Framing::WrongContentLength { .. }
             )
             || truncated
+            || forced_close
             || spec.omit_chunked_terminator;
         if must_close {
             let _ = stream.shutdown().await;
@@ -977,12 +1059,14 @@ async fn serve_h2c(
     stream: TcpStream,
     spec: &ServerSpec,
     requests: &Arc<Mutex<Vec<RecordedRequest>>>,
+    budget: &Arc<TransientBudget>,
 ) {
     let io = hyper_util::rt::TokioIo::new(stream);
     let service =
         hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
             let spec = spec.clone();
             let requests = Arc::clone(requests);
+            let budget = Arc::clone(budget);
             async move {
                 let path = request.uri().path().to_owned();
                 let headers: Vec<(String, String)> = request
@@ -1009,8 +1093,30 @@ async fn serve_h2c(
                     .find(|(name, _)| name == "range")
                     .map(|(_, value)| value.clone());
 
-                let plan = plan(&spec, &path, range_header.as_deref());
-                let send_len = bytes_to_write(&spec, &plan);
+                let mut plan = plan(&spec, &path, range_header.as_deref());
+                let mut send_len = bytes_to_write(&spec, &plan);
+
+                if spec.transient_status_failures > 0 && TransientBudget::claim(&budget.status) {
+                    let mut headers = vec![];
+                    if let Some(after) = &spec.transient_retry_after {
+                        headers.push(("Retry-After".to_owned(), after.clone()));
+                    }
+                    plan = Plan {
+                        status: spec.transient_status,
+                        headers,
+                        body: None,
+                        literal_body: Some(Vec::new()),
+                    };
+                    send_len = 0;
+                } else if spec.transient_body_failures > 0
+                    && planned_body_len(&spec, &plan) > 1
+                    && TransientBudget::claim(&budget.body)
+                {
+                    // hyper ends the stream cleanly at whatever the body yields, so the client sees
+                    // a short body rather than a reset. Either way it is less than promised, which is
+                    // what the retry has to survive.
+                    send_len = planned_body_len(&spec, &plan) / 2;
+                }
                 let body = GeneratedBody {
                     content: spec.content,
                     literal: plan.literal_body.clone(),

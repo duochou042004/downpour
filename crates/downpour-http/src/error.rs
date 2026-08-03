@@ -62,6 +62,12 @@ pub enum ProbeError {
         url: Url,
         /// The status observed.
         status: u16,
+        /// The `Retry-After` header, verbatim, when the response carried one.
+        ///
+        /// Carried on the error because the retry policy needs it and is a pure function — it has
+        /// no access to the response. Threading it through a side channel instead would mean the
+        /// one piece of information that makes a 503 recoverable is the one piece most easily lost.
+        retry_after: Option<String>,
     },
     /// Authentication or authorisation failed, or the URL expired. Not a failure: the engine
     /// moves to `AwaitingRefresh` and keeps every byte it already has (I-8).
@@ -156,6 +162,20 @@ pub enum TransferError {
         url: Url,
         /// The status observed.
         status: u16,
+        /// The `Retry-After` header, verbatim, when the response carried one.
+        retry_after: Option<String>,
+    },
+    /// The body's first bytes look like a web page even though the headers did not say so.
+    ///
+    /// The other half of `docs/03-transfer-engine-spec.md` §2.1 step 7 — "content-type, **or magic
+    /// bytes**". Catches a login page served as `application/octet-stream`, which is what an expired
+    /// session looks like on an origin that sets the type from the file it meant to serve.
+    #[error("{url} sent a body that looks like a web page, declared as {declared_type:?}")]
+    LooksLikeAnErrorPage {
+        /// The URL being fetched.
+        url: Url,
+        /// The content type the response declared, if any.
+        declared_type: String,
     },
     /// A ranged request came back with a body encoding, or a `Content-Range` inconsistent with
     /// what was asked for. **Rejected without writing anything** (I-5) — this is the error whose
@@ -198,6 +218,9 @@ impl TransferError {
             Self::Timeout { .. } => "timeout",
             Self::TruncatedBody { .. } => "truncated_body",
             Self::UnexpectedStatus { .. } => "unexpected_status",
+            // Deliberately the same kind the probe reports: a corpus case asserting
+            // looks_like_error_page should not have to know which layer noticed.
+            Self::LooksLikeAnErrorPage { .. } => "looks_like_error_page",
             Self::UnusableRangeResponse { .. } => "unusable_range_response",
             Self::OverDelivery { .. } => "over_delivery",
             Self::Sink { .. } => "sink",

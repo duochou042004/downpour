@@ -140,6 +140,18 @@ pub struct ServerCase {
     /// Serve the entry path as a redirect that points at itself, so only a hop limit can stop it.
     #[serde(default)]
     pub redirect_loop: bool,
+    /// Fail this many body requests transiently before serving correctly.
+    #[serde(default)]
+    pub transient_body_failures: u32,
+    /// Answer this many requests with `transient_status` plus `Retry-After` before serving correctly.
+    #[serde(default)]
+    pub transient_status_failures: u32,
+    /// The `Retry-After` value those failures carry.
+    #[serde(default)]
+    pub transient_retry_after: Option<String>,
+    /// The status those failures carry. Defaults to 503.
+    #[serde(default = "default_transient_status")]
+    pub transient_status: u16,
     /// Omit the terminating zero-length chunk of a chunked response, then close.
     #[serde(default)]
     pub omit_chunked_terminator: bool,
@@ -201,6 +213,10 @@ pub struct ContentCase {
     pub generator: String,
     /// Seed. Fixing it is what makes a failing case reproducible forever.
     pub seed: u64,
+}
+
+fn default_transient_status() -> u16 {
+    503
 }
 
 fn default_generator() -> String {
@@ -281,6 +297,14 @@ pub struct Expect {
     /// How many URLs the recorded redirect chain must contain, including the submitted one.
     #[serde(default)]
     pub redirect_chain_len: Option<usize>,
+    /// The server must have received at least this many requests.
+    ///
+    /// The only way a case can prove a RETRY happened. A case that merely expects `completed` after
+    /// injecting a transient failure passes just as well when the injection did nothing, so it
+    /// asserts nothing about recovery — the same trap that made the first cross-host case vacuous.
+    /// Counting requests distinguishes "recovered" from "never broke".
+    #[serde(default)]
+    pub min_requests: Option<usize>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -513,6 +537,10 @@ impl Case {
                 .body
                 .as_ref()
                 .map(|text| text.as_bytes().to_vec()),
+            transient_body_failures: self.server.transient_body_failures,
+            transient_status_failures: self.server.transient_status_failures,
+            transient_retry_after: self.server.transient_retry_after.clone(),
+            transient_status: self.server.transient_status,
             omit_chunked_terminator: self.server.omit_chunked_terminator,
             redirect_location: match self.server.redirect_location {
                 RedirectLocationCase::Normal => RedirectLocation::Normal,

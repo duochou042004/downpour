@@ -137,6 +137,52 @@ fn looks_like_a_web_page(content_type: Option<&str>) -> bool {
     })
 }
 
+/// Whether a body's first bytes look like an HTML document when the headers claimed otherwise.
+///
+/// The magic-byte half of `docs/03-transfer-engine-spec.md` §2.1 step 7 — the text says the check is
+/// on "content-type, **or** magic bytes", and [`looks_like_a_web_page`] only covers the first. This
+/// catches what that one misses: a login page served as `application/octet-stream`, which is what an
+/// expired session looks like on an origin that sets the type from the file it *meant* to serve.
+///
+/// Deliberately conditional on the declared type being absent or generic. An explicit `text/html` is
+/// already refused at the probe, and firing on a type we have no reason to doubt would reject
+/// legitimate files whose first byte happens to be `<`.
+fn body_looks_like_a_web_page(content_type: Option<&str>, head: &[u8]) -> bool {
+    let declared_generic = match content_type {
+        None => true,
+        Some(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            value.starts_with("application/octet-stream")
+                || value.starts_with("binary/octet-stream")
+                || value.starts_with("application/binary")
+        }
+    };
+    if !declared_generic {
+        return false;
+    }
+
+    // Skip a UTF-8 BOM and leading whitespace: error pages routinely have both, and a sniff that
+    // insisted the document begin at byte zero would miss them.
+    let mut rest = head.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(head);
+    while let [first, tail @ ..] = rest {
+        if first.is_ascii_whitespace() {
+            rest = tail;
+        } else {
+            break;
+        }
+    }
+
+    let prefix: Vec<u8> = rest.iter().take(64).map(u8::to_ascii_lowercase).collect();
+    const MARKERS: [&[u8]; 5] = [
+        b"<!doctype html",
+        b"<html",
+        b"<head",
+        b"<body",
+        b"<!doctype",
+    ];
+    MARKERS.iter().any(|marker| prefix.starts_with(marker))
+}
+
 #[async_trait]
 impl TransferProtocol for H1H2Backend {
     async fn probe(&self, request: ProbeRequest) -> Result<RemoteObject, ProbeError> {
@@ -230,9 +276,11 @@ impl TransferProtocol for H1H2Backend {
                 });
             }
             if !matches!(status, 200 | 206) {
+                let retry_after = header_value(&response, "retry-after");
                 return Err(ProbeError::UnexpectedStatus {
                     url: current,
                     status,
+                    retry_after,
                 });
             }
 
@@ -390,11 +438,14 @@ impl TransferProtocol for H1H2Backend {
 
         let status = response.status().as_u16();
         if !matches!(status, 200 | 206) {
+            let retry_after = header_value(&response, "retry-after");
             return Err(TransferError::UnexpectedStatus {
                 url: request.url,
                 status,
+                retry_after,
             });
         }
+        let declared_type = header_value(&response, "content-type");
 
         let protocol = protocol_of(&response);
         let declared_length =
@@ -479,6 +530,16 @@ impl TransferProtocol for H1H2Backend {
             if chunk.is_empty() {
                 continue;
             }
+
+            // Checked on the first bytes and BEFORE they reach the sink, so a login page is never
+            // written. The probe cannot do this: its body is one byte, far too little to sniff.
+            if delivered == 0 && body_looks_like_a_web_page(declared_type.as_deref(), &chunk) {
+                return Err(TransferError::LooksLikeAnErrorPage {
+                    url: request.url.clone(),
+                    declared_type: declared_type.unwrap_or_default(),
+                });
+            }
+
             sink.accept(&chunk).await.map_err(|source| match source {
                 crate::sink::SinkError::BeyondGrant { .. } => TransferError::OverDelivery {
                     url: request.url.clone(),

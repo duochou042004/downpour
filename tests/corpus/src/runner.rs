@@ -198,7 +198,12 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         }
     }
 
-    let outcome = SingleStream::new(backend).download(url, scratch).await;
+    // Fast retry delays: see RetryPolicy::fast_for_tests for why, and note Retry-After is still
+    // honoured exactly, so `retry-after-is-honoured` still waits the second the server asked for.
+    let outcome = SingleStream::new(backend)
+        .with_retry_policy(downpour_http::RetryPolicy::fast_for_tests())
+        .download(url, scratch)
+        .await;
 
     // ---- expectation: final state and error kind
     match (&outcome, case.expect.final_state) {
@@ -236,6 +241,17 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         if actual != expected {
             failures.push(format!(
                 "expected the file to be named {expected:?}, got {actual:?}"
+            ));
+        }
+    }
+
+    // ---- expectation: a retry actually happened
+    if let Some(expected) = case.expect.min_requests {
+        let seen = server.request_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the server to see at least {expected} requests but it saw {seen}; \
+                 no retry occurred, so this case proves nothing about recovery"
             ));
         }
     }

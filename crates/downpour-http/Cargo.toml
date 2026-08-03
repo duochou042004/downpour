@@ -14,7 +14,7 @@ downpour-types = { workspace = true }
 httpdate = { workspace = true }
 mime = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio = { workspace = true, features = ["fs", "io-util", "time"] }
 tracing = { workspace = true }
 url = { workspace = true }
 

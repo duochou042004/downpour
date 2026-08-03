@@ -117,6 +117,26 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// The same budget and curve, with the delays collapsed to milliseconds.
+    ///
+    /// For the corpus. A case that expects a truncation failure now legitimately retries five times
+    /// first, and at the spec's real delays that is about eight seconds *per case* — which would put
+    /// the every-push suite well past the five-minute budget in `docs/09-testing-strategy.md` §6 while
+    /// testing nothing the delays themselves do not already prove. The real values stay pinned by
+    /// `crates/downpour-http/tests/retry_policy.rs`, which needs no network and no waiting.
+    ///
+    /// `max_server_delay` is left alone: a case asserting that `Retry-After` is honoured has to
+    /// actually wait what the server asked for, or it would be asserting the opposite.
+    #[must_use]
+    pub fn fast_for_tests() -> Self {
+        Self {
+            max_retries: 5,
+            base_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(50),
+            max_server_delay: Duration::from_secs(3600),
+        }
+    }
+
     /// How many retries are allowed after the first attempt.
     #[must_use]
     pub fn max_retries(&self) -> u32 {
