@@ -1,0 +1,15 @@
+id: content-range-wrong-unit
+category: ranges
+description: >
+  `Content-Range: items 0-0/N`. The range unit is not `bytes`, so the numbers do not refer to byte
+  offsets at all and must not be used as such.
+references: ["RFC 9110 §14.1", "INVARIANTS.md#i-6"]
+
+server:
+  content: { size: 64KiB, seed: 24 }
+  ranges: !literal-content-range { value: "items 0-0/65536" }
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent

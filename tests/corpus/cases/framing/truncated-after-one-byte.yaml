@@ -1,0 +1,16 @@
+id: truncated-after-one-byte
+category: framing
+description: >
+  The body stops after a single byte. The boundary case of `truncated-body`: an engine that only
+  checked for an empty body, or that treated "some bytes arrived" as progress worth renaming,
+  would pass the other case and fail this one.
+references: ["docs/03-transfer-engine-spec.md §7", "INVARIANTS.md#i-4"]
+
+server:
+  content: { size: 128KiB, seed: 33 }
+  truncate_body_after: 1
+
+expect:
+  final_state: failed
+  error_kind: truncated_body
+  file_renamed: false

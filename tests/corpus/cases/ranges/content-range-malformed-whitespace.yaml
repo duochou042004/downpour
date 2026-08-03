@@ -1,0 +1,16 @@
+id: content-range-malformed-whitespace
+category: ranges
+description: >
+  `Content-Range: bytes 0 - 0/N` — spaces around the hyphen, which RFC 9110's grammar does not
+  permit. A lenient parser would read it as a valid range and prove range support from a header the
+  server did not actually send correctly. Must be rejected.
+references: ["RFC 9110 §14.4", "INVARIANTS.md#i-6"]
+
+server:
+  content: { size: 128KiB, seed: 22 }
+  ranges: !literal-content-range { value: "bytes 0 - 0/131072" }
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent

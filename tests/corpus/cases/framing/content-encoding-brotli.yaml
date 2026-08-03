@@ -1,0 +1,16 @@
+id: content-encoding-brotli
+category: framing
+description: >
+  As `gzip-on-range`, but the declared encoding is `br`. A check that matched only "gzip" would
+  pass this and write compressed bytes at a raw file offset, so the rejection must be on
+  "anything that is not identity" rather than on a list of known encodings.
+references: ["RFC 9110 §8.4", "INVARIANTS.md#i-5"]
+
+server:
+  content: { size: 64KiB, seed: 31 }
+  content_encoding: br
+
+expect:
+  final_state: failed
+  error_kind: unexpected_content_encoding
+  file_renamed: false

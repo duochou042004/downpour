@@ -133,6 +133,11 @@ pub struct ServerSpec {
     pub status_override: Option<u16>,
     /// Serve these bytes instead of generated content — an HTML login page, for instance.
     pub body_override: Option<Vec<u8>>,
+    /// Serve the entry path as a redirect that points at itself.
+    ///
+    /// A loop is only terminable by a hop limit, so this is how a case checks that the limit
+    /// exists rather than that some particular chain length happens to work.
+    pub redirect_loop: bool,
     /// Corrupt every byte from this offset onward, by inverting it.
     ///
     /// Exists for exactly one purpose: proving that the corpus can detect corruption at all. Every
@@ -161,6 +166,7 @@ impl Default for ServerSpec {
             truncate_body_after: None,
             status_override: None,
             body_override: None,
+            redirect_loop: false,
             corrupt_from: None,
         }
     }
@@ -265,7 +271,9 @@ impl PathologyServer {
     /// otherwise the content itself.
     #[must_use]
     pub fn entry_path(&self) -> String {
-        if self.spec.redirect_chain.is_empty() {
+        if self.spec.redirect_loop {
+            LOOP_PATH.to_owned()
+        } else if self.spec.redirect_chain.is_empty() {
             CONTENT_PATH.to_owned()
         } else {
             format!("{HOP_PREFIX}0")

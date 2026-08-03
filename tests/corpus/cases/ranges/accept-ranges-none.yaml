@@ -1,0 +1,19 @@
+id: accept-ranges-none
+category: ranges
+description: >
+  The server explicitly states `Accept-Ranges: none` and answers the ranged GET with 200. The
+  engine must take it at its word and fall back to a single stream — and must still download the
+  file correctly, which is the ordinary case for a great many origins.
+references: ["RFC 9110 §14.3", "INVARIANTS.md#i-6"]
+
+server:
+  content: { size: 128KiB, seed: 25 }
+  ranges: absent
+  headers:
+    Accept-Ranges: none
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent
+  total_length: 128KiB

@@ -1,0 +1,16 @@
+id: chunked-over-close-delimited-h2
+category: framing
+description: >
+  HTTP/2 has neither chunked encoding nor close-delimited framing — it frames with DATA frames and
+  END_STREAM. This case checks that a body arriving with no HTTP/1.1-style length signal at all
+  still reassembles byte-exactly over h2c, so the framing handling is not quietly assuming an
+  HTTP/1.1 shape.
+references: ["RFC 9113 §8.1", "INVARIANTS.md#i-1"]
+
+server:
+  protocol: "http/2"
+  content: { size: 256KiB, seed: 35 }
+
+expect:
+  final_state: completed
+  file_renamed: true

@@ -1,0 +1,16 @@
+id: redirect-303-see-other
+category: redirects
+description: >
+  A 303, which unlike 307/308 permits the method to change to GET. The download is already a GET,
+  so the file must arrive normally — the case exists so that a client which special-cases 303 and
+  gets it wrong is caught.
+references: ["RFC 9110 §15.4.4", "INVARIANTS.md#i-8"]
+
+server:
+  content: { size: 64KiB, seed: 42 }
+  redirect_chain: [303]
+
+expect:
+  final_state: completed
+  file_renamed: true
+  redirect_chain_len: 2

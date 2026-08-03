@@ -137,6 +137,9 @@ pub struct ServerCase {
     /// Serve this literal text instead of generated content — an HTML login page, say.
     #[serde(default)]
     pub body: Option<String>,
+    /// Serve the entry path as a redirect that points at itself, so only a hop limit can stop it.
+    #[serde(default)]
+    pub redirect_loop: bool,
     /// Corrupt every byte from this offset onward. Only for `self-test/` fixtures: it exists to
     /// prove the runner's corruption comparison actually fires.
     #[serde(default)]
@@ -468,6 +471,7 @@ impl Case {
                 .body
                 .as_ref()
                 .map(|text| text.as_bytes().to_vec()),
+            redirect_loop: self.server.redirect_loop,
             corrupt_from: self.server.corrupt_from.map(|size| size.0),
         }
     }
