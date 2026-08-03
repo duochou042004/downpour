@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T14:18:00Z",
+  "updated_at": "2026-08-03T15:05:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -403,11 +403,13 @@
         {
           "id": "S1-T7",
           "title": "The TransferProtocol trait and the h1h2 backend over reqwest/rustls",
-          "status": "todo",
-          "proof": "crates/downpour-http/tests/trait_object.rs — the trait is usable as `dyn TransferProtocol` (object safety is what ADR-0005 depends on) and a stub backend satisfies it without any reqwest type appearing in the signature",
+          "status": "done",
+          "proof": "crates/downpour-http/tests/trait_object.rs (9 tests). TransferProtocol is object-safe: usable as Box<dyn>, held in a Vec<Box<dyn>>, and shared across four tokio tasks as Arc<dyn> - which is what ADR-0005 rests on, since the simulator is just another backend. A stub backend satisfies the trait with no reqwest type in any signature, proving the abstraction does not leak. H1H2Backend coerces to the trait object and reports capabilities that differ by transport mode, so the scheduler never needs a version check. RangeSink is append-only from a fixed base offset, refuses a write past its grant whole rather than partially, and does not write anything on refusal (I-2 precondition); sync reaches the target (I-1 commit point). SCOPE LIMIT, stated rather than implied: h1h2::probe and h1h2::fetch_range are written but have NO behavioural test coverage yet - nothing has exercised them against a server. That is S1-T8's job and S1-T8's proof, and no exit criterion may be marked met on the strength of this task.",
           "files": [
-            "crates/downpour-http/src/lib.rs",
-            "crates/downpour-http/src/h1h2/"
+            "crates/downpour-http/src/protocol.rs",
+            "crates/downpour-http/src/sink.rs",
+            "crates/downpour-http/src/error.rs",
+            "crates/downpour-http/src/h1h2.rs"
           ],
           "blocked_by": "S1-T2",
           "notes": null,
@@ -416,13 +418,13 @@
         {
           "id": "S1-T8",
           "title": "Capability probe: ranged GET, redirect-chain capture, validator and digest capture, HTML-instead-of-file detection",
-          "status": "todo",
+          "status": "in_progress",
           "proof": "corpus categories `ranges` and `redirects` pass under `just corpus`, including accept-ranges-lies, head-differs-from-get, 200-instead-of-206, content-range-mismatch, content-range-absent and redirect-chain-to-other-host",
           "files": [
             "crates/downpour-http/src/probe.rs"
           ],
-          "blocked_by": "S1-T7",
-          "notes": null,
+          "blocked_by": null,
+          "notes": "h1h2::probe and h1h2::fetch_range are IMPLEMENTED but UNTESTED against a server. What remains is the proof: integration tests in tests/corpus (which may depend on downpour-http without a dependency cycle, unlike the reverse) driving the probe against PathologyServer for each RangeBehaviour variant, then the YAML cases once S1-T10's runner exists. Specific things to verify first, because they are written but unexercised: that a validated 206 yields RangeSupport::Proven and everything else yields Absent; that gzip-on-range returns ProbeError::ContentEncoding rather than being downgraded to Absent (conflating the two would silently permit the I-5 corruption); that the redirect chain records every hop including the first; that a loop hits TooManyRedirects; that an HTML page yields LooksLikeAnErrorPage; and that total_length is never taken from Content-Length on a 206, where it describes the part rather than the whole.",
           "invariants": [
             "I-5",
             "I-6",

@@ -1,0 +1,35 @@
+[package]
+name = "downpour-http"
+description = "TransferProtocol implementations for Downpour: the h1h2 backend and the capability probe."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+downpour-types = { workspace = true }
+mime = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+tracing = { workspace = true }
+url = { workspace = true }
+
+# Features are listed explicitly rather than taken from `default`, because which ones are
+# ABSENT is a correctness property:
+#
+#   no `gzip`, `brotli`, `zstd`, `deflate` — reqwest would then transparently decompress a
+#   response body. On a ranged request that silently breaks offset arithmetic, which is I-5.
+#   The engine must see exactly the bytes on the wire; nothing in the transfer path may
+#   helpfully transform them.
+#
+# `rustls` pulls rustls-platform-verifier, so enterprise trust roots work (docs/14).
+reqwest = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
