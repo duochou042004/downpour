@@ -13,6 +13,7 @@ authors = ["Downpour contributors"]
 # Versions are pinned from docs/14-tech-radar-2026.md. Do not bump one here without
 # updating that file and saying why — it is the record of what was verified when.
 [workspace.dependencies]
+downpour-http = { path = "crates/downpour-http" }
 downpour-types = { path = "crates/downpour-types" }
 async-trait = "0.1.91"
 blake3 = "1.8.5"

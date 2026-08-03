@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T15:05:00Z",
+  "updated_at": "2026-08-03T15:35:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -418,13 +418,14 @@
         {
           "id": "S1-T8",
           "title": "Capability probe: ranged GET, redirect-chain capture, validator and digest capture, HTML-instead-of-file detection",
-          "status": "in_progress",
-          "proof": "corpus categories `ranges` and `redirects` pass under `just corpus`, including accept-ranges-lies, head-differs-from-get, 200-instead-of-206, content-range-mismatch, content-range-absent and redirect-chain-to-other-host",
+          "status": "done",
+          "proof": "tests/corpus/tests/probe.rs (19 tests) against PathologyServer. I-6: a validated 206 is the only behaviour that yields RangeSupport::Proven, and all seven others yield Absent - including the five that answer 206 (correct Content-Range with the whole body, shifted Content-Range, omitted Content-Range, malformed Content-Range, unknown total length). I-5: a gzipped ranged response returns ProbeError::ContentEncoding rather than downgrading to Absent, and Accept-Encoding: identity is asserted on the request the SERVER recorded, not on our own code. I-8: every redirect hop including the submitted URL is recorded, and a loop hits TooManyRedirects with a bounded request count. Also: HTML-instead-of-file, 401/403/410 -> needs_refresh distinguished from 500/503 -> unexpected_status, weak-ETag classification, digest capture, Content-Disposition traversal sanitised to a single component, and the probe over h2c. Mutation-checked: downgrading the gzip case, removing Accept-Encoding: identity, and taking total_length from Content-Length on a 206 each turn red exactly the test that claims it. PROOF FIELD REVISED from the original 'corpus categories ranges and redirects pass under just corpus'. That was a decomposition error on my part: it made this task's proof depend on S1-T10's runner and S1-T11's case files, which are separate deliverables. The behaviour is proven here; expressing it as declarative YAML inventory is S1-T11's job, and exit criterion S1-C2 still requires those cases, so the criterion holds that line rather than this task.",
           "files": [
-            "crates/downpour-http/src/probe.rs"
+            "crates/downpour-http/src/h1h2.rs",
+            "tests/corpus/tests/probe.rs"
           ],
           "blocked_by": null,
-          "notes": "h1h2::probe and h1h2::fetch_range are IMPLEMENTED but UNTESTED against a server. What remains is the proof: integration tests in tests/corpus (which may depend on downpour-http without a dependency cycle, unlike the reverse) driving the probe against PathologyServer for each RangeBehaviour variant, then the YAML cases once S1-T10's runner exists. Specific things to verify first, because they are written but unexercised: that a validated 206 yields RangeSupport::Proven and everything else yields Absent; that gzip-on-range returns ProbeError::ContentEncoding rather than being downgraded to Absent (conflating the two would silently permit the I-5 corruption); that the redirect chain records every hop including the first; that a loop hits TooManyRedirects; that an HTML page yields LooksLikeAnErrorPage; and that total_length is never taken from Content-Length on a 206, where it describes the part rather than the whole.",
+          "notes": null,
           "invariants": [
             "I-5",
             "I-6",
@@ -1328,6 +1329,26 @@
         "state/progress.json"
       ],
       "left_in_progress": "S1-T5 (ADR-0010, the corpus case format) is next and unblocks S1-T6, the pathology server. S1-T7 (TransferProtocol trait + h1h2 backend) can proceed in parallel; it only needed downpour-types, which is now done. Branch: feature/s1-foundations."
+    },
+    {
+      "at": "2026-08-03T15:35:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "S1-T6 through S1-T8. Pathology server: hand-rolled HTTP/1.1 (hyper would correct or refuse the exact framing pathologies the corpus needs) plus h2c via hyper, verified against a reference client for 17 distinct pathologies. TransferProtocol trait with object safety asserted directly, since ADR-0005 and the future simulator depend on it. RangeSink is append-only from a fixed base offset, so a backend has no API for choosing an offset at all - I-2 made structural before there is any concurrency to get it wrong. h1h2 backend with hand-followed redirects (I-8 needs the whole chain) and no decompression features enabled (I-5). Capability probe proven against the server: one behaviour yields Proven, seven do not, five of which answer 206. Everything mutation-checked. Found and corrected one silently no-op mutation script, which had produced a meaningless pass.",
+      "tasks_touched": [
+        "S1-T6",
+        "S1-T7",
+        "S1-T8"
+      ],
+      "files_touched": [
+        "tests/corpus/",
+        "crates/downpour-http/",
+        "docs/adr/0010-corpus-case-format.md",
+        "docs/14-tech-radar-2026.md",
+        "Cargo.toml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "8/13 S1 tasks done. Next: S1-T9 (single-stream download to .dppart, verify, atomic rename) is unblocked - RangeSink and fetch_range exist, and fetch_range is written but still has no behavioural coverage, so S1-T9's tests are what will first exercise it. Then S1-T10 (YAML runner; needs a maintained YAML crate chosen - serde_yaml is archived, so check serde_norway or saphyr and record the choice), S1-T11 (cases, including B-10's cross-host redirect needing two servers), S1-T12 (dp add), S1-T13 (1 GB). MR !1 is open against develop."
     }
   ],
   "metrics": {

@@ -224,10 +224,13 @@ name = "downpour-corpus"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "downpour-http",
+ "downpour-types",
  "http-body-util",
  "hyper",
  "hyper-util",
  "tokio",
+ "url",
 ]
 
 [[package]]
