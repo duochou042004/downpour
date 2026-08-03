@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T09:56:15Z",
+  "updated_at": "2026-08-03T09:58:29Z",
   "updated_by": "claude-code",
   "current_stage": "S0",
   "stages": [
@@ -188,11 +188,11 @@
         {
           "id": "S0-T12",
           "title": "git init and the first commit",
-          "status": "in_progress",
-          "proof": "git log shows an initial commit on master and develop pushed to GitLab",
+          "status": "done",
+          "proof": "git log shows commit 803636b on master and develop, both pushed to gitlab.com/duochou042004/downpour; pipelines #1 and #2 green",
           "files": [],
           "blocked_by": null,
-          "notes": "Repo initialised, hooks path set, first commit pending in this session.",
+          "notes": null,
           "invariants": []
         },
         {
@@ -242,6 +242,16 @@
           "files": [
             "README.md"
           ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T17",
+          "title": "Publish to GitLab with master/develop branch protection",
+          "status": "done",
+          "proof": "glab api protected_branches shows master push='No one', develop push='Maintainers'; default_branch=develop; only_allow_merge_if_pipeline_succeeds=true",
+          "files": [],
           "blocked_by": null,
           "notes": null,
           "invariants": []
@@ -1029,7 +1039,7 @@
         "plugins/",
         "docs/agent/CODEX-NOTES.md"
       ],
-      "left_in_progress": "S0-T12: pushing master and develop to GitLab. After that S0 has only S0-C5 open \u2014 the fresh-session orientation test, which is verified by the next session actually doing it."
+      "left_in_progress": "S0 has one criterion left: S0-C5, the fresh-session orientation test. It is verified by the NEXT session reading CLAUDE.md then HARNESS.md then progress.json and correctly stating what to work on without being told. If that works, S0 goes to gate-review and Stage 1 begins."
     }
   ],
   "metrics": {
