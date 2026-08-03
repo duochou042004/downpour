@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T00:15:00Z",
+  "updated_at": "2026-08-04T00:35:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -327,8 +327,8 @@
         {
           "id": "S1-C8",
           "text": "The workspace compiles and its test suite passes on Windows",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "The windows-latest job in .github/workflows/ci.yml runs clippy -D warnings and nextest --workspace and is green on two independent runs (30826537689: clippy 102 s, nextest 100 s; 30827248189: 128 s with a warm cache). Reproducible by anyone: push to the branch, or `gh workflow run CI`. Locally, `cargo check --locked --workspace --target x86_64-pc-windows-gnu` is clean in 25 s.",
           "invariants": [
             "I-1",
             "I-4",
@@ -534,15 +534,15 @@
         {
           "id": "S1-T14",
           "title": "Migrate CI to GitHub Actions and fix the pipeline that burned 400 GitLab minutes",
-          "status": "in_progress",
-          "proof": null,
+          "status": "done",
+          "proof": "MEASURED, three runs on GitHub Actions. GitLab's last green pipeline: 1706 s = 28.4 min, Linux only, cache achieving nothing. GitHub cold with the new Windows job added: 412 s = 6.9 min. GitHub WARM: 196 s = 3.3 min for MORE coverage than GitLab ever had. Per job, cold -> warm: rust 112 s -> 38 s, windows 264 s -> 128 s, security 23-28 s (was 370-511 s on GitLab because it compiled cargo-audit every run), harness 5-8 s (was ~35 s across three jobs). Against GitLab that is 88 percent less compute while also testing Windows. Runs: 30826183828 (cold), 30826537689 (cold + windows), 30827248189 (warm). ADR-0011 records the diagnosis and the reversal triggers. Root causes fixed: tools now arrive as prebuilt binaries (taiki-e/install-action on GitHub, cargo-binstall on GitLab) instead of being compiled; one Rust job replaces four so the workspace compiles once; the redundant corpus job is gone because nextest --workspace already covered it; and the cache includes ~/.cargo/bin, which is the entry whose absence made every `cargo install` recompile from scratch. GitLab's config is kept current and disabled at .gitlab-ci.yml.disabled so re-enabling is a rename.",
           "files": [
             ".github/workflows/ci.yml",
             ".gitlab-ci.yml.disabled",
             "docs/adr/0011-ci-on-github-actions.md"
           ],
           "blocked_by": null,
-          "notes": "Measured the old pipeline before changing it: 1706 s = 28.4 min billed per run, which is 14 runs per 400-minute quota. Root causes, all confirmed in the config rather than guessed: (1) `cargo install` appeared 6 times and ~/.cargo/bin was NOT in cache.paths, so cargo-nextest/deny/audit were recompiled from source in every job of every run - cargo-audit alone was 370-511 s because it pulls ~300 crates including aws-lc-sys (C++/cmake) and gix; (2) four separate Rust jobs each compiled the workspace, and `unit` ran nextest --workspace while `corpus` re-ran the same corpus tests with -p downpour-corpus, 633 s of pure duplication; (3) fmt and clippy shared a cache key within one stage and clobbered each other. Comparing three consecutive pipelines proved the cache achieved nothing: unit 671/599/440 s, corpus 639/432/634 s, audit 511/501/370 s, and clippy got SLOWER at 98/116/136 s. MEASURED RESULT (GitHub Actions, cold cache, run 30826183828): 146 s total across three jobs = 2.4 min, against GitLab's 1706 s = 28.4 min. A 91 percent reduction, and that is the COLD run. Step detail confirms every diagnosis: taiki-e/install-action took 0.0 s for cargo-nextest, the whole security job including cargo-deny and cargo-audit took 23 s against 370-511 s for audit alone on GitLab, and harness fell from ~35 s across three jobs to 8 s. Real work is now clippy 43 s plus nextest 51 s. The measurement also found a design mistake of mine: rust-cache's save step took 0.0 s because I had restricted save-if to master and develop, following advice written for repositories with many concurrent branches. On a single-maintainer project where nearly every push is to a feature branch, that makes every run cold. Removed. NEXT: measure a warm run to prove the cache actually restores, and get the new Windows job green.",
+          "notes": null,
           "invariants": []
         },
         {
@@ -561,13 +561,13 @@
         {
           "id": "S1-T16",
           "title": "Verify the Windows target actually builds and passes its tests",
-          "status": "in_progress",
-          "proof": null,
+          "status": "done",
+          "proof": "The windows job in .github/workflows/ci.yml runs `cargo clippy --locked --all-targets --all-features -- -D warnings` and `cargo nextest run --locked --workspace` on windows-latest. Green on runs 30826537689 (clippy 102 s, nextest 100 s) and 30827248189 (128 s warm) - the step durations confirm it genuinely compiled and ran the suite rather than skipping. Also verified locally that the workspace cross-compiles: `cargo check --locked --workspace --target x86_64-pc-windows-gnu` finishes clean in 25 s. This is the first time anything in this project has ever been compiled for Windows, so the cfg!(windows) ENOSPC branches behind I-10 and the rename/fsync paths behind I-1 and I-4 have now been through a compiler and a test run.",
           "files": [
             ".github/workflows/ci.yml"
           ],
           "blocked_by": null,
-          "notes": "FOUND BY AUDIT 2026-08-03. Downpour claims Linux AND Windows, rust-toolchain.toml has listed x86_64-pc-windows-gnu since S0, and NOTHING had ever been compiled for Windows. The cfg!(windows) branches in crates/downpour-http/src/download.rs (ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL - the ENOSPC handling I-10 rests on) had never been through a compiler, and neither had the atomic-rename or fsync paths behind I-1 and I-4. A local cross `cargo check --target x86_64-pc-windows-gnu` does pass in 25 s, but that finds none of the behavioural failures that matter on Windows: path semantics, rename-over-existing, flush behaviour, and whether the corpus server can bind and serve. A windows-latest job running the real suite is added and in flight; not done until it is green.",
+          "notes": null,
           "invariants": [
             "I-1",
             "I-4",
@@ -1550,6 +1550,31 @@
         "state/progress.json"
       ],
       "left_in_progress": "S1 is in gate-review awaiting a human decision; do NOT advance current_stage without it. CI CONSTRAINT: the GitLab account's CI minutes are exhausted - pipeline 2727438932 failed with ci_quota_exceeded on the harness jobs. All CODE is CI-verified green (4924ac5, the last commit containing code, passed all ten jobs); everything since touches only progress.json and corpus YAML plus test-only server code, verified locally by `just gate` and `just corpus-slow`. Do not 'fix' that failure by changing CI config. If the gate is approved, S2 is next: docs/04-storage-and-recovery-spec.md, and B-5/B-6/B-7 all name work it must pick up."
+    },
+    {
+      "at": "2026-08-04T00:35:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "Migrated CI to GitHub Actions after GitLab's 400 free minutes ran out, and fixed the pipeline rather than just moving it. Measured first: 28.4 min billed per GitLab run, cache achieving nothing across three consecutive pipelines (clippy actually got SLOWER, 98/116/136 s). Causes: six `cargo install` invocations with ~/.cargo/bin absent from cache.paths; four Rust jobs each compiling the workspace, with `unit` and `corpus` running the same corpus tests twice; and fmt/clippy sharing a cache key inside one stage. Result after the fix: 3.3 min warm, including a Windows job GitLab never had. Also audited S1 against docs/03 section by section and found the gate was not a wall: all six criteria were met while retry/back-off did not exist at all (§7, in a stage titled ROBUST) and Windows had NEVER been compiled. Added criteria 7 and 8 to docs/12 and progress.json. Implemented the §7 retry policy as a tested pure function; wiring it into the download loop is what remains. Restored branch protection on GitHub, which the migration had silently dropped.",
+      "tasks_touched": [
+        "S1-T14",
+        "S1-T15",
+        "S1-T16",
+        "S1-T17"
+      ],
+      "files_touched": [
+        ".github/workflows/ci.yml",
+        ".gitlab-ci.yml.disabled",
+        "docs/adr/0011-ci-on-github-actions.md",
+        "docs/12-roadmap-stages.md",
+        "docs/11-packaging-release.md",
+        "docs/14-tech-radar-2026.md",
+        "crates/downpour-http/src/retry.rs",
+        "README.md",
+        "CONTRIBUTING.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1 is 15/17 tasks and 7/8 criteria. OPEN: S1-T15 (wire the retry policy into SingleStream::download and add server support for injecting a mid-body reset and a 503 with Retry-After - this is what makes S1-C7 true; note the DELIBERATE constraint that S1's retry must restart from byte 0, because resuming needs If-Range against a strong validator and that is I-3/S2) and S1-T17 (detect an HTML page by magic bytes, not only Content-Type). CI now runs on GitHub Actions only; GitLab is a mirror whose config is kept current and disabled at gitlab-ci.yml.disabled. Do NOT re-enable GitLab CI - the quota is exhausted. Branch protection is configured on GitHub. B-14 remains open for pinning actions to commit SHAs before any release artifacts are built."
     }
   ],
   "metrics": {

@@ -89,9 +89,10 @@ The pipeline is restructured around the measurements above:
    `cargo-deny` and `cargo-audit` from GitHub Releases instead of compiling them. This is the single
    largest line item: `audit` alone was 370–511 s of compiling a tool.
 3. **Real caching.** `Swatinem/rust-cache@v2`, which keys on the toolchain version and the Cargo
-   files, caches `~/.cargo` **including `bin/`**, prunes stale artifacts, and refuses to save a
-   broken build. Saving is restricted to `master` and `develop` so feature branches restore a warm
-   cache without each one evicting the others from the 10 GB budget.
+   files, caches `~/.cargo` **including `bin/`** — the entry whose absence made every `cargo install`
+   recompile — prunes stale artifacts, and refuses to save a broken build. It saves on **every**
+   branch: see the correction under Measured outcome, where restricting saves to the main branches
+   turned out to leave every feature-branch run cold.
 4. **`--locked` everywhere**, so CI can never silently resolve a different dependency graph than the
    committed `Cargo.lock`. This is a correctness property, not a speed one.
 5. **`CARGO_INCREMENTAL=0` and `CARGO_PROFILE_TEST_DEBUG=0`.** Incremental compilation is a
@@ -127,6 +128,30 @@ assumes.
 common trade-off; for a project that ships binaries, pinning to SHAs is the stricter choice and is
 recorded as a reversal trigger below rather than done now. Also accepted: the public repository is
 now required for free CI, which was already the intent but is now load-bearing.
+
+## Measured outcome
+
+Taken after the change, on the same workspace, so the before-and-after is comparable.
+
+| | Total | Coverage |
+| --- | ----: | ------- |
+| GitLab, last green pipeline | 1706 s (28.4 min) | Linux only |
+| GitHub Actions, cold cache, Windows job included | 412 s (6.9 min) | Linux + Windows |
+| **GitHub Actions, warm cache** | **196 s (3.3 min)** | Linux + Windows |
+
+Per job, cold → warm: `rust` 112 s → 38 s, `windows` 264 s → 128 s, `security` 23–28 s (against
+370–511 s on GitLab, which compiled `cargo-audit` every run), `harness` 5–8 s (against ~35 s spread
+over three jobs). Against GitLab that is **88% less compute for more coverage** — and the Windows
+job is coverage the project never had, which is how it went eleven months without anyone noticing
+nothing had ever been compiled for Windows.
+
+Runs: `30826183828` (cold), `30826537689` (cold, Windows added), `30827248189` (warm).
+
+One correction the measurement forced: the first version restricted `save-if` to `master` and
+`develop`, following advice written for repositories with many concurrent branches competing for the
+10 GB budget. The cold run showed `rust-cache`'s save step taking 0.0 s on a feature branch — which
+is where a single maintainer does nearly all their work, so every run would have stayed cold
+forever. Removed.
 
 ## Reversal trigger
 
