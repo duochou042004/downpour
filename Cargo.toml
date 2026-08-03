@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "Apache-2.0"
+repository = "https://gitlab.com/duochou042004/downpour"
+authors = ["Downpour contributors"]
+
+# Versions are pinned from docs/14-tech-radar-2026.md. Do not bump one here without
+# updating that file and saying why — it is the record of what was verified when.
+[workspace.dependencies]
+mime = "0.3.17"
+percent-encoding = "2.3.2"
+proptest = "1.11.0"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.19"
+# The `serde` feature is enabled per-crate, by whichever crate actually persists a URL.
+# Nothing does yet; persistence arrives with downpour-storage in S2.
+url = "2.5.8"
+
+# Lints that encode .claude/rules/rust.md mechanically, so the rule is enforced by
+# the compiler rather than by whoever is reviewing.
+#
+# `unwrap_used` / `expect_used` / `panic` are NOT here: a Cargo lint table applies to
+# a crate's tests as well, and tests are explicitly allowed to unwrap. They are set
+# per-crate with `cfg_attr(not(test), ...)` instead.
+[workspace.lints.rust]
+missing_docs = "deny"
+unsafe_code = "deny"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# A `u64 -> usize` cast that silently truncates a file offset is a corruption bug
+# that only shows up on the platform nobody tested. Conversions are explicit and
+# checked. See .claude/rules/rust.md, "Style".
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"

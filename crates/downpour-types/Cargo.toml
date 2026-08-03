@@ -1,0 +1,21 @@
+[package]
+name = "downpour-types"
+description = "Shared types, headers and identifiers for Downpour. Pure: no I/O, no async, no clock reads."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+mime = { workspace = true }
+percent-encoding = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

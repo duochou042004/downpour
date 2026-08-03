@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T11:44:43Z",
+  "updated_at": "2026-08-03T12:31:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -319,14 +319,14 @@
       "tasks": [
         {
           "id": "S1-T1",
-          "title": "Create the cargo workspace: downpour-types, downpour-http, downpour-cli, with versions pinned from the tech radar",
-          "status": "todo",
-          "proof": "`just gate` runs the rust-gate recipe (cargo fmt --check, clippy --all-targets --all-features -D warnings, nextest run --workspace, cargo test --doc) instead of skipping it, and every step passes",
+          "title": "Create the cargo workspace and wire the rust gates, with versions pinned from the tech radar",
+          "status": "done",
+          "proof": "`just gate` now runs the rust-gate recipe instead of skipping it, and every step passes: cargo fmt --all --check clean, clippy --all-targets --all-features -D warnings clean, 48 nextest tests passed, 6 doctests passed. Verified 2026-08-03. Scope note: downpour-http and downpour-cli are created by S1-T7 and S1-T12, the tasks that give them content, rather than as empty placeholders here; `members = [\"crates/*\"]` picks them up with no workspace edit.",
           "files": [
             "Cargo.toml",
-            "crates/downpour-types/",
-            "crates/downpour-http/",
-            "crates/downpour-cli/"
+            ".config/nextest.toml",
+            "crates/downpour-types/Cargo.toml",
+            "docs/14-tech-radar-2026.md"
           ],
           "blocked_by": null,
           "notes": null,
@@ -335,14 +335,15 @@
         {
           "id": "S1-T2",
           "title": "downpour-types: RemoteObject and a RangeSupport whose Proven variant cannot be constructed without a validated 206",
-          "status": "todo",
-          "proof": "crates/downpour-types/tests/range_proof.rs — asserts RangeSupport::Proven is only reachable through RangeProof::from_observed_response, and that the constructor rejects 200, a missing Content-Range, a mismatched Content-Range and a non-identity Content-Encoding",
+          "status": "done",
+          "proof": "crates/downpour-types/tests/range_proof.rs (12 tests) — RangeSupport::Proven is reachable only through RangeProof::from_observed_response, whose 12 negative cases cover 200-instead-of-206, 416, absent Content-Range, malformed Content-Range, mismatched Content-Range, gzip-on-range, unknown total length, and a full body behind a 206. Plus crates/downpour-types/tests/validator.rs (10 tests) for validator classification and digest capture. Verified red-before-green: deleting the Content-Encoding check makes a_gzipped_range_response_is_rejected fail.",
           "files": [
             "crates/downpour-types/src/remote.rs"
           ],
-          "blocked_by": "S1-T1",
+          "blocked_by": null,
           "notes": null,
           "invariants": [
+            "I-3",
             "I-5",
             "I-6"
           ]
@@ -350,12 +351,12 @@
         {
           "id": "S1-T3",
           "title": "Strict Content-Range parser that validates the response against the range that was actually requested",
-          "status": "todo",
-          "proof": "crates/downpour-types/tests/content_range_prop.rs::never_accepts_a_range_inconsistent_with_the_request — proptest over arbitrary requested/returned range pairs; plus a unit table of malformed headers from RFC 9110 section 14.4",
+          "status": "done",
+          "proof": "crates/downpour-types/tests/content_range_prop.rs::never_accepts_a_range_inconsistent_with_the_request — proptest over arbitrary requested/returned range pairs asserting consistency iff the start matches exactly and the end is within the request; plus parsing_never_panics, parsing_preserves_the_range, and a 15-case malformed-header table from RFC 9110 section 14.4. Verified red-before-green: deleting the start-offset check makes the property and a_short_but_aligned_range_is_consistent both fail.",
           "files": [
             "crates/downpour-types/src/content_range.rs"
           ],
-          "blocked_by": "S1-T1",
+          "blocked_by": null,
           "notes": null,
           "invariants": [
             "I-5"
@@ -364,12 +365,12 @@
         {
           "id": "S1-T4",
           "title": "Filename resolution (Content-Disposition RFC 6266 including filename*, URL-path fallback) and sanitisation",
-          "status": "todo",
-          "proof": "crates/downpour-types/tests/filename_prop.rs::sanitised_name_never_escapes_the_target_directory — proptest over arbitrary byte strings; plus a unit table covering ../, absolute paths, NUL, control characters, Windows reserved device names, trailing dots and spaces, and over-long names",
+          "status": "done",
+          "proof": "crates/downpour-types/tests/filename_prop.rs::sanitised_name_is_always_exactly_one_normal_component — proptest over arbitrary char sequences asserting the result is one Component::Normal, non-empty, at most 255 bytes, and free of separators and control characters; plus sanitise_is_idempotent, resolve_never_panics, and a 22-case table covering ../, absolute paths, Windows-style paths, NUL, control characters, the Windows reserved device names, trailing dots and spaces, and multibyte truncation.",
           "files": [
             "crates/downpour-types/src/filename.rs"
           ],
-          "blocked_by": "S1-T1",
+          "blocked_by": null,
           "notes": null,
           "invariants": []
         },
@@ -1174,6 +1175,20 @@
       "found_in_stage": "S1",
       "target_stage": "S2",
       "rationale": "S1-C6 needs verify-before-rename now, but S1 has no storage crate to put it in"
+    },
+    {
+      "id": "B-6",
+      "text": "S1 captures a server-supplied Repr-Digest/Content-Digest but does not verify it. S2 must verify a captured digest before the final rename (I-4), which needs base64 decoding and sha2. Until then, no S1 corpus case may supply a digest, or the engine would be ignoring evidence it holds.",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "docs/03 section 2.1 step 6 says record it; I-4 says check it when the server supplied one. S1 does the first half only, deliberately."
+    },
+    {
+      "id": "B-7",
+      "text": "RangeProof deliberately does not derive Deserialize: a derived impl would be a second constructor that skips the validation, turning the compiler-enforced I-6 back into a convention. When S2 persists a RemoteObject it must either re-validate on load or store the raw observation and rebuild the proof from it.",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "The hazard is invisible at the point where someone will reach for #[derive(Deserialize)], so it is recorded rather than left to be rediscovered"
     }
   ],
   "session_log": [
@@ -1209,7 +1224,7 @@
       "at": "2026-08-03T09:56:15Z",
       "agent": "claude-code",
       "stage": "S0",
-      "summary": "Completed the Codex agent surface: verified empirically that Codex 0.146 loads all 9 project skills via a repo marketplace at .agents/plugins/marketplace.json, and that plugin_hooks is REMOVED \u2014 so enforcement moved to .githooks/pre-commit, which is agent-agnostic. Added a sync script so both agents read one source with CI drift detection. Fixed doctor.sh to find cargo in non-interactive shells. Added LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md, .gitignore, .gitattributes, rust-toolchain.toml, justfile, GitLab CI, and a link checker. Rewrote README with badges and mermaid. Reconciled docs from GitHub to GitLab.",
+      "summary": "Completed the Codex agent surface: verified empirically that Codex 0.146 loads all 9 project skills via a repo marketplace at .agents/plugins/marketplace.json, and that plugin_hooks is REMOVED — so enforcement moved to .githooks/pre-commit, which is agent-agnostic. Added a sync script so both agents read one source with CI drift detection. Fixed doctor.sh to find cargo in non-interactive shells. Added LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md, .gitignore, .gitattributes, rust-toolchain.toml, justfile, GitLab CI, and a link checker. Rewrote README with badges and mermaid. Reconciled docs from GitHub to GitLab.",
       "tasks_touched": [
         "S0-T9",
         "S0-T10",
@@ -1261,6 +1276,26 @@
         "state/progress.json"
       ],
       "left_in_progress": "S1-T1 is next: the cargo workspace. Two S1 tasks have no blocker and can start immediately — S1-T1 (workspace) and S1-T5 (ADR-0010, the corpus case format, which must be written before the pathology server in S1-T6). Everything else chains off those two. Branch: feature/s1-foundations."
+    },
+    {
+      "at": "2026-08-03T12:31:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "S1-T1 through S1-T4: cargo workspace (resolver 3, edition 2024, MSRV 1.97.1) with the tech-radar pins re-verified against crates.io, nextest profiles, and workspace lints that encode .claude/rules/rust.md mechanically. downpour-types implements the pure half of the probe: a strict Content-Range parser validated against the requested range, filename resolution and sanitisation, validator classification, and digest capture. I-6 is enforced structurally rather than by discipline: RangeSupport::Proven carries a RangeProof whose fields are private and whose single constructor returns Err unless the response validated, so no expression in the workspace can produce Proven without the evidence. 48 tests and 6 doctests pass; fmt and clippy -D warnings clean.",
+      "tasks_touched": [
+        "S1-T1",
+        "S1-T2",
+        "S1-T3",
+        "S1-T4"
+      ],
+      "files_touched": [
+        "Cargo.toml",
+        ".config/nextest.toml",
+        "crates/downpour-types/",
+        "docs/14-tech-radar-2026.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1-T5 (ADR-0010, the corpus case format) is next and unblocks S1-T6, the pathology server. S1-T7 (TransferProtocol trait + h1h2 backend) can proceed in parallel; it only needed downpour-types, which is now done. Branch: feature/s1-foundations."
     }
   ],
   "metrics": {

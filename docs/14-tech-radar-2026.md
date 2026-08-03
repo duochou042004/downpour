@@ -32,6 +32,10 @@ here without checking it against §5 and recording it.
 | `proptest` | 1.11 | Property testing | The interval map and journal depend on this |
 | `criterion` | 0.8 | Benchmarks | |
 | `insta` | 1.48 | Snapshot tests | Good for `explain` output and manifest parsing |
+| `url` | 2.5 | URL parsing | Not a free choice: `reqwest`'s public API is already in terms of `url::Url`, so the alternative is converting at every boundary. Same project as `percent-encoding`. |
+| `percent-encoding` | 2.3 | Percent-decoding | Needed for `Content-Disposition` `filename*` (RFC 8187) and URL path segments. Already in the tree via `url`, so it adds nothing transitively. |
+| `mime` | 0.3 | Media types | Zero dependencies. Used for the "server sent an HTML error page" check in the probe. `RemoteObject.content_type` is typed as `Mime` in `03-transfer-engine-spec.md` §2.2. |
+| `async-trait` | 0.1 | `async fn` in a `dyn` trait | Required, not chosen: `TransferProtocol` must be object-safe (ADR-0005 depends on swapping backends at runtime, and the simulator is one), and native `async fn` in traits is still not `dyn`-compatible. |
 
 ## 2. Trial — use in a specific, bounded place
 
@@ -110,3 +114,4 @@ and gets an ADR.
 | Date | By | Changes |
 | ---- | -- | ------- |
 | 2026-08-02 | Initial research | Baseline established. Versions verified against crates.io. |
+| 2026-08-03 | S1-T1 | Re-verified every §1 pin against crates.io before writing the workspace: `tokio` 1.53.1, `reqwest` 0.13.4, `rustls` 0.23.43, `thiserror` 2.0.19, `serde` 1.0.229, `proptest` 1.11.0, `clap` 4.6.5, `blake3` 1.8.5, `tracing` 0.1.44, `bytes` 1.12.1 — all consistent with the recorded majors, so nothing here was stale. Added `url`, `percent-encoding`, `mime` and `async-trait` to §1; none is a free choice (see the Note column), which is why they are recorded here rather than given ADRs of their own. |
