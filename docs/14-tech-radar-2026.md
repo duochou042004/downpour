@@ -36,6 +36,11 @@ here without checking it against §5 and recording it.
 | `percent-encoding` | 2.3 | Percent-decoding | Needed for `Content-Disposition` `filename*` (RFC 8187) and URL path segments. Already in the tree via `url`, so it adds nothing transitively. |
 | `mime` | 0.3 | Media types | Zero dependencies. Used for the "server sent an HTML error page" check in the probe. `RemoteObject.content_type` is typed as `Mime` in `03-transfer-engine-spec.md` §2.2. |
 | `async-trait` | 0.1 | `async fn` in a `dyn` trait | Required, not chosen: `TransferProtocol` must be object-safe (ADR-0005 depends on swapping backends at runtime, and the simulator is one), and native `async fn` in traits is still not `dyn`-compatible. |
+| `hyper-util` | 0.1 | Tokio glue for `hyper` 1.x | `hyper` 1.x deliberately ships without runtime glue; this is the official companion from the same project, and there is no way to run a `hyper` server or client on Tokio without it. |
+| `http-body-util` | 0.1 | `Body` combinators | Same: `hyper` 1.x moved `Full`, `Empty` and `BodyExt` out of the core crate. |
+
+Both `hyper-util` and `http-body-util` are currently used only by `tests/corpus` (the pathology
+server and its reference client). `downpour-http` reaches `hyper` through `reqwest`.
 
 ## 2. Trial — use in a specific, bounded place
 

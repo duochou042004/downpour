@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T13:26:00Z",
+  "updated_at": "2026-08-03T14:18:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -389,13 +389,15 @@
         {
           "id": "S1-T6",
           "title": "Pathology server: deterministic PRNG content, HTTP/1.1 and HTTP/2, and the ranges/framing/redirects behaviours",
-          "status": "in_progress",
-          "proof": "tests/corpus/tests/content_generator.rs (12 tests): the construction is pinned against an independent reimplementation of the ADR-0010 spec, anchored to the published BLAKE3 empty-input test vector, and asserted to have no zero runs (a hole would hide in one) and entropy > 7.99 bits/byte (a gzipped body could pass for a plausible length in compressible content). first_mismatch reports an exact absolute offset, verified against an injected 4 KiB hole. STILL OUTSTANDING for this task: the HTTP/1.1 and HTTP/2 servers and the ranges/framing/redirects behaviours.",
+          "status": "done",
+          "proof": "tests/corpus/tests/content_generator.rs (12 tests) and tests/corpus/tests/pathology_server.rs (29 tests), 41 total. Determinism: the server serves exactly the generator's bytes over both HTTP/1.1 and h2c, two servers with the same seed agree, and both protocols produce identical bytes. Pathologies verified against a reference client (hyper for h2, a hand-written reader for h1 - deliberately not downpour-http, which would be circular): accept-ranges-absent, accept-ranges-lies, 206-with-whole-body, shifted Content-Range, omitted Content-Range, literal malformed Content-Range, unknown total length, 416, chunked, close-delimited, wrong Content-Length, mid-body truncation, gzip-on-range, redirect chains, redirect loops, keep-alive reuse, request recording on both protocols, and an HTML error page where a binary was expected. Mutation-checked: making Lies honour ranges, ignoring truncate_body_after, and always emitting a correct Content-Range each turn red exactly the tests that claim those pathologies and no others.",
           "files": [
-            "tests/corpus/server/"
+            "tests/corpus/src/content.rs",
+            "tests/corpus/src/server.rs",
+            "tests/corpus/tests/"
           ],
           "blocked_by": "S1-T5",
-          "notes": "Content generator DONE and committed. Server NOT started. Next concrete step: hand-rolled HTTP/1.1 server over tokio TcpListener (hand-rolled because pathologies like a wrong Content-Length, no length and no chunked framing, and a mid-body close cannot be expressed through a conforming HTTP library), then HTTP/2 via hyper over cleartext h2c. Decision to record when the server lands: the corpus uses plaintext h1 and h2c rather than TLS, because docs/09 section 7 requires local offline tests and TLS would add certificate management for no S1 coverage gain; ALPN negotiation belongs to the protocols category in S5.",
+          "notes": null,
           "invariants": []
         },
         {
@@ -1196,6 +1198,27 @@
       "found_in_stage": "S1",
       "target_stage": "S2",
       "rationale": "The hazard is invisible at the point where someone will reach for #[derive(Deserialize)], so it is recorded rather than left to be rediscovered"
+    },
+    {
+      "id": "B-8",
+      "text": "The corpus serves plaintext HTTP/1.1 and h2c (prior knowledge), not TLS. docs/09 section 7 requires local offline tests and TLS would add certificate management for no S1 coverage: nothing in ranges, framing or redirects depends on it. ALPN negotiation, Alt-Svc and h2-over-TLS belong to the protocols category, so the corpus needs a TLS listener with a test-only CA by S5.",
+      "found_in_stage": "S1",
+      "target_stage": "S5",
+      "rationale": "Recorded so that 'HTTP/2 works' is not later over-read as 'HTTP/2 over TLS with ALPN works'"
+    },
+    {
+      "id": "B-9",
+      "text": "HTTP/2 framing pathologies are not expressible through the current h2c server, which goes through hyper: hyper owns h2 framing, so a wrong Content-Length or a missing terminator cannot be emitted. The Framing enum documents itself as HTTP/1.1-only. If an h2-specific framing pathology is ever needed, it requires the h2 crate directly or a hand-rolled frame writer.",
+      "found_in_stage": "S1",
+      "target_stage": "S5",
+      "rationale": "The limitation is invisible from the case side, so it is recorded rather than left to be rediscovered"
+    },
+    {
+      "id": "B-10",
+      "text": "Cross-host redirects and protocol downgrade (https->http) are not yet expressible: the server serves one origin and one protocol. The redirects category needs two servers wired together, which S1-T11 should do when it writes redirect-chain-to-other-host.",
+      "found_in_stage": "S1",
+      "target_stage": "S1",
+      "rationale": "Named in I-8's proof list, so it must be covered before S1 closes"
     }
   ],
   "session_log": [

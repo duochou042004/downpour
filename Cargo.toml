@@ -14,11 +14,15 @@ authors = ["Downpour contributors"]
 # updating that file and saying why — it is the record of what was verified when.
 [workspace.dependencies]
 blake3 = "1.8.5"
+http-body-util = "0.1.4"
+hyper = "1.11.0"
+hyper-util = "0.1.20"
 mime = "0.3.17"
 percent-encoding = "2.3.2"
 proptest = "1.11.0"
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.19"
+tokio = "1.53.1"
 # The `serde` feature is enabled per-crate, by whichever crate actually persists a URL.
 # Nothing does yet; persistence arrives with downpour-storage in S2.
 url = "2.5.8"

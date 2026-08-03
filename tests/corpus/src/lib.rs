@@ -18,3 +18,4 @@
 //! may not: a panic here fails a test, it does not take down a user's transfers.
 
 pub mod content;
+pub mod server;
