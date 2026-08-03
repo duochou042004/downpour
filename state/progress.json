@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T20:35:00Z",
+  "updated_at": "2026-08-03T20:55:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -1236,6 +1236,13 @@
       "found_in_stage": "S1",
       "target_stage": null,
       "rationale": "Named in docs/09 section 3.2's ranges description; needed before S1-C2 can honestly be met"
+    },
+    {
+      "id": "B-12",
+      "text": "Invariant coverage accounting, corrected 2026-08-03 from an over-generous 5 to 3. FULLY covered by S1 tests: I-4 (verify before rename, asserted on every corpus case), I-5 (four layers, mutation-checked), I-6 (one of eight server behaviours proves range support). PARTIALLY covered, and must not be counted until their real proof exists: I-1 (the sync is plumbed and tested, but I-1's proof is crash injection at every write boundary - S2), I-2 (the sink is append-only and refuses writes past its grant, but disjointness needs the allocator - S3), I-3 (weak-ETag classification is tested, but refusing resume on a changed validator is S2), I-8 (the redirect chain is captured and tested, but the URL-refresh flow is S8). Not affected in S1: I-7, I-9 to I-14.",
+      "found_in_stage": "S1",
+      "target_stage": null,
+      "rationale": "invariants_covered gets quoted as release evidence, so an inflated count is worse than a low one"
     }
   ],
   "session_log": [
@@ -1425,7 +1432,7 @@
     "corpus_cases_total": 30,
     "corpus_cases_passing": 30,
     "sim_seeds_fixed": 0,
-    "invariants_covered": 5,
+    "invariants_covered": 3,
     "invariants_total": 14,
     "silent_corruption_findings": 0
   }
