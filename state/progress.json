@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T20:20:00Z",
+  "updated_at": "2026-08-03T20:35:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -474,7 +474,7 @@
             "tests/corpus/cases/"
           ],
           "blocked_by": "S1-T10",
-          "notes": "29 of roughly 50 cases: ranges 11/25, framing 10/15, redirects 8/10 against docs/09 section 3.2's targets. All pass. B-10 IS NOW CLOSED: cross-host redirects work, via a second PathologyServer that the runner starts and points the chain at. Worth knowing why it took two attempts - the first version of redirect-chain-to-other-host PROVED NOTHING. With one origin serving both the redirect and the content, the chain length and the filename come out identical whether or not the chain actually leaves the origin, so a mutation that disabled the cross-origin wiring still passed. Fixed by adding expect.crosses_origin, which compares the final URL's authority against the submitted one; the same mutation now fails. Any future case whose pathology is invisible in the outcome needs the same treatment. REMAINING BLOCKER for S1-C2: backlog B-11, multipart/byteranges, which docs/09 section 3.2 names in the ranges description and the server cannot yet emit. Protocol downgrade (https to http) needs B-8's TLS listener. Everything else is case-writing against machinery that exists. S1-C2, C5 and C6 stay UNMET until the categories reach their targets.",
+          "notes": "30 of roughly 50 cases: ranges 12/25, framing 10/15, redirects 8/10 against docs/09 section 3.2's targets. All pass, all mutation-checked. BOTH SERVER-SIDE BLOCKERS ARE NOW CLOSED - B-10 (cross-host redirects, via a second PathologyServer the runner wires up) and B-11 (multipart/byteranges for a single-range request). What remains for S1-C2, C5 and C6 is case-writing only: no further server or runner work is needed for the three S1 categories except a TLS listener for protocol downgrade, which belongs to B-8/S5. READ THIS BEFORE WRITING MORE CASES: the first cross-host case proved nothing. With one origin serving both the redirect and the content, chain length and filename are identical whether or not the chain leaves the origin, so a mutation disabling the wiring still passed. Any case whose pathology is not visible in the outcome needs an expectation naming the pathology directly - that is what expect.crosses_origin is for. Mutation-check each new case by breaking the server behaviour it names and confirming the case, and only that case, goes red.",
           "invariants": [
             "I-5",
             "I-6"
@@ -1232,9 +1232,9 @@
     },
     {
       "id": "B-11",
-      "text": "The pathology server cannot emit a multipart/byteranges response (RFC 9110 section 14.6), which the ranges category needs: a server answering a single-range request with a multipart body is a real pathology and the engine must reject it rather than write the MIME boundaries into the file.",
+      "text": "CLOSED 2026-08-03: RangeBehaviour::MultipartByteranges serves a multipart/byteranges body for a single-range request, with no top-level Content-Range, and case ranges/multipart-byteranges-for-single-range asserts the engine declines to prove range support and still produces a byte-exact file. Mutation-checked.",
       "found_in_stage": "S1",
-      "target_stage": "S1",
+      "target_stage": null,
       "rationale": "Named in docs/09 section 3.2's ranges description; needed before S1-C2 can honestly be met"
     }
   ],
@@ -1402,11 +1402,28 @@
         "state/progress.json"
       ],
       "left_in_progress": "12/13 S1 tasks done; only S1-T11 is open. Exit criteria remain 3/6 (C1, C3, C4). C2, C5 and C6 are deliberately NOT marked met even though every case that exists passes: the categories are at 4/25 ranges, 5/15 framing and 2/10 redirects against docs/09 section 3.2's targets, and marking them met would tell the next session the pathology space is covered when it is not. Remaining work is writing case files against machinery that already exists, plus two server gaps: B-10 (cross-host redirects need two servers; I-8's proof list names redirect-chain-to-other-host) and B-11 (multipart/byteranges). MR !1 is open against develop."
+    },
+    {
+      "at": "2026-08-03T20:35:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "CI VERIFIED GREEN on commit 0307050: all ten GitLab jobs passed, including unit, corpus, audit and secret-scan. Earlier pipelines had been cancelled by successive pushes (interruptible: true), so this is the first confirmed full-stage pass. Then grew the corpus from 11 to 30 cases and closed both server-side blockers: B-10 cross-host redirects (a second PathologyServer, wired by the runner) and B-11 multipart/byteranges. The notable finding is a test-quality one: the first cross-host case proved nothing, because chain length and filename are identical whether or not a chain leaves its origin, and a mutation disabling the cross-origin wiring still passed. Fixed with expect.crosses_origin, which compares authorities; the mutation now fails. Recorded in S1-T11's notes as guidance for every future case.",
+      "tasks_touched": [
+        "S1-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/cases/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "12/13 tasks done, S1-T11 the only one open. Exit criteria 3/6 (C1, C3, C4). C2, C5 and C6 remain unmet by choice: 30 of ~50 cases, at ranges 12/25, framing 10/15, redirects 8/10. No further server or runner work is needed for those three categories - it is case-writing from here, and each new case must be mutation-checked. MR !1 open against develop, CI green on 0307050."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 29,
-    "corpus_cases_passing": 29,
+    "corpus_cases_total": 30,
+    "corpus_cases_passing": 30,
     "sim_seeds_fixed": 0,
     "invariants_covered": 5,
     "invariants_total": 14,

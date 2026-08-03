@@ -215,6 +215,8 @@ pub enum RangesCase {
     },
     /// `206` with `bytes first-last/*`.
     UnknownTotalLength,
+    /// `206` with a `multipart/byteranges` body in answer to a single-range request.
+    MultipartByteranges,
 }
 
 /// How the body is framed. HTTP/1.1 only (backlog B-9).
@@ -462,6 +464,7 @@ impl Case {
                     RangeBehaviour::LiteralContentRange(value.clone())
                 }
                 RangesCase::UnknownTotalLength => RangeBehaviour::UnknownTotalLength,
+                RangesCase::MultipartByteranges => RangeBehaviour::MultipartByteranges,
             },
             framing: match self.server.framing {
                 FramingCase::ContentLength => Framing::ContentLength,

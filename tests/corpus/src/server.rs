@@ -74,6 +74,13 @@ pub enum RangeBehaviour {
     /// `206` with `bytes first-last/*` — legal, but leaves the length unknown, so there is
     /// nothing to segment.
     UnknownTotalLength,
+    /// `206` with a `multipart/byteranges` body in answer to a **single**-range request.
+    ///
+    /// Legal only for a multi-range request (RFC 9110 §14.4), and some appliances and proxies emit
+    /// it regardless. There is no top-level `Content-Range`, so the engine must not treat the body
+    /// as raw bytes — writing it would put MIME boundaries and part headers into the file, at
+    /// roughly the right size.
+    MultipartByteranges,
 }
 
 /// How the response body is framed. HTTP/1.1 only; HTTP/2 has its own framing.
@@ -446,6 +453,7 @@ fn plan(spec: &ServerSpec, path: &str, range_header: Option<&str>) -> Plan {
             | RangeBehaviour::OmitContentRange
             | RangeBehaviour::LiteralContentRange(_)
             | RangeBehaviour::UnknownTotalLength
+            | RangeBehaviour::MultipartByteranges
     );
 
     let mut status = 200_u16;
@@ -474,6 +482,32 @@ fn plan(spec: &ServerSpec, path: &str, range_header: Option<&str>) -> Plan {
                     RangeBehaviour::OmitContentRange => {}
                     RangeBehaviour::LiteralContentRange(literal) => {
                         headers.push(("Content-Range".to_owned(), literal.clone()));
+                    }
+                    RangeBehaviour::MultipartByteranges => {
+                        // No top-level Content-Range: in a real multipart response the ranges are
+                        // described per part, which is exactly why a client that expects one header
+                        // and one body must refuse this rather than guess.
+                        const BOUNDARY: &str = "DOWNPOUR_BOUNDARY";
+                        headers.push((
+                            "Content-Type".to_owned(),
+                            format!("multipart/byteranges; boundary={BOUNDARY}"),
+                        ));
+                        let part = spec.content.range(first, last.saturating_add(1));
+                        let mut envelope = Vec::new();
+                        envelope.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+                        envelope.extend_from_slice(b"Content-Type: application/octet-stream\r\n");
+                        envelope.extend_from_slice(
+                            format!("Content-Range: bytes {first}-{last}/{total}\r\n\r\n")
+                                .as_bytes(),
+                        );
+                        envelope.extend_from_slice(&part);
+                        envelope.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+                        return Plan {
+                            status: 206,
+                            headers,
+                            body: None,
+                            literal_body: Some(envelope),
+                        };
                     }
                     RangeBehaviour::UnknownTotalLength => {
                         headers.push((
