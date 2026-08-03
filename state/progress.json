@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T22:30:00Z",
+  "updated_at": "2026-08-03T23:20:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -314,6 +314,26 @@
             "I-1",
             "I-4"
           ]
+        },
+        {
+          "id": "S1-C7",
+          "text": "A transient transport failure mid-body is retried and the download still completes byte-correctly; Retry-After is honoured exactly; back-off is per-origin",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-1"
+          ]
+        },
+        {
+          "id": "S1-C8",
+          "text": "The workspace compiles and its test suite passes on Windows",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-1",
+            "I-4",
+            "I-10"
+          ]
         }
       ],
       "tasks": [
@@ -523,6 +543,42 @@
           ],
           "blocked_by": null,
           "notes": "Measured the old pipeline before changing it: 1706 s = 28.4 min billed per run, which is 14 runs per 400-minute quota. Root causes, all confirmed in the config rather than guessed: (1) `cargo install` appeared 6 times and ~/.cargo/bin was NOT in cache.paths, so cargo-nextest/deny/audit were recompiled from source in every job of every run - cargo-audit alone was 370-511 s because it pulls ~300 crates including aws-lc-sys (C++/cmake) and gix; (2) four separate Rust jobs each compiled the workspace, and `unit` ran nextest --workspace while `corpus` re-ran the same corpus tests with -p downpour-corpus, 633 s of pure duplication; (3) fmt and clippy shared a cache key within one stage and clobbered each other. Comparing three consecutive pipelines proved the cache achieved nothing: unit 671/599/440 s, corpus 639/432/634 s, audit 511/501/370 s, and clippy got SLOWER at 98/116/136 s. MEASURED RESULT (GitHub Actions, cold cache, run 30826183828): 146 s total across three jobs = 2.4 min, against GitLab's 1706 s = 28.4 min. A 91 percent reduction, and that is the COLD run. Step detail confirms every diagnosis: taiki-e/install-action took 0.0 s for cargo-nextest, the whole security job including cargo-deny and cargo-audit took 23 s against 370-511 s for audit alone on GitLab, and harness fell from ~35 s across three jobs to 8 s. Real work is now clippy 43 s plus nextest 51 s. The measurement also found a design mistake of mine: rust-cache's save step took 0.0 s because I had restricted save-if to master and develop, following advice written for repositories with many concurrent branches. On a single-maintainer project where nearly every push is to a feature branch, that makes every run cold. Removed. NEXT: measure a warm run to prove the cache actually restores, and get the new Windows job green.",
+          "invariants": []
+        },
+        {
+          "id": "S1-T15",
+          "title": "Retry and back-off: the 'robust' half of the stage title is not implemented",
+          "status": "todo",
+          "proof": "Corpus cases in a new `connections`-adjacent set plus unit tests on the back-off calculator: a connection reset mid-body is retried and the download still completes byte-exactly; a 503 with Retry-After is honoured to the second and not retried early; a 429 without Retry-After backs off exponentially with jitter; 5xx is retried up to MAX_RETRIES then reported Stalled; a 4xx other than 401/403/408/410/429 is NOT retried; and back-off is per-origin, so N concurrent workers do not each retry independently against a rate-limited origin. Each case mutation-checked by disabling the retry path.",
+          "files": [],
+          "blocked_by": null,
+          "notes": "FOUND BY AUDIT 2026-08-03, and this is the largest genuine gap in S1. docs/03-transfer-engine-spec.md §7 specifies a full retry and back-off table and NONE of it is implemented - grepping crates/ for retry|backoff|jitter finds only doc comments that REFERENCE §7 while doing nothing. The stage is titled 'ROBUST single-stream HTTP/1.1 + HTTP/2 downloader'. Today a single transient connection reset fails the whole download with no attempt to recover, which is not robust by any reading, and it is the most common real-world failure a download manager exists to survive. TransferError::TruncatedBody already carries the delivered byte count precisely so a retry can resume from it, so the error taxonomy is ready and only the policy is missing. Note §9's parameters: MAX_RETRIES 5, STALL_WINDOW 30 s, back-off base 500 ms capped at 30 s, jittered.",
+          "invariants": []
+        },
+        {
+          "id": "S1-T16",
+          "title": "Verify the Windows target actually builds and passes its tests",
+          "status": "in_progress",
+          "proof": null,
+          "files": [
+            ".github/workflows/ci.yml"
+          ],
+          "blocked_by": null,
+          "notes": "FOUND BY AUDIT 2026-08-03. Downpour claims Linux AND Windows, rust-toolchain.toml has listed x86_64-pc-windows-gnu since S0, and NOTHING had ever been compiled for Windows. The cfg!(windows) branches in crates/downpour-http/src/download.rs (ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL - the ENOSPC handling I-10 rests on) had never been through a compiler, and neither had the atomic-rename or fsync paths behind I-1 and I-4. A local cross `cargo check --target x86_64-pc-windows-gnu` does pass in 25 s, but that finds none of the behavioural failures that matter on Windows: path semantics, rename-over-existing, flush behaviour, and whether the corpus server can bind and serve. A windows-latest job running the real suite is added and in flight; not done until it is green.",
+          "invariants": [
+            "I-1",
+            "I-4",
+            "I-10"
+          ]
+        },
+        {
+          "id": "S1-T17",
+          "title": "Detect an HTML error page by magic bytes, not only by Content-Type",
+          "status": "todo",
+          "proof": "A corpus case in `session` serving an HTML login page with Content-Type: application/octet-stream, asserting error_kind looks_like_error_page and that no file is created. Mutation-checked by removing the sniff.",
+          "files": [],
+          "blocked_by": null,
+          "notes": "FOUND BY AUDIT 2026-08-03. docs/03 §2.1 step 7 says the check is on 'content-type, OR magic bytes'. Only content-type is implemented (looks_like_a_web_page in h1h2.rs). A server that returns a login page with Content-Type: application/octet-stream - which happens, and is precisely the case where the user's session has expired - is not caught, so the HTML page gets written under the requested filename and the download reports success. Small fix, real hole.",
           "invariants": []
         }
       ]
@@ -1278,6 +1334,20 @@
       "found_in_stage": "S1",
       "target_stage": "S1",
       "rationale": "Losing master protection in the move would be a silent regression in the release story"
+    },
+    {
+      "id": "B-15",
+      "text": "docs/03 §2.1 step 1 specifies reading a DNS HTTPS/SVCB record's alpn parameter before connecting, to learn h3 support without an Alt-Svc round trip. Not implemented. This is a deliberate deviation, not an oversight: docs/14-tech-radar-2026.md §3 marks RFC 9460 as 'Adopt in S6', and hickory-resolver is in Trial for that stage. Recorded so the gap between §2's text and S1's scope is visible rather than looking like a miss.",
+      "found_in_stage": "S1",
+      "target_stage": "S6",
+      "rationale": "The spec section that defines S1's probe contains one step that the radar defers to S6"
+    },
+    {
+      "id": "B-16",
+      "text": "docs/03 §2.3 defines four re-probe triggers (final URL changed, worker saw a status inconsistent with recorded capabilities, resume after the freshness window, user supplied a refreshed URL). None is implemented; RemoteObject.probed_at exists to support the third. All four only become meaningful once resume (S2) and URL refresh (S8) exist, so this is scoped there rather than in S1.",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "probed_at is recorded but nothing consumes it, which would otherwise look like dead weight"
     }
   ],
   "session_log": [
