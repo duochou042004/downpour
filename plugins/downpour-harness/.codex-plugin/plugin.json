@@ -1,0 +1,34 @@
+{
+  "name": "downpour-harness",
+  "version": "0.1.0",
+  "description": "The Downpour operating harness: the orient/prove/record loop, the stage gates, and the guardrail hooks that keep state/progress.json honest.",
+  "author": {
+    "name": "Downpour maintainers"
+  },
+  "repository": "https://gitlab.com/duochou042004/downpour",
+  "license": "Apache-2.0",
+  "keywords": [
+    "harness",
+    "progress",
+    "gates",
+    "invariants",
+    "downpour"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Downpour · Harness",
+    "shortDescription": "Progress gates and the working loop for Downpour",
+    "longDescription": "Loads the five core Downpour skills (context-brief, progress-update, invariant-check, stage-gate, adr-new) and installs the guardrail hooks: a session brief on start, progress.json validation on edit, and a Stop gate that blocks a turn which changed source without recording it.",
+    "developerName": "Downpour maintainers",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Give me the Downpour context brief.",
+      "Run the stage gate for the current stage.",
+      "Update progress.json for the work I just did."
+    ]
+  }
+}

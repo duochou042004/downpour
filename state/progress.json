@@ -1,0 +1,1043 @@
+{
+  "$schema": "./progress.schema.json",
+  "spec_version": "1.0.0",
+  "project": "downpour",
+  "updated_at": "2026-08-03T09:56:15Z",
+  "updated_by": "claude-code",
+  "current_stage": "S0",
+  "stages": [
+    {
+      "id": "S0",
+      "name": "Foundations: specs, ADRs, agent harness, CI skeleton",
+      "status": "active",
+      "started_at": "2026-08-02T00:00:00Z",
+      "completed_at": null,
+      "spec": "docs/12-roadmap-stages.md",
+      "exit_criteria": [
+        {
+          "id": "S0-C1",
+          "text": "Every ADR is accepted or explicitly deferred with a named reversal trigger",
+          "met": true,
+          "evidence": "docs/adr/0001..0009 all carry Status and Reversal trigger sections",
+          "invariants": []
+        },
+        {
+          "id": "S0-C2",
+          "text": "node scripts/check-progress.mjs passes against this file",
+          "met": true,
+          "evidence": "node scripts/check-progress.mjs exits 0; verified 2026-08-02",
+          "invariants": []
+        },
+        {
+          "id": "S0-C3",
+          "text": "bash scripts/doctor.sh runs clean on the development machine",
+          "met": true,
+          "evidence": "bash scripts/doctor.sh exits 0; rustc/cargo 1.97.1 + all required cargo tools present",
+          "invariants": []
+        },
+        {
+          "id": "S0-C4",
+          "text": "CLAUDE.md and AGENTS.md agree with each other and with docs/",
+          "met": true,
+          "evidence": "Both written in the same change; rules sections mirrored",
+          "invariants": []
+        },
+        {
+          "id": "S0-C5",
+          "text": "A fresh agent session can read CLAUDE.md then HARNESS.md then progress.json and correctly state what to work on next, without asking",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-C6",
+          "text": "Repository skeleton complete: LICENSE, SECURITY.md, CONTRIBUTING.md, CI workflow",
+          "met": true,
+          "evidence": "LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md, .gitlab-ci.yml all present at root",
+          "invariants": []
+        }
+      ],
+      "tasks": [
+        {
+          "id": "S0-T1",
+          "title": "Write the docs/ specification set",
+          "status": "done",
+          "proof": "docs/00 through docs/14 exist and are cross-referenced by docs/agent/CONTEXT-MAP.md",
+          "files": [
+            "docs/"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T2",
+          "title": "Write ADRs 0001-0009",
+          "status": "done",
+          "proof": "docs/adr/README.md index lists all nine with matching files",
+          "files": [
+            "docs/adr/"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T3",
+          "title": "Write the agent harness (HARNESS, WORKFLOW, INVARIANTS, DoD, CONTEXT-MAP, CODEX-NOTES)",
+          "status": "done",
+          "proof": "docs/agent/ complete; referenced from CLAUDE.md and AGENTS.md",
+          "files": [
+            "docs/agent/"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T4",
+          "title": "Create progress.json, its schema, and the validator",
+          "status": "done",
+          "proof": "node scripts/check-progress.mjs exits 0 against state/progress.json",
+          "files": [
+            "state/",
+            "scripts/check-progress.mjs"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T5",
+          "title": "Configure Claude Code: settings, rules, always-on skills, hooks",
+          "status": "done",
+          "proof": ".claude/ populated; hooks referenced from .claude/settings.json",
+          "files": [
+            ".claude/"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T6",
+          "title": "Configure Codex: .codex/config.toml and CODEX-NOTES",
+          "status": "done",
+          "proof": ".codex/config.toml exists; docs/agent/CODEX-NOTES.md documents the divergences",
+          "files": [
+            ".codex/"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T7",
+          "title": "Build the in-repo plugin marketplace",
+          "status": "done",
+          "proof": "plugins/.claude-plugin/marketplace.json validates; three plugins present",
+          "files": [
+            "plugins/"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T8",
+          "title": "Write scripts/doctor.sh environment check",
+          "status": "done",
+          "proof": "bash scripts/doctor.sh exits 0 with all required tools present",
+          "files": [
+            "scripts/doctor.sh"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T9",
+          "title": "Install the missing toolchain on the development machine",
+          "status": "done",
+          "proof": "bash scripts/doctor.sh exits 0 with no required items missing",
+          "files": [],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T10",
+          "title": "Add LICENSE (Apache-2.0), SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md",
+          "status": "done",
+          "proof": "LICENSE (Apache-2.0), SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md exist and are linked from README.md; scripts/check-links.sh passes",
+          "files": [],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T11",
+          "title": "Add the CI workflow skeleton (fmt, clippy, test, check-progress)",
+          "status": "done",
+          "proof": ".gitlab-ci.yml present; harness stage (progress, agent-assets, docs-links) runs on every commit; rust jobs guarded on Cargo.toml existing",
+          "files": [],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T12",
+          "title": "git init and the first commit",
+          "status": "in_progress",
+          "proof": "git log shows an initial commit on master and develop pushed to GitLab",
+          "files": [],
+          "blocked_by": null,
+          "notes": "Repo initialised, hooks path set, first commit pending in this session.",
+          "invariants": []
+        },
+        {
+          "id": "S0-T13",
+          "title": "Complete the Codex agent surface (marketplace, skills, verified capabilities)",
+          "status": "done",
+          "proof": "codex debug prompt-input lists all 9 Downpour skills; codex plugin list shows 4 plugins from the downpour-tools marketplace",
+          "files": [
+            ".agents/plugins/marketplace.json",
+            "plugins/downpour-harness/",
+            "docs/agent/CODEX-NOTES.md"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T14",
+          "title": "Agent-agnostic enforcement via git hooks",
+          "status": "done",
+          "proof": ".githooks/pre-commit blocked its own first run on a real shellcheck finding in scripts/check-links.sh",
+          "files": [
+            ".githooks/pre-commit",
+            "justfile"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T15",
+          "title": "Single-source agent assets with drift detection",
+          "status": "done",
+          "proof": "scripts/sync-agent-assets.sh --check exits 0; enforced by pre-commit and the agent-assets CI job",
+          "files": [
+            "scripts/sync-agent-assets.sh"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S0-T16",
+          "title": "README with badges, mermaid diagrams and the scorecard",
+          "status": "done",
+          "proof": "scripts/check-links.sh passes over 115 relative links including every README target",
+          "files": [
+            "README.md"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        }
+      ]
+    },
+    {
+      "id": "S1",
+      "name": "Robust single-stream HTTP/1.1 + HTTP/2 downloader",
+      "status": "planned",
+      "started_at": null,
+      "completed_at": null,
+      "spec": "docs/03-transfer-engine-spec.md",
+      "exit_criteria": [
+        {
+          "id": "S1-C1",
+          "text": "Downloads a 1 GB file correctly over HTTP/1.1 and HTTP/2",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-C2",
+          "text": "The capability probe correctly classifies range support on every 'ranges' corpus case",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-6"
+          ]
+        },
+        {
+          "id": "S1-C3",
+          "text": "Filename sanitisation passes its property tests including path-traversal cases",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-C4",
+          "text": "Never writes a body received with an unexpected Content-Encoding",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-5"
+          ]
+        },
+        {
+          "id": "S1-C5",
+          "text": "'redirects' and 'framing' corpus categories pass",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-C6",
+          "text": "Zero silent corruption across the S1 corpus subset",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-1",
+            "I-4"
+          ]
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "S2",
+      "name": "Range, resume, validators, crash-safe storage",
+      "status": "planned",
+      "started_at": null,
+      "completed_at": null,
+      "spec": "docs/04-storage-and-recovery-spec.md",
+      "exit_criteria": [
+        {
+          "id": "S2-C1",
+          "text": "Crash injection at every write boundary yields a byte-correct file after resume",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-1"
+          ]
+        },
+        {
+          "id": "S2-C2",
+          "text": "Journal replay never panics under proptest truncation and bit-flip",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-9"
+          ]
+        },
+        {
+          "id": "S2-C3",
+          "text": "Interval map property tests pass over 10000 generated operation sequences",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-2"
+          ]
+        },
+        {
+          "id": "S2-C4",
+          "text": "Resume refuses on a changed strong validator and never splices",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-3"
+          ]
+        },
+        {
+          "id": "S2-C5",
+          "text": "disk-full-at-97pct leaves a resumable state with no truncation",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-10"
+          ]
+        },
+        {
+          "id": "S2-C6",
+          "text": "The final rename happens only after full verification",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-4"
+          ]
+        },
+        {
+          "id": "S2-C7",
+          "text": "Zero silent corruption across the whole corpus so far",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-1"
+          ]
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "S3",
+      "name": "Dynamic segmentation over HTTP/1.1",
+      "status": "planned",
+      "started_at": null,
+      "completed_at": null,
+      "spec": "docs/03-transfer-engine-spec.md",
+      "exit_criteria": [
+        {
+          "id": "S3-C1",
+          "text": "N connections give measurably higher throughput on an uncapped server",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S3-C2",
+          "text": "No overlapping writes under worker-death and interleaving-fuzz scenarios",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-2"
+          ]
+        },
+        {
+          "id": "S3-C3",
+          "text": "Connections are reused after a segment completes, verified by handshake count",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S3-C4",
+          "text": "Falls back cleanly to a single stream when range support is absent",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-6"
+          ]
+        },
+        {
+          "id": "S3-C5",
+          "text": "Zero silent corruption",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-1"
+          ]
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "S4",
+      "name": "Adaptive concurrency and ETA-aware work stealing",
+      "status": "planned",
+      "started_at": null,
+      "completed_at": null,
+      "spec": "docs/03-transfer-engine-spec.md",
+      "exit_criteria": [
+        {
+          "id": "S4-C1",
+          "text": "The controller settles at or below the true optimum on every capped scenario",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-7"
+          ]
+        },
+        {
+          "id": "S4-C2",
+          "text": "Never slower than a single connection would have been",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-7"
+          ]
+        },
+        {
+          "id": "S4-C3",
+          "text": "ETA splitting measurably beats naive halving on the slow-worker scenario",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S4-C4",
+          "text": "Back-off honours Retry-After exactly with no self-inflicted rate limiting",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-7"
+          ]
+        },
+        {
+          "id": "S4-C5",
+          "text": "dp explain output is sufficient to diagnose a bad decision from the log alone",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S4-C6",
+          "text": "Zero silent corruption",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-1"
+          ]
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "S5",
+      "name": "HTTP/2 stream parallelism",
+      "status": "planned",
+      "started_at": null,
+      "completed_at": null,
+      "spec": "docs/05-protocol-matrix.md",
+      "exit_criteria": [
+        {
+          "id": "S5-C1",
+          "text": "Matches or beats the HTTP/1.1 path on an h2 origin with one handshake instead of N",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S5-C2",
+          "text": "Detects a per-connection bandwidth cap and escalates to a second connection",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-7"
+          ]
+        },
+        {
+          "id": "S5-C3",
+          "text": "Never exceeds the advertised SETTINGS_MAX_CONCURRENT_STREAMS",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S5-C4",
+          "text": "Flow-control tuning demonstrably improves throughput on a high-BDP path, documented before and after",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "S6",
+      "name": "HTTP/3 and QUIC research backend",
+      "status": "planned",
+      "started_at": null,
+      "completed_at": null,
+      "spec": "docs/05-protocol-matrix.md",
+      "exit_criteria": [
+        {
+          "id": "S6-C1",
+          "text": "Downloads correctly over HTTP/3 against the corpus server",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S6-C2",
+          "text": "Falls back within H3_RACE_TIMEOUT when UDP is blocked or throttled",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S6-C3",
+          "text": "Beats HTTP/2 on the slow-lossy benchmark condition",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S6-C4",
+          "text": "Disabling the h3 feature flag removes it entirely with zero effect on the scheduler",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "S7",
+      "name": "Browser extension and native messaging",
+      "status": "planned",
+      "started_at": null,
+      "completed_at": null,
+      "spec": "docs/06-browser-integration-spec.md",
+      "exit_criteria": [
+        {
+          "id": "S7-C1",
+          "text": "Capture works on current Chrome, Edge and Firefox",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S7-C2",
+          "text": "A download that fails with a bare URL succeeds with captured context",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-8"
+          ]
+        },
+        {
+          "id": "S7-C3",
+          "text": "The native host rejects every malformed frame in the fuzz corpus without crash or over-allocation",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-13"
+          ]
+        },
+        {
+          "id": "S7-C4",
+          "text": "Cookies never reach SQLite or any log",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-14"
+          ]
+        },
+        {
+          "id": "S7-C5",
+          "text": "Default capture rules do not break ordinary browsing, verified on a manual site list",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "S8",
+      "name": "Signed URLs, authentication, proxies",
+      "status": "planned",
+      "started_at": null,
+      "completed_at": null,
+      "spec": "docs/03-transfer-engine-spec.md",
+      "exit_criteria": [
+        {
+          "id": "S8-C1",
+          "text": "An expired signed URL is refreshed and the transfer continues from existing bytes",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-8"
+          ]
+        },
+        {
+          "id": "S8-C2",
+          "text": "The compatibility check refuses an incompatible representation every time",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-3"
+          ]
+        },
+        {
+          "id": "S8-C3",
+          "text": "Proxy corpus cases pass including proxies that break range support",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-6"
+          ]
+        },
+        {
+          "id": "S8-C4",
+          "text": "Credentials live in the keyring; a trace-level log grep finds nothing",
+          "met": false,
+          "evidence": null,
+          "invariants": [
+            "I-14"
+          ]
+        },
+        {
+          "id": "S8-C5",
+          "text": "NTLM/Kerberos either supported or documented as a limitation with an ADR on the curl contingency",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "S9",
+      "name": "HLS and DASH media",
+      "status": "planned",
+      "started_at": null,
+      "completed_at": null,
+      "spec": "docs/07-media-spec.md",
+      "exit_criteria": [
+        {
+          "id": "S9-C1",
+          "text": "Non-DRM HLS and DASH assemble byte-identically to a reference ffmpeg run",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S9-C2",
+          "text": "Every DRM and live case is rejected, with a test asserting the rejection",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S9-C3",
+          "text": "Adversarial segment completion orders produce identical output",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S9-C4",
+          "text": "Works without FFmpeg for single-container cases and reports clearly when FFmpeg is required",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "S10",
+      "name": "Desktop UI, queue scheduler, packaging, release",
+      "status": "planned",
+      "started_at": null,
+      "completed_at": null,
+      "spec": "docs/08-ipc-and-ui-spec.md",
+      "exit_criteria": [
+        {
+          "id": "S10-C1",
+          "text": "Every scorecard row scored with reproducible evidence",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S10-C2",
+          "text": "Resource targets met and measured: idle RSS under 60 MB, 20-download queue under 250 MB",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S10-C3",
+          "text": "Clean-machine install verified per priority-1 target",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S10-C4",
+          "text": "The full release checklist in docs/11-packaging-release.md is green",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        },
+        {
+          "id": "S10-C5",
+          "text": "Full keyboard navigation and screen-reader labels on every screen",
+          "met": false,
+          "evidence": null,
+          "invariants": []
+        }
+      ],
+      "tasks": []
+    }
+  ],
+  "scorecard": {
+    "rows": [
+      {
+        "id": 1,
+        "category": "Correctness - no corrupted files",
+        "weight": 25,
+        "score": 0,
+        "evidence": null
+      },
+      {
+        "id": 2,
+        "category": "Resume, crash recovery, URL refresh",
+        "weight": 20,
+        "score": 0,
+        "evidence": null
+      },
+      {
+        "id": 3,
+        "category": "Speed and bandwidth utilisation",
+        "weight": 20,
+        "score": 0,
+        "evidence": null
+      },
+      {
+        "id": 4,
+        "category": "Server, proxy and auth compatibility",
+        "weight": 15,
+        "score": 0,
+        "evidence": null
+      },
+      {
+        "id": 5,
+        "category": "Browser integration and media detection",
+        "weight": 15,
+        "score": 0,
+        "evidence": null
+      },
+      {
+        "id": 6,
+        "category": "Resource use, UX, packaging",
+        "weight": 5,
+        "score": 0,
+        "evidence": null
+      }
+    ],
+    "total_estimate": 0,
+    "assessed_at": "2026-08-02T00:00:00Z",
+    "blocking_findings": []
+  },
+  "adr_index": [
+    {
+      "id": "ADR-0001",
+      "title": "Rust as the implementation language",
+      "status": "accepted",
+      "superseded_by": null,
+      "stage": "S0"
+    },
+    {
+      "id": "ADR-0002",
+      "title": "GUI toolkit choice deferred to Stage 10",
+      "status": "accepted",
+      "superseded_by": null,
+      "stage": "S0"
+    },
+    {
+      "id": "ADR-0003",
+      "title": "Daemon-first architecture with a public IPC contract",
+      "status": "accepted",
+      "superseded_by": null,
+      "stage": "S0"
+    },
+    {
+      "id": "ADR-0004",
+      "title": "Append-only journal for progress, SQLite for metadata",
+      "status": "accepted",
+      "superseded_by": null,
+      "stage": "S0"
+    },
+    {
+      "id": "ADR-0005",
+      "title": "HTTP backends behind a TransferProtocol trait",
+      "status": "accepted",
+      "superseded_by": null,
+      "stage": "S0"
+    },
+    {
+      "id": "ADR-0006",
+      "title": "Apache-2.0 licence",
+      "status": "accepted",
+      "superseded_by": null,
+      "stage": "S0"
+    },
+    {
+      "id": "ADR-0007",
+      "title": "The compatibility corpus is the primary asset",
+      "status": "accepted",
+      "superseded_by": null,
+      "stage": "S0"
+    },
+    {
+      "id": "ADR-0008",
+      "title": "No DRM circumvention, no TLS interception",
+      "status": "accepted",
+      "superseded_by": null,
+      "stage": "S0"
+    },
+    {
+      "id": "ADR-0009",
+      "title": "Adaptive concurrency instead of a fixed connection count",
+      "status": "accepted",
+      "superseded_by": null,
+      "stage": "S0"
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-1",
+      "text": "Scope sprawl: the project fails by growing sideways rather than by being technically hard",
+      "likelihood": "high",
+      "impact": "critical",
+      "mitigation": "Stage gates as hard walls; backlog instead of implementation; non-goals listed explicitly in docs/00",
+      "status": "open"
+    },
+    {
+      "id": "R-2",
+      "text": "Silent corruption ships undetected because it is invisible in casual testing",
+      "likelihood": "medium",
+      "impact": "critical",
+      "mitigation": "Deterministic content generator gives ground truth per byte; crash injection at every write boundary; scorecard row 1 is a release blocker",
+      "status": "open"
+    },
+    {
+      "id": "R-3",
+      "text": "The Rust HTTP/3 stack stays experimental and cannot be shipped",
+      "likelihood": "medium",
+      "impact": "low",
+      "mitigation": "TransferProtocol trait keeps h3 quarantined behind a feature flag; S6 may legitimately end with 'works, stays behind the flag'",
+      "status": "open"
+    },
+    {
+      "id": "R-4",
+      "text": "Browser extension store review rejects or delays the extension over native messaging and host permissions",
+      "likelihood": "medium",
+      "impact": "high",
+      "mitigation": "Minimal permissions with written justification; no remote code; reproducible build from source; version skew handled by the IPC handshake",
+      "status": "open"
+    },
+    {
+      "id": "R-5",
+      "text": "Single-maintainer bandwidth: ten stages is a long road",
+      "likelihood": "high",
+      "impact": "high",
+      "mitigation": "Each stage produces something independently useful; the CLI is a shippable product from S3 onward",
+      "status": "open"
+    },
+    {
+      "id": "R-6",
+      "text": "AI agents produce plausible code that does not compose into a system",
+      "likelihood": "high",
+      "impact": "high",
+      "mitigation": "The harness: PROVE-before-BUILD, Gate A proof fields, Gate D corpus rule, machine-validated progress file",
+      "status": "open"
+    },
+    {
+      "id": "R-7",
+      "text": "The compatibility corpus is not maintained and the strategy quietly fails",
+      "likelihood": "medium",
+      "impact": "critical",
+      "mitigation": "Gate D is non-waivable: no fix lands without its case; corpus metrics tracked in this file",
+      "status": "open"
+    },
+    {
+      "id": "R-8",
+      "text": "Adaptive concurrency oscillates or underperforms a well-chosen fixed count",
+      "likelihood": "medium",
+      "impact": "medium",
+      "mitigation": "Dedicated simulation scenarios; ADR-0009 names the fallback (fixed count with learned per-origin defaults)",
+      "status": "open"
+    }
+  ],
+  "backlog": [
+    {
+      "id": "B-1",
+      "text": "Re-check `codex features list` after each Codex upgrade; if plugin_hooks returns to stable, move the guardrails into the plugin and drop the git-hook reliance for Codex",
+      "found_in_stage": "S0",
+      "target_stage": null,
+      "rationale": "plugin_hooks was removed in 0.146; the surface is moving"
+    },
+    {
+      "id": "B-2",
+      "text": "Add deny.toml encoding the Apache-2.0-compatible licence policy from ADR-0006",
+      "found_in_stage": "S0",
+      "target_stage": "S1",
+      "rationale": "The CI job is already written and guarded on deny.toml existing"
+    },
+    {
+      "id": "B-3",
+      "text": "Add a GitLab scheduled pipeline for the nightly simulation seed sweep",
+      "found_in_stage": "S0",
+      "target_stage": "S2",
+      "rationale": "The simulation-nightly job exists but needs a schedule to fire"
+    }
+  ],
+  "session_log": [
+    {
+      "at": "2026-08-02T15:02:40Z",
+      "agent": "claude-code",
+      "stage": "S0",
+      "summary": "Researched IDM's published segmentation, the 2026 Rust ecosystem, Claude Code plugin/skill/hook schemas and AGENTS.md. Wrote the full docs/ specification set, ADRs 0001-0009, the agent harness, this progress file with its schema and validator, .claude and .codex configuration, and the in-repo plugin marketplace. No product code written.",
+      "tasks_touched": [
+        "S0-T1",
+        "S0-T2",
+        "S0-T3",
+        "S0-T4",
+        "S0-T5",
+        "S0-T6",
+        "S0-T7",
+        "S0-T8"
+      ],
+      "files_touched": [
+        "README.md",
+        "CLAUDE.md",
+        "AGENTS.md",
+        "docs/",
+        "state/",
+        "scripts/",
+        ".claude/",
+        ".codex/",
+        "plugins/"
+      ],
+      "left_in_progress": "S0-T4: the validator needs its first successful run. S0-T9 through S0-T12 (toolchain install, licence files, CI, git init) are the remaining S0 work."
+    },
+    {
+      "at": "2026-08-03T09:56:15Z",
+      "agent": "claude-code",
+      "stage": "S0",
+      "summary": "Completed the Codex agent surface: verified empirically that Codex 0.146 loads all 9 project skills via a repo marketplace at .agents/plugins/marketplace.json, and that plugin_hooks is REMOVED \u2014 so enforcement moved to .githooks/pre-commit, which is agent-agnostic. Added a sync script so both agents read one source with CI drift detection. Fixed doctor.sh to find cargo in non-interactive shells. Added LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md, .gitignore, .gitattributes, rust-toolchain.toml, justfile, GitLab CI, and a link checker. Rewrote README with badges and mermaid. Reconciled docs from GitHub to GitLab.",
+      "tasks_touched": [
+        "S0-T9",
+        "S0-T10",
+        "S0-T11",
+        "S0-T12",
+        "S0-T13",
+        "S0-T14",
+        "S0-T15",
+        "S0-T16"
+      ],
+      "files_touched": [
+        "README.md",
+        "LICENSE",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "CODE_OF_CONDUCT.md",
+        "CHANGELOG.md",
+        ".gitlab-ci.yml",
+        ".githooks/",
+        ".agents/",
+        "justfile",
+        "scripts/",
+        "plugins/",
+        "docs/agent/CODEX-NOTES.md"
+      ],
+      "left_in_progress": "S0-T12: pushing master and develop to GitLab. After that S0 has only S0-C5 open \u2014 the fresh-session orientation test, which is verified by the next session actually doing it."
+    }
+  ],
+  "metrics": {
+    "corpus_cases_total": 0,
+    "corpus_cases_passing": 0,
+    "sim_seeds_fixed": 0,
+    "invariants_covered": 0,
+    "invariants_total": 14,
+    "silent_corruption_findings": 0
+  }
+}

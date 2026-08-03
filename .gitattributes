@@ -1,0 +1,15 @@
+* text=auto eol=lf
+*.sh   text eol=lf
+*.mjs  text eol=lf
+*.rs   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+
+# Generated: keep it out of diff noise but still reviewable.
+plugins/downpour-harness/skills/**  linguist-generated=true
+plugins/downpour-harness/hooks/scripts/**  linguist-generated=true
+
+# Binary
+*.png binary
+*.ico binary

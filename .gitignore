@@ -1,0 +1,42 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Node / extension
+node_modules/
+dist/
+.pnpm-store/
+
+# Downpour runtime artefacts — never commit user data
+*.dppart
+*.dpj
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+/state/*.local.json
+
+# Test and benchmark output
+/tests/corpus/out/
+/bench-results/
+/spikes/*/target/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+!.vscode/extensions.json
+
+# Secrets — belt and braces; docs/10 forbids these in the repo entirely
+.env
+.env.*
+*.pem
+*.key
+!tests/**/testonly-*.pem
+!tests/**/testonly-*.key
+
+# Agent local state
+.claude/settings.local.json
+.codex/state/

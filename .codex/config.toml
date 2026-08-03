@@ -1,0 +1,43 @@
+# Codex CLI project configuration for Downpour.
+#
+# Codex reads ~/.codex/config.toml globally and .codex/config.toml per project
+# (for trusted projects). See docs/agent/CODEX-NOTES.md for the full picture,
+# including what Codex does NOT get that Claude Code does.
+#
+# The important divergence: Codex has no hooks. The progress-file gate that
+# Claude Code enforces automatically must be run manually here:
+#
+#     node scripts/check-progress.mjs
+#
+# Run it before finishing every session. If a Codex session ends without a
+# session_log entry, the next session — of either agent — is flying blind.
+
+# Ask before acting outside the obviously-safe set. This project does real file
+# I/O and real network requests; blanket auto-approval on a download manager is
+# a bad default.
+approval_policy = "on-request"
+
+# Codex may write inside the repository, not outside it.
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+# Needed to fetch crates and to run the local corpus server.
+# Downpour's tests never reach a third-party server (docs/09 §7), so this is for
+# the toolchain, not for the tests.
+network_access = true
+
+# The corpus server and the simulation suite are entirely local and work in a
+# cloud or remote Codex environment. Anything needing a real browser or a display
+# server (Stage 7 end-to-end tests, Stage 10 GUI) belongs to a local session.
+
+[shell_environment_policy]
+# Do not leak the developer's environment into tool calls.
+inherit = "core"
+
+# No MCP servers are required by this project. If a stage adds one — for example a
+# local server that queries the compatibility corpus — declare it here and record
+# an ADR, because it becomes part of how the project is built.
+#
+# [mcp_servers.corpus]
+# command = "cargo"
+# args = ["run", "-p", "downpour-corpus-mcp"]

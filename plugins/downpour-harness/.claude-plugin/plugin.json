@@ -1,0 +1,12 @@
+{
+  "name": "downpour-harness",
+  "displayName": "Downpour · Harness",
+  "version": "0.1.0",
+  "description": "The Downpour operating harness: the orient/prove/record loop, the stage gates, and the guardrail hooks that keep state/progress.json honest.",
+  "author": { "name": "Downpour maintainers" },
+  "repository": "https://gitlab.com/duochou042004/downpour",
+  "license": "Apache-2.0",
+  "keywords": ["harness", "progress", "gates", "invariants"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

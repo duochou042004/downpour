@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gitlab.com/duochou042004/downpour/-/raw/master/state/progress.schema.json",
+  "title": "Downpour project progress",
+  "description": "The single source of truth for project status. Agents MUST update this in the same change that alters project status. Validated by scripts/check-progress.mjs.",
+  "type": "object",
+  "required": [
+    "spec_version",
+    "project",
+    "updated_at",
+    "updated_by",
+    "current_stage",
+    "stages",
+    "scorecard",
+    "adr_index",
+    "risks",
+    "backlog",
+    "session_log"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "spec_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Version of this progress-file format. Bump on breaking schema change."
+    },
+    "project": { "type": "string", "const": "downpour" },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC. Must be updated on every write."
+    },
+    "updated_by": {
+      "type": "string",
+      "enum": ["claude-code", "codex", "human", "ci", "other-agent"]
+    },
+    "current_stage": {
+      "type": "string",
+      "pattern": "^S([0-9]|10)$",
+      "description": "Only a human may change this. Agents propose via /stage-gate."
+    },
+    "stages": {
+      "type": "array",
+      "minItems": 11,
+      "items": { "$ref": "#/$defs/stage" }
+    },
+    "scorecard": { "$ref": "#/$defs/scorecard" },
+    "adr_index": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/adr" }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/risk" }
+    },
+    "backlog": {
+      "type": "array",
+      "description": "Out-of-scope work found during a task. Recorded, not implemented.",
+      "items": { "$ref": "#/$defs/backlogItem" }
+    },
+    "session_log": {
+      "type": "array",
+      "description": "Append-only. Never rewrite history to look tidier.",
+      "items": { "$ref": "#/$defs/sessionEntry" }
+    },
+    "metrics": { "$ref": "#/$defs/metrics" }
+  },
+  "$defs": {
+    "stage": {
+      "type": "object",
+      "required": ["id", "name", "status", "exit_criteria", "tasks"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^S([0-9]|10)$" },
+        "name": { "type": "string", "minLength": 3 },
+        "status": {
+          "type": "string",
+          "enum": ["planned", "active", "gate-review", "complete", "blocked"]
+        },
+        "started_at": { "type": ["string", "null"], "format": "date-time" },
+        "completed_at": { "type": ["string", "null"], "format": "date-time" },
+        "spec": {
+          "type": "string",
+          "description": "Primary normative document for this stage."
+        },
+        "exit_criteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/criterion" }
+        },
+        "tasks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/task" }
+        }
+      }
+    },
+    "criterion": {
+      "type": "object",
+      "required": ["id", "text", "met"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^S([0-9]|10)-C\\d+$" },
+        "text": { "type": "string", "minLength": 10 },
+        "met": {
+          "type": "boolean",
+          "description": "Partially met is NOT met. There is no amber."
+        },
+        "evidence": {
+          "type": ["string", "null"],
+          "description": "Reproducible by someone else: a test name, a corpus case id, a benchmark command. Required when met is true."
+        },
+        "invariants": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^I-\\d+$" }
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "title", "status", "proof"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^S([0-9]|10)-T\\d+$" },
+        "title": { "type": "string", "minLength": 5 },
+        "status": {
+          "type": "string",
+          "enum": ["todo", "in_progress", "blocked", "done", "dropped"]
+        },
+        "proof": {
+          "type": ["string", "null"],
+          "description": "The test that demonstrates this task. A task cannot be 'done' with proof: null."
+        },
+        "files": { "type": "array", "items": { "type": "string" } },
+        "blocked_by": { "type": ["string", "null"] },
+        "notes": {
+          "type": ["string", "null"],
+          "description": "For in_progress: exactly where you stopped and what the next concrete step is."
+        },
+        "invariants": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^I-\\d+$" }
+        }
+      }
+    },
+    "scorecard": {
+      "type": "object",
+      "required": ["rows", "total_estimate", "assessed_at"],
+      "additionalProperties": false,
+      "properties": {
+        "rows": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "required": ["id", "category", "weight", "score", "evidence"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "integer", "minimum": 1, "maximum": 6 },
+              "category": { "type": "string" },
+              "weight": { "type": "number", "minimum": 0, "maximum": 100 },
+              "score": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Percent of the weight achieved. No evidence means zero, not 'assumed fine'."
+              },
+              "evidence": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "total_estimate": { "type": "number", "minimum": 0, "maximum": 100 },
+        "assessed_at": { "type": "string", "format": "date-time" },
+        "blocking_findings": {
+          "type": "array",
+          "description": "Any silent-corruption finding lands here and blocks release outright.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "adr": {
+      "type": "object",
+      "required": ["id", "title", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^ADR-\\d{4}$" },
+        "title": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["proposed", "accepted", "deferred", "superseded", "rejected"]
+        },
+        "superseded_by": { "type": ["string", "null"] },
+        "stage": { "type": "string" }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "required": ["id", "text", "likelihood", "impact", "mitigation"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^R-\\d+$" },
+        "text": { "type": "string" },
+        "likelihood": { "type": "string", "enum": ["low", "medium", "high"] },
+        "impact": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "mitigation": { "type": "string" },
+        "status": { "type": "string", "enum": ["open", "mitigated", "accepted", "closed"] }
+      }
+    },
+    "backlogItem": {
+      "type": "object",
+      "required": ["id", "text", "found_in_stage"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^B-\\d+$" },
+        "text": { "type": "string" },
+        "found_in_stage": { "type": "string" },
+        "target_stage": { "type": ["string", "null"] },
+        "rationale": { "type": ["string", "null"] }
+      }
+    },
+    "sessionEntry": {
+      "type": "object",
+      "required": ["at", "agent", "stage", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "at": { "type": "string", "format": "date-time" },
+        "agent": {
+          "type": "string",
+          "enum": ["claude-code", "codex", "human", "ci", "other-agent"]
+        },
+        "stage": { "type": "string" },
+        "summary": { "type": "string", "minLength": 10 },
+        "tasks_touched": { "type": "array", "items": { "type": "string" } },
+        "files_touched": { "type": "array", "items": { "type": "string" } },
+        "left_in_progress": { "type": ["string", "null"] }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "corpus_cases_total": { "type": "integer", "minimum": 0 },
+        "corpus_cases_passing": { "type": "integer", "minimum": 0 },
+        "sim_seeds_fixed": { "type": "integer", "minimum": 0 },
+        "invariants_covered": { "type": "integer", "minimum": 0 },
+        "invariants_total": { "type": "integer", "minimum": 0 },
+        "silent_corruption_findings": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Must be 0 to release. Any non-zero value is a release blocker."
+        }
+      }
+    }
+  }
+}

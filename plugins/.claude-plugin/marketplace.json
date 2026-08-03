@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-marketplace.json",
+  "name": "downpour-tools",
+  "description": "Specialist toolkits for building Downpour. Install the one the current stage needs; the always-on project skills live in .claude/skills and load automatically.",
+  "version": "0.1.0",
+  "owner": {
+    "name": "Downpour maintainers",
+    "url": "https://gitlab.com/duochou042004/downpour"
+  },
+  "metadata": {
+    "pluginRoot": "."
+  },
+  "plugins": [
+    {
+      "name": "downpour-harness",
+      "displayName": "Downpour · Harness",
+      "source": "./downpour-harness",
+      "description": "The Downpour operating harness: the orient/prove/record loop, the stage gates, and the guardrail hooks that keep state/progress.json honest.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "category": "engineering",
+      "tags": [
+        "harness",
+        "progress",
+        "gates",
+        "invariants"
+      ],
+      "keywords": [
+        "harness",
+        "progress",
+        "stage-gate"
+      ],
+      "author": {
+        "name": "Downpour maintainers"
+      }
+    },
+    {
+      "name": "downpour-protocol",
+      "displayName": "Downpour · Protocol",
+      "source": "./downpour-protocol",
+      "description": "HTTP, TLS, QUIC and DNS work: capability probing, range semantics, protocol selection, and the concurrency controller.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "category": "engineering",
+      "tags": [
+        "http",
+        "quic",
+        "rfc",
+        "engine"
+      ],
+      "keywords": [
+        "protocol",
+        "http2",
+        "http3",
+        "range-requests"
+      ],
+      "author": {
+        "name": "Downpour maintainers"
+      }
+    },
+    {
+      "name": "downpour-qa",
+      "displayName": "Downpour · QA",
+      "source": "./downpour-qa",
+      "description": "The correctness toolkit: compatibility corpus authoring, property tests, deterministic simulation, crash injection, and benchmarking.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "category": "testing",
+      "tags": [
+        "testing",
+        "corpus",
+        "simulation",
+        "fuzzing"
+      ],
+      "keywords": [
+        "proptest",
+        "crash-injection",
+        "benchmark"
+      ],
+      "author": {
+        "name": "Downpour maintainers"
+      }
+    },
+    {
+      "name": "downpour-release",
+      "displayName": "Downpour · Release",
+      "source": "./downpour-release",
+      "description": "Packaging, installers, browser extension store submission, signing, and the release checklist.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "category": "release",
+      "tags": [
+        "packaging",
+        "release",
+        "distribution"
+      ],
+      "keywords": [
+        "deb",
+        "appimage",
+        "msi",
+        "flatpak"
+      ],
+      "author": {
+        "name": "Downpour maintainers"
+      },
+      "defaultEnabled": false
+    }
+  ]
+}

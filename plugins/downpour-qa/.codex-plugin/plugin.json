@@ -1,0 +1,29 @@
+{
+  "name": "downpour-qa",
+  "version": "0.1.0",
+  "description": "Compatibility corpus, property tests, deterministic simulation and benchmarking for Downpour.",
+  "author": {
+    "name": "Downpour maintainers"
+  },
+  "repository": "https://gitlab.com/duochou042004/downpour",
+  "license": "Apache-2.0",
+  "keywords": [
+    "testing",
+    "proptest",
+    "simulation",
+    "corpus",
+    "fuzzing",
+    "benchmark"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Downpour · QA",
+    "shortDescription": "Corpus, property tests, simulation",
+    "developerName": "Downpour maintainers",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ]
+  }
+}

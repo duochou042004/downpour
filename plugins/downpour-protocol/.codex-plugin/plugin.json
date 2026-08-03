@@ -1,0 +1,29 @@
+{
+  "name": "downpour-protocol",
+  "version": "0.1.0",
+  "description": "HTTP, TLS, QUIC and DNS work for the Downpour transfer engine.",
+  "author": {
+    "name": "Downpour maintainers"
+  },
+  "repository": "https://gitlab.com/duochou042004/downpour",
+  "license": "Apache-2.0",
+  "keywords": [
+    "http",
+    "http2",
+    "http3",
+    "quic",
+    "range-requests",
+    "rfc"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Downpour · Protocol",
+    "shortDescription": "HTTP, TLS, QUIC and DNS work",
+    "developerName": "Downpour maintainers",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ]
+  }
+}

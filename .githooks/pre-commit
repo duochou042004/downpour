@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Agent-agnostic gate. Runs for Claude Code, Codex, any other agent, and humans.
+#
+# Claude Code enforces the progress rule with a Stop hook; Codex removed
+# plugin-provided hooks in 0.146 (`codex features list` shows plugin_hooks =
+# removed). Rather than depend on any agent's hook system, the commit boundary
+# is where this project enforces its rules — every agent has to pass through it.
+#
+# Install once:  git config core.hooksPath .githooks
+# Bypass (rare): git commit --no-verify
+
+set -uo pipefail
+REPO=$(git rev-parse --show-toplevel) || exit 0
+cd "$REPO" || exit 0
+[ -d "$HOME/.cargo/bin" ] && PATH="$HOME/.cargo/bin:$PATH" && export PATH
+
+fail=0
+say() { printf '  %s\n' "$*"; }
+printf '\n\033[1mDownpour pre-commit gate\033[0m\n'
+
+staged() { git diff --cached --name-only --diff-filter=ACM; }
+
+# 1. progress.json must be valid whenever it is staged.
+if staged | grep -q '^state/progress.json$'; then
+  if node scripts/check-progress.mjs >/tmp/dp-pc.log 2>&1; then
+    say "✓ progress.json valid"
+  else
+    say "✗ progress.json invalid:"; sed 's/^/      /' /tmp/dp-pc.log; fail=1
+  fi
+fi
+
+# 2. Substantive change without a progress update = HARNESS.md RECORD step skipped.
+if staged | grep -qE '^(crates|src|extensions|tests|scripts|docs/adr|plugins|\.claude)/'; then
+  if ! staged | grep -q '^state/progress.json$'; then
+    say "✗ source/plugin/ADR files staged without state/progress.json"
+    say "  docs/agent/HARNESS.md RECORD step: record the work in the same commit."
+    say "  Follow .claude/skills/progress-update/SKILL.md, then re-stage."
+    fail=1
+  fi
+fi
+
+# 3. The two agent instruction files must not drift apart.
+if staged | grep -qE '^(CLAUDE|AGENTS)\.md$'; then
+  if ! staged | grep -q '^CLAUDE.md$' || ! staged | grep -q '^AGENTS.md$'; then
+    say "! only one of CLAUDE.md / AGENTS.md is staged — they are kept in sync"
+    say "  (warning only; commit proceeds)"
+  fi
+fi
+
+# 4. The Codex plugin copy must match the canonical .claude/ assets.
+if staged | grep -qE '^(\.claude/(skills|hooks)|plugins/downpour-harness)/'; then
+  if scripts/sync-agent-assets.sh --check >/tmp/dp-sync.log 2>&1; then
+    say "✓ agent assets in sync"
+  else
+    say "✗ agent assets out of sync:"; sed 's/^/      /' /tmp/dp-sync.log; fail=1
+  fi
+fi
+
+# 5. Rust gates, only when Rust is staged and the toolchain exists.
+if staged | grep -qE '\.rs$|Cargo\.toml$'; then
+  if command -v cargo >/dev/null 2>&1 && [ -f Cargo.toml ]; then
+    cargo fmt --all -- --check >/dev/null 2>&1 && say "✓ cargo fmt" || { say "✗ cargo fmt — run: cargo fmt --all"; fail=1; }
+    if cargo clippy --all-targets --all-features -- -D warnings >/tmp/dp-clippy.log 2>&1; then
+      say "✓ cargo clippy"
+    else
+      say "✗ cargo clippy failed:"; tail -20 /tmp/dp-clippy.log | sed 's/^/      /'; fail=1
+    fi
+  fi
+fi
+
+# 6. Shell scripts must pass shellcheck.
+if staged | grep -qE '\.sh$'; then
+  if command -v shellcheck >/dev/null 2>&1; then
+    if staged | grep -E '\.sh$' | xargs -r shellcheck -S warning >/tmp/dp-sc.log 2>&1; then
+      say "✓ shellcheck"
+    else
+      say "✗ shellcheck:"; head -25 /tmp/dp-sc.log | sed 's/^/      /'; fail=1
+    fi
+  fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+  printf '\n\033[31mCommit blocked.\033[0m Fix the above, or use --no-verify if you are certain.\n\n'
+  exit 1
+fi
+printf '\033[32m  gate passed\033[0m\n\n'
+exit 0

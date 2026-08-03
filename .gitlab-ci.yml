@@ -1,0 +1,181 @@
+# Downpour CI.
+#
+# Design notes:
+#   - Stage 0 has no Rust workspace, so the rust jobs are guarded on Cargo.toml
+#     existing. They activate automatically in Stage 1 without a pipeline edit.
+#   - `harness` runs on every commit and is fast. It is the gate that matters most
+#     right now: it proves the progress record and the agent assets are honest.
+#   - Nothing here depends on a third-party server. See docs/09-testing-strategy.md §7.
+
+stages: [harness, quality, test, security]
+
+default:
+  interruptible: true
+  tags: [saas-linux-small-amd64]
+
+variables:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+  RUSTUP_MAX_RETRIES: "3"
+  RUST_BACKTRACE: "1"
+  GIT_DEPTH: "50"
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "master"
+    - if: $CI_COMMIT_BRANCH == "develop"
+    - if: $CI_COMMIT_BRANCH =~ /^(feature|fix|docs|chore)\//
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------- harness
+
+.rust-cache: &rust-cache
+  key:
+    files: [Cargo.lock]
+    prefix: cargo
+  paths: [.cargo/registry/index, .cargo/registry/cache, .cargo/git/db, target/]
+
+progress:
+  stage: harness
+  image: node:24-alpine
+  script:
+    - node scripts/check-progress.mjs
+  rules:
+    - when: always
+
+agent-assets:
+  stage: harness
+  image: alpine:3.22
+  before_script:
+    - apk add --no-cache bash diffutils
+  script:
+    # The Codex plugin's copy of the skills and hooks must match the canonical
+    # .claude/ ones. If these drift, the two agents follow different rulebooks.
+    - bash scripts/sync-agent-assets.sh --check
+  rules:
+    - when: always
+
+docs-links:
+  stage: harness
+  image: alpine:3.22
+  before_script:
+    - apk add --no-cache bash grep coreutils findutils
+  script:
+    - bash scripts/check-links.sh
+  rules:
+    - when: always
+
+shell-lint:
+  stage: quality
+  image: koalaman/shellcheck-alpine:stable
+  script:
+    - shellcheck -S warning scripts/*.sh .claude/hooks/*.sh .githooks/*
+  rules:
+    - when: always
+
+# ---------------------------------------------------------------- rust
+# Guarded on Cargo.toml so Stage 0 pipelines stay green and Stage 1 needs no edit.
+
+.rust-base: &rust-base
+  image: rust:1.97-bookworm
+  cache: *rust-cache
+  variables:
+    CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  rules:
+    - exists: [Cargo.toml]
+
+fmt:
+  <<: *rust-base
+  stage: quality
+  script:
+    - rustup component add rustfmt
+    - cargo fmt --all -- --check
+
+clippy:
+  <<: *rust-base
+  stage: quality
+  script:
+    - rustup component add clippy
+    - cargo clippy --all-targets --all-features -- -D warnings
+
+unit:
+  <<: *rust-base
+  stage: test
+  script:
+    - cargo install cargo-nextest --locked || true
+    - cargo nextest run --workspace --profile ci
+    - cargo test --doc
+  artifacts:
+    when: always
+    reports:
+      junit: target/nextest/ci/junit.xml
+    expire_in: 1 week
+
+corpus:
+  <<: *rust-base
+  stage: test
+  script:
+    - cargo install cargo-nextest --locked || true
+    - cargo nextest run -p downpour-corpus --profile ci
+  rules:
+    - exists: [tests/corpus/Cargo.toml]
+
+simulation:
+  <<: *rust-base
+  stage: test
+  script:
+    - cargo install cargo-nextest --locked || true
+    - cargo nextest run -p downpour-sim --release --profile ci
+  rules:
+    - exists: [tests/sim/Cargo.toml]
+
+# Long-running seed exploration. A failing seed found here is added to the fixed
+# set permanently — see docs/09-testing-strategy.md §4.3.
+simulation-nightly:
+  <<: *rust-base
+  stage: test
+  timeout: 3h
+  script:
+    - cargo install cargo-nextest --locked || true
+    - DOWNPOUR_SIM_SEEDS=10000 cargo nextest run -p downpour-sim --release
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      exists: [tests/sim/Cargo.toml]
+
+# ---------------------------------------------------------------- security
+
+deny:
+  <<: *rust-base
+  stage: security
+  script:
+    - cargo install cargo-deny --locked || true
+    - cargo deny check licenses bans sources advisories
+  rules:
+    - exists: [deny.toml]
+
+audit:
+  <<: *rust-base
+  stage: security
+  script:
+    - cargo install cargo-audit --locked || true
+    - cargo audit --deny warnings
+  allow_failure: true
+  rules:
+    - exists: [Cargo.lock]
+
+secret-scan:
+  stage: security
+  image: alpine:3.22
+  before_script:
+    - apk add --no-cache git grep
+  script:
+    # docs/10-security-privacy-legal.md: no secrets in the repository, ever.
+    - |
+      if git grep -nIE '(BEGIN [A-Z ]*PRIVATE KEY|glpat-[A-Za-z0-9_-]{20}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36})' -- ':!*.gitignore' ':!.gitlab-ci.yml'; then
+        echo "Potential secret committed. See SECURITY.md."; exit 1
+      fi
+    - echo "no secrets found"
+  rules:
+    - when: always

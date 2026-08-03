@@ -1,0 +1,29 @@
+{
+  "name": "downpour-release",
+  "version": "0.1.0",
+  "description": "Packaging, signing, store submission and the release checklist for Downpour.",
+  "author": {
+    "name": "Downpour maintainers"
+  },
+  "repository": "https://gitlab.com/duochou042004/downpour",
+  "license": "Apache-2.0",
+  "keywords": [
+    "packaging",
+    "deb",
+    "appimage",
+    "msi",
+    "flatpak",
+    "release"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Downpour · Release",
+    "shortDescription": "Packaging, signing, release checks",
+    "developerName": "Downpour maintainers",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "downpour-qa",
+  "displayName": "Downpour · QA",
+  "version": "0.1.0",
+  "description": "Compatibility corpus, property tests, deterministic simulation and benchmarking for Downpour.",
+  "author": { "name": "Downpour maintainers" },
+  "license": "Apache-2.0",
+  "keywords": ["testing", "proptest", "simulation", "corpus", "fuzzing", "benchmark"]
+}

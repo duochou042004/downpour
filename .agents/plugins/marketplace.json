@@ -1,0 +1,33 @@
+{
+  "name": "downpour-tools",
+  "interface": {
+    "displayName": "Downpour Tools",
+    "shortDescription": "Harness and specialist toolkits for building Downpour"
+  },
+  "plugins": [
+    {
+      "name": "downpour-harness",
+      "source": { "source": "local", "path": "./plugins/downpour-harness" },
+      "policy": { "installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_USE" },
+      "category": "Productivity"
+    },
+    {
+      "name": "downpour-protocol",
+      "source": { "source": "local", "path": "./plugins/downpour-protocol" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
+      "category": "Productivity"
+    },
+    {
+      "name": "downpour-qa",
+      "source": { "source": "local", "path": "./plugins/downpour-qa" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
+      "category": "Productivity"
+    },
+    {
+      "name": "downpour-release",
+      "source": { "source": "local", "path": "./plugins/downpour-release" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "downpour-release",
+  "displayName": "Downpour · Release",
+  "version": "0.1.0",
+  "description": "Packaging, signing, store submission and the release checklist for Downpour.",
+  "author": { "name": "Downpour maintainers" },
+  "license": "Apache-2.0",
+  "keywords": ["packaging", "deb", "appimage", "msi", "flatpak", "release"],
+  "defaultEnabled": false
+}
