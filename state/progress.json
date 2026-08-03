@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T19:40:00Z",
+  "updated_at": "2026-08-03T20:20:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -474,7 +474,7 @@
             "tests/corpus/cases/"
           ],
           "blocked_by": "S1-T10",
-          "notes": "27 of roughly 50 cases for the three S1 categories: ranges 11/25, framing 10/15, redirects 6/10 against docs/09 section 3.2's targets. All pass. Two cases are regression tests for defects found this stage: framing/zero-length-representation (the probe used to treat 416 as fatal, making empty files undownloadable) and framing/truncated-body (a short body used to surface as an opaque transport error). ranges/content-range-total-overstated is worth keeping in mind: the probe legitimately proves range support from a well-formed Content-Range whose stated total is a lie, and nothing at probe time can detect that - only verify-before-rename catches it. REMAINING BLOCKERS for S1-C2 and S1-C5, both needing server work rather than case-writing: backlog B-10 (cross-host redirects and protocol downgrade need two PathologyServers wired together; I-8's proof list names redirect-chain-to-other-host explicitly) and B-11 (multipart/byteranges, which docs/09 section 3.2 names in the ranges description). Everything else is case-writing against machinery that exists. S1-C2, C5 and C6 stay UNMET until the categories reach their targets: marking them met at 11/25 would tell the next session the pathology space is covered when it is not.",
+          "notes": "29 of roughly 50 cases: ranges 11/25, framing 10/15, redirects 8/10 against docs/09 section 3.2's targets. All pass. B-10 IS NOW CLOSED: cross-host redirects work, via a second PathologyServer that the runner starts and points the chain at. Worth knowing why it took two attempts - the first version of redirect-chain-to-other-host PROVED NOTHING. With one origin serving both the redirect and the content, the chain length and the filename come out identical whether or not the chain actually leaves the origin, so a mutation that disabled the cross-origin wiring still passed. Fixed by adding expect.crosses_origin, which compares the final URL's authority against the submitted one; the same mutation now fails. Any future case whose pathology is invisible in the outcome needs the same treatment. REMAINING BLOCKER for S1-C2: backlog B-11, multipart/byteranges, which docs/09 section 3.2 names in the ranges description and the server cannot yet emit. Protocol downgrade (https to http) needs B-8's TLS listener. Everything else is case-writing against machinery that exists. S1-C2, C5 and C6 stay UNMET until the categories reach their targets.",
           "invariants": [
             "I-5",
             "I-6"
@@ -1225,9 +1225,9 @@
     },
     {
       "id": "B-10",
-      "text": "Cross-host redirects and protocol downgrade (https->http) are not yet expressible: the server serves one origin and one protocol. The redirects category needs two servers wired together, which S1-T11 should do when it writes redirect-chain-to-other-host.",
+      "text": "CLOSED 2026-08-03: cross-host redirects are implemented. The runner starts a second PathologyServer for the content origin and sets redirect_final_target on the first, and cases assert expect.crosses_origin so the behaviour is actually pinned. Protocol downgrade (https to http) remains out of reach until B-8 gives the corpus a TLS listener.",
       "found_in_stage": "S1",
-      "target_stage": "S1",
+      "target_stage": "S5",
       "rationale": "Named in I-8's proof list, so it must be covered before S1 closes"
     },
     {
@@ -1405,8 +1405,8 @@
     }
   ],
   "metrics": {
-    "corpus_cases_total": 27,
-    "corpus_cases_passing": 27,
+    "corpus_cases_total": 29,
+    "corpus_cases_passing": 29,
     "sim_seeds_fixed": 0,
     "invariants_covered": 5,
     "invariants_total": 14,

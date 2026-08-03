@@ -65,18 +65,40 @@ impl CaseReport {
 pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
     let mut failures: Vec<String> = Vec::new();
 
-    let spec = case.server_spec();
+    let fail = |reason: String| CaseReport {
+        id: case.id.clone(),
+        failures: vec![reason],
+        bytes_on_disk: 0,
+        silent_corruption: false,
+    };
+
+    // A cross-origin case needs two servers: one server serves one origin, so a chain that leaves
+    // its origin cannot be expressed with a single listener. The content origin is started first so
+    // its URL can be handed to the redirecting one.
+    //
+    // `_content_origin` is bound rather than dropped because a `PathologyServer` stops when it is
+    // dropped — letting it fall out of scope here would kill the origin the chain points at, and
+    // the case would fail with a connection error that looked like an engine bug.
+    let mut content_origin = None;
+    let mut spec = case.server_spec();
+    if case.server.cross_origin {
+        let mut origin_spec = spec.clone();
+        // The second origin serves the representation and redirects nowhere.
+        origin_spec.redirect_chain = Vec::new();
+        origin_spec.redirect_loop = false;
+        let origin = match PathologyServer::start(origin_spec).await {
+            Ok(origin) => origin,
+            Err(error) => return fail(format!("the content origin did not start: {error}")),
+        };
+        spec.redirect_final_target = Some(origin.url("/content"));
+        content_origin = Some(origin);
+    }
+
     let server = match PathologyServer::start(spec).await {
         Ok(server) => server,
-        Err(error) => {
-            return CaseReport {
-                id: case.id.clone(),
-                failures: vec![format!("the pathology server did not start: {error}")],
-                bytes_on_disk: 0,
-                silent_corruption: false,
-            };
-        }
+        Err(error) => return fail(format!("the pathology server did not start: {error}")),
     };
+    let _content_origin = content_origin;
 
     let mode = match case.server.protocol {
         // Pinned rather than negotiated, because the corpus is cleartext: there is no ALPN to
@@ -115,6 +137,7 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
     if case.expect.range_support.is_some()
         || case.expect.total_length.is_some()
         || case.expect.redirect_chain_len.is_some()
+        || case.expect.crosses_origin.is_some()
     {
         use downpour_http::{ProbeRequest, TransferProtocol};
         match backend.probe(ProbeRequest::new(url.clone())).await {
@@ -147,6 +170,20 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
                         remote.redirect_chain.len(),
                         remote.redirect_chain
                     ));
+                }
+                if let Some(expected) = case.expect.crosses_origin {
+                    // Compared on authority, not on the whole URL: a chain that merely changed
+                    // path has not left its origin, and it is leaving the origin that makes a
+                    // signed URL stop working on resume (I-8).
+                    let entry_authority = url.authority().to_owned();
+                    let final_authority = remote.final_url.authority().to_owned();
+                    let crossed = entry_authority != final_authority;
+                    if crossed != expected {
+                        failures.push(format!(
+                            "expected crosses_origin {expected}, but the chain went from \
+                             {entry_authority} to {final_authority}"
+                        ));
+                    }
                 }
             }
             Err(error) => {

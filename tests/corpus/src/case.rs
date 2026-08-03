@@ -140,6 +140,12 @@ pub struct ServerCase {
     /// Serve the entry path as a redirect that points at itself, so only a hop limit can stop it.
     #[serde(default)]
     pub redirect_loop: bool,
+    /// Send the redirect chain to a **second origin**, which serves the content.
+    ///
+    /// One server serves one origin, so the runner starts two: the first only redirects, the
+    /// second holds the representation. Requires a non-empty `redirect_chain`.
+    #[serde(default)]
+    pub cross_origin: bool,
     /// Corrupt every byte from this offset onward. Only for `self-test/` fixtures: it exists to
     /// prove the runner's corruption comparison actually fires.
     #[serde(default)]
@@ -254,6 +260,13 @@ pub struct Expect {
     /// How many URLs the recorded redirect chain must contain, including the submitted one.
     #[serde(default)]
     pub redirect_chain_len: Option<usize>,
+    /// Whether the final URL must be on a different origin than the submitted one.
+    ///
+    /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
+    /// and the filename come out identical either way, so the case would pass even if the runner
+    /// ignored `cross_origin` entirely. Verified by a mutation that did exactly that.
+    #[serde(default)]
+    pub crosses_origin: Option<bool>,
 }
 
 /// Terminal state of a case.
@@ -404,6 +417,13 @@ impl Case {
                     .to_owned(),
             ));
         }
+        if self.server.cross_origin && self.server.redirect_chain.is_empty() {
+            return Err(invalid(
+                "cross_origin is set but redirect_chain is empty, so nothing would leave the \
+                 first origin"
+                    .to_owned(),
+            ));
+        }
         if self.expect.final_state == FinalState::Completed && !self.expect.file_renamed {
             return Err(invalid(
                 "final_state is completed but file_renamed is false, which cannot both be true \
@@ -472,6 +492,8 @@ impl Case {
                 .as_ref()
                 .map(|text| text.as_bytes().to_vec()),
             redirect_loop: self.server.redirect_loop,
+            // Filled in by the runner, which is the only thing that knows the other origin's URL.
+            redirect_final_target: None,
             corrupt_from: self.server.corrupt_from.map(|size| size.0),
         }
     }

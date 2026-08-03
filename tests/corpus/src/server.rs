@@ -133,6 +133,13 @@ pub struct ServerSpec {
     pub status_override: Option<u16>,
     /// Serve these bytes instead of generated content — an HTML login page, for instance.
     pub body_override: Option<Vec<u8>>,
+    /// Where the last redirect hop points, instead of this server's own content.
+    ///
+    /// Set by the runner to another origin's URL, which is how a cross-host redirect is expressed:
+    /// one server serves one origin, so a chain that leaves the origin needs two of them. I-8's
+    /// proof list names `redirect-chain-to-other-host`, and hotlink protection and session-bound
+    /// CDNs are exactly the situations where the chain's destination differs from where it started.
+    pub redirect_final_target: Option<String>,
     /// Serve the entry path as a redirect that points at itself.
     ///
     /// A loop is only terminable by a hop limit, so this is how a case checks that the limit
@@ -166,6 +173,7 @@ impl Default for ServerSpec {
             truncate_body_after: None,
             status_override: None,
             body_override: None,
+            redirect_final_target: None,
             redirect_loop: false,
             corrupt_from: None,
         }
@@ -402,7 +410,11 @@ fn plan(spec: &ServerSpec, path: &str, range_header: Option<&str>) -> Plan {
         let next = if index + 1 < spec.redirect_chain.len() {
             format!("{HOP_PREFIX}{}", index + 1)
         } else {
-            CONTENT_PATH.to_owned()
+            // An absolute URL when the case sends the chain to another origin; otherwise this
+            // server's own content, resolved relatively.
+            spec.redirect_final_target
+                .clone()
+                .unwrap_or_else(|| CONTENT_PATH.to_owned())
         };
         return Plan {
             status,

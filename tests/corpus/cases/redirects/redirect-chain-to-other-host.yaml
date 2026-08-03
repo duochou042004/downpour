@@ -1,0 +1,22 @@
+id: redirect-chain-to-other-host
+category: redirects
+description: >
+  The submitted URL redirects to a DIFFERENT origin, which serves the representation. This is the
+  ordinary shape of a real download — a page URL handing off to a CDN — and it is the case named in
+  I-8's proof list. Both origins must be recorded in the chain: on resume, re-resolving from the
+  original URL is what earns a 403 on a signed CDN URL, and the naive reaction to that 403 is to
+  throw away every byte already fetched. The engine must also fetch from the FINAL origin, not the
+  one that was submitted.
+references: ["RFC 9110 §15.4", "INVARIANTS.md#i-8", "docs/03-transfer-engine-spec.md §5.1"]
+
+server:
+  content: { size: 128KiB, seed: 51 }
+  redirect_chain: [302]
+  cross_origin: true
+
+expect:
+  final_state: completed
+  file_renamed: true
+  filename: content
+  redirect_chain_len: 2
+  crosses_origin: true
