@@ -2,16 +2,16 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T09:58:29Z",
+  "updated_at": "2026-08-03T11:44:43Z",
   "updated_by": "claude-code",
-  "current_stage": "S0",
+  "current_stage": "S1",
   "stages": [
     {
       "id": "S0",
       "name": "Foundations: specs, ADRs, agent harness, CI skeleton",
-      "status": "active",
+      "status": "complete",
       "started_at": "2026-08-02T00:00:00Z",
-      "completed_at": null,
+      "completed_at": "2026-08-03T11:44:43Z",
       "spec": "docs/12-roadmap-stages.md",
       "exit_criteria": [
         {
@@ -45,8 +45,8 @@
         {
           "id": "S0-C5",
           "text": "A fresh agent session can read CLAUDE.md then HARNESS.md then progress.json and correctly state what to work on next, without asking",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "Session 2026-08-03T11:44Z (claude-code, no prior context): read CLAUDE.md then docs/agent/HARNESS.md then state/progress.json then CONTEXT-MAP.md and stated unprompted that S0 was active with 17/17 tasks done, that S0-C5 was the only unmet criterion, and that the next work was the S0 gate followed by S1 per docs/03-transfer-engine-spec.md sections 1-2. Reproducible: `just brief` prints the same stage, open tasks and unmet criteria.",
           "invariants": []
         },
         {
@@ -261,8 +261,8 @@
     {
       "id": "S1",
       "name": "Robust single-stream HTTP/1.1 + HTTP/2 downloader",
-      "status": "planned",
-      "started_at": null,
+      "status": "active",
+      "started_at": "2026-08-03T11:44:43Z",
       "completed_at": null,
       "spec": "docs/03-transfer-engine-spec.md",
       "exit_criteria": [
@@ -316,7 +316,189 @@
           ]
         }
       ],
-      "tasks": []
+      "tasks": [
+        {
+          "id": "S1-T1",
+          "title": "Create the cargo workspace: downpour-types, downpour-http, downpour-cli, with versions pinned from the tech radar",
+          "status": "todo",
+          "proof": "`just gate` runs the rust-gate recipe (cargo fmt --check, clippy --all-targets --all-features -D warnings, nextest run --workspace, cargo test --doc) instead of skipping it, and every step passes",
+          "files": [
+            "Cargo.toml",
+            "crates/downpour-types/",
+            "crates/downpour-http/",
+            "crates/downpour-cli/"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T2",
+          "title": "downpour-types: RemoteObject and a RangeSupport whose Proven variant cannot be constructed without a validated 206",
+          "status": "todo",
+          "proof": "crates/downpour-types/tests/range_proof.rs — asserts RangeSupport::Proven is only reachable through RangeProof::from_observed_response, and that the constructor rejects 200, a missing Content-Range, a mismatched Content-Range and a non-identity Content-Encoding",
+          "files": [
+            "crates/downpour-types/src/remote.rs"
+          ],
+          "blocked_by": "S1-T1",
+          "notes": null,
+          "invariants": [
+            "I-5",
+            "I-6"
+          ]
+        },
+        {
+          "id": "S1-T3",
+          "title": "Strict Content-Range parser that validates the response against the range that was actually requested",
+          "status": "todo",
+          "proof": "crates/downpour-types/tests/content_range_prop.rs::never_accepts_a_range_inconsistent_with_the_request — proptest over arbitrary requested/returned range pairs; plus a unit table of malformed headers from RFC 9110 section 14.4",
+          "files": [
+            "crates/downpour-types/src/content_range.rs"
+          ],
+          "blocked_by": "S1-T1",
+          "notes": null,
+          "invariants": [
+            "I-5"
+          ]
+        },
+        {
+          "id": "S1-T4",
+          "title": "Filename resolution (Content-Disposition RFC 6266 including filename*, URL-path fallback) and sanitisation",
+          "status": "todo",
+          "proof": "crates/downpour-types/tests/filename_prop.rs::sanitised_name_never_escapes_the_target_directory — proptest over arbitrary byte strings; plus a unit table covering ../, absolute paths, NUL, control characters, Windows reserved device names, trailing dots and spaces, and over-long names",
+          "files": [
+            "crates/downpour-types/src/filename.rs"
+          ],
+          "blocked_by": "S1-T1",
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T5",
+          "title": "ADR-0010: the corpus case format and the pathology-server contract",
+          "status": "todo",
+          "proof": "docs/adr/0010-corpus-case-format.md exists with Status accepted and a Reversal trigger section; adr_index in this file lists ADR-0010; scripts/check-links.sh passes",
+          "files": [
+            "docs/adr/0010-corpus-case-format.md"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T6",
+          "title": "Pathology server: deterministic PRNG content, HTTP/1.1 and HTTP/2, and the ranges/framing/redirects behaviours",
+          "status": "todo",
+          "proof": "tests/corpus/server/tests/determinism.rs — the byte at an arbitrary offset is computable from (seed, offset) without materialising the file, matches what the server serves, and is identical across two independent runs and both protocols",
+          "files": [
+            "tests/corpus/server/"
+          ],
+          "blocked_by": "S1-T5",
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T7",
+          "title": "The TransferProtocol trait and the h1h2 backend over reqwest/rustls",
+          "status": "todo",
+          "proof": "crates/downpour-http/tests/trait_object.rs — the trait is usable as `dyn TransferProtocol` (object safety is what ADR-0005 depends on) and a stub backend satisfies it without any reqwest type appearing in the signature",
+          "files": [
+            "crates/downpour-http/src/lib.rs",
+            "crates/downpour-http/src/h1h2/"
+          ],
+          "blocked_by": "S1-T2",
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T8",
+          "title": "Capability probe: ranged GET, redirect-chain capture, validator and digest capture, HTML-instead-of-file detection",
+          "status": "todo",
+          "proof": "corpus categories `ranges` and `redirects` pass under `just corpus`, including accept-ranges-lies, head-differs-from-get, 200-instead-of-206, content-range-mismatch, content-range-absent and redirect-chain-to-other-host",
+          "files": [
+            "crates/downpour-http/src/probe.rs"
+          ],
+          "blocked_by": "S1-T7",
+          "notes": null,
+          "invariants": [
+            "I-5",
+            "I-6",
+            "I-8"
+          ]
+        },
+        {
+          "id": "S1-T9",
+          "title": "Single-stream download: .dppart target, Content-Encoding rejection, verify length and coverage and digest, then atomic rename",
+          "status": "todo",
+          "proof": "corpus category `framing` passes under `just corpus`, and every S1 case asserts silent_corruption 0 by full byte comparison against the generator plus file_renamed false on every failure case",
+          "files": [
+            "crates/downpour-http/src/sink.rs",
+            "crates/downpour-http/src/download.rs"
+          ],
+          "blocked_by": "S1-T7",
+          "notes": null,
+          "invariants": [
+            "I-1",
+            "I-4",
+            "I-5"
+          ]
+        },
+        {
+          "id": "S1-T10",
+          "title": "Corpus runner: YAML case to server configuration to engine run to assertions, wired to `just corpus`",
+          "status": "todo",
+          "proof": "`just corpus` executes the S1 case set; a deliberately-wrong fixture case under tests/corpus/self-test/ makes the runner report a failure, proving the assertions are actually evaluated rather than skipped",
+          "files": [
+            "tests/corpus/runner/"
+          ],
+          "blocked_by": "S1-T6",
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T11",
+          "title": "Write the S1 corpus cases for the ranges, framing and redirects categories",
+          "status": "todo",
+          "proof": "metrics.corpus_cases_total and corpus_cases_passing in this file match the count `just corpus` reports; every case carries an id, a category and a references field naming the RFC clause or invariant it exercises",
+          "files": [
+            "tests/corpus/cases/"
+          ],
+          "blocked_by": "S1-T10",
+          "notes": null,
+          "invariants": [
+            "I-5",
+            "I-6"
+          ]
+        },
+        {
+          "id": "S1-T12",
+          "title": "dp add <url>: single-stream download from the command line",
+          "status": "todo",
+          "proof": "crates/downpour-cli/tests/dp_add.rs — runs the built `dp` binary against the pathology server and byte-compares the resulting file against the generator; asserts a non-zero exit and no renamed file when the probe rejects the response",
+          "files": [
+            "crates/downpour-cli/src/main.rs"
+          ],
+          "blocked_by": "S1-T9",
+          "notes": null,
+          "invariants": [
+            "I-4"
+          ]
+        },
+        {
+          "id": "S1-T13",
+          "title": "1 GB correctness over HTTP/1.1 and HTTP/2",
+          "status": "todo",
+          "proof": "corpus cases `gigabyte-h1` and `gigabyte-h2` in the slow profile: 1 GB of generated content downloaded and byte-compared in full, 0 mismatches; run by `just corpus-slow`, not on every push",
+          "files": [
+            "tests/corpus/cases/protocols/"
+          ],
+          "blocked_by": "S1-T12",
+          "notes": null,
+          "invariants": [
+            "I-1"
+          ]
+        }
+      ]
     },
     {
       "id": "S2",
@@ -978,6 +1160,20 @@
       "found_in_stage": "S0",
       "target_stage": "S2",
       "rationale": "The simulation-nightly job exists but needs a schedule to fire"
+    },
+    {
+      "id": "B-4",
+      "text": "downpour-cli links downpour-http directly in S1 because no daemon exists yet. When downpour-daemon lands, move the transfer behind IPC so the architecture rule 'clients never link the engine' (docs/02 section 3) holds again.",
+      "found_in_stage": "S1",
+      "target_stage": "S3",
+      "rationale": "Roadmap S1 lists only three crates, so a direct link is the only option now; recorded so it is not mistaken for the intended end state"
+    },
+    {
+      "id": "B-5",
+      "text": "The minimal file sink written in S1 (crates/downpour-http/src/sink.rs) is superseded by downpour-storage in S2, which owns preallocation, positional writes, the journal and the durability ordering (I-1, I-9, I-10).",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "S1-C6 needs verify-before-rename now, but S1 has no storage crate to put it in"
     }
   ],
   "session_log": [
@@ -1040,6 +1236,31 @@
         "docs/agent/CODEX-NOTES.md"
       ],
       "left_in_progress": "S0 has one criterion left: S0-C5, the fresh-session orientation test. It is verified by the NEXT session reading CLAUDE.md then HARNESS.md then progress.json and correctly stating what to work on without being told. If that works, S0 goes to gate-review and Stage 1 begins."
+    },
+    {
+      "at": "2026-08-03T11:44:43Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "Passed the S0-C5 orientation test as a fresh session with no prior context, then ran the S0 gate: all six criteria met with re-runnable evidence (9/9 ADRs carry a Reversal trigger, check-progress exit 0, doctor exit 0, 115/115 links resolve, agent assets in sync). The maintainer approved advancement, so S0 is complete and S1 is active. Decomposed S1 into 13 tasks, each naming the test that will prove it. Verified the toolchain (rustc/cargo 1.97.1, nextest 0.9.140) and that index.crates.io is reachable before committing to a dependency plan. No product code yet.",
+      "tasks_touched": [
+        "S1-T1",
+        "S1-T2",
+        "S1-T3",
+        "S1-T4",
+        "S1-T5",
+        "S1-T6",
+        "S1-T7",
+        "S1-T8",
+        "S1-T9",
+        "S1-T10",
+        "S1-T11",
+        "S1-T12",
+        "S1-T13"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1-T1 is next: the cargo workspace. Two S1 tasks have no blocker and can start immediately — S1-T1 (workspace) and S1-T5 (ADR-0010, the corpus case format, which must be written before the pathology server in S1-T6). Everything else chains off those two. Branch: feature/s1-foundations."
     }
   ],
   "metrics": {
