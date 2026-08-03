@@ -96,11 +96,13 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc --version && cargo --version
 
+      # Saves on every branch, deliberately. The documented advice is to restrict writes to the
+      # main branches so feature branches cannot evict each other from the 10 GB budget — but that
+      # advice assumes many concurrent branches. This is a single-maintainer project with one or two
+      # live branches, and the first measured cold run showed rust-cache's save step doing nothing
+      # on a feature branch, which is exactly where iteration happens. Revisit if the cache starts
+      # thrashing (ADR-0011 reversal trigger 2).
       - uses: Swatinem/rust-cache@v2
-        with:
-          # Only master and develop write to the cache. Feature branches restore a warm cache but
-          # do not each evict the others from the 10 GB budget.
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop' }}
 
       # Prebuilt binary from GitHub Releases. Compiling this was minutes per run.
       - uses: taiki-e/install-action@v2
@@ -133,6 +135,40 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # ---------------------------------------------------------------- windows
+  # Downpour claims to be a Linux AND Windows download manager, and until now nothing had ever been
+  # compiled for Windows — not once. `rust-toolchain.toml` lists x86_64-pc-windows-gnu as a target
+  # and no build had used it. That means the `cfg!(windows)` branches in
+  # crates/downpour-http/src/download.rs (ERROR_DISK_FULL / ERROR_HANDLE_DISK_FULL, the ENOSPC
+  # handling I-10 depends on) had never been through a compiler, and neither had the atomic-rename
+  # or fsync paths that I-1 and I-4 rest on.
+  #
+  # Running the real suite on a real Windows runner rather than cross-compiling, because the
+  # interesting failures are behavioural — path semantics, rename-over-existing, flush behaviour —
+  # and a cross `cargo check` would find none of them. Free and unmetered on public repositories.
+  windows:
+    name: windows (clippy, tests)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: cargo nextest run --workspace
+        run: cargo nextest run --locked --workspace --profile ci
+
   # ---------------------------------------------------------------- security
   security:
     name: security (deny, audit)
@@ -148,7 +184,6 @@ jobs:
           # A distinct key: this job builds nothing, so sharing the rust job's cache would mean
           # pulling a large target/ it has no use for.
           shared-key: security
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop' }}
 
       - uses: taiki-e/install-action@v2
         with:
@@ -181,7 +216,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: slow-corpus
-          save-if: ${{ github.ref == 'refs/heads/develop' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
