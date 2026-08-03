@@ -26,11 +26,13 @@
     )
 )]
 
+pub mod download;
 pub mod error;
 pub mod h1h2;
 pub mod protocol;
 pub mod sink;
 
+pub use download::{DownloadError, SingleStream};
 pub use error::{ProbeError, TransferError};
 pub use h1h2::{H1H2Backend, TransportMode};
 pub use protocol::{

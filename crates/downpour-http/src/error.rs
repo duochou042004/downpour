@@ -134,6 +134,21 @@ pub enum TransferError {
         /// How much had arrived when the deadline passed.
         bytes_delivered: u64,
     },
+    /// The body ended before the length the response declared.
+    ///
+    /// Distinguished from [`Self::Transport`] on purpose: `docs/03-transfer-engine-spec.md` §7
+    /// gives truncation its own policy — return the unwritten remainder to the allocator and
+    /// count it against the retry budget — and that decision needs to know how much did arrive.
+    /// Collapsing it into a generic transport error throws away both facts.
+    #[error("{url} delivered {delivered} of {expected} bytes before the connection ended")]
+    TruncatedBody {
+        /// The URL being fetched.
+        url: Url,
+        /// What the response declared.
+        expected: u64,
+        /// What actually arrived and was written.
+        delivered: u64,
+    },
     /// The response status was not usable for a body fetch.
     #[error("{url} answered {status} where a body was expected")]
     UnexpectedStatus {
@@ -181,6 +196,7 @@ impl TransferError {
         match self {
             Self::Transport { .. } => "transport",
             Self::Timeout { .. } => "timeout",
+            Self::TruncatedBody { .. } => "truncated_body",
             Self::UnexpectedStatus { .. } => "unexpected_status",
             Self::UnusableRangeResponse { .. } => "unusable_range_response",
             Self::OverDelivery { .. } => "over_delivery",

@@ -147,12 +147,25 @@ impl TransferProtocol for H1H2Backend {
         let start = request.url.clone();
         let mut current = request.url.clone();
         let mut chain = vec![current.clone()];
+        let mut hops = 0_u32;
+        // Cleared, once, if the server reports the probe range itself as unsatisfiable.
+        let mut probe_with_range = true;
 
-        for _ in 0..=request.max_redirects {
+        loop {
+            if hops > request.max_redirects {
+                return Err(ProbeError::TooManyRedirects {
+                    start,
+                    limit: request.max_redirects,
+                });
+            }
             let response = self
                 .send(
                     &current,
-                    Some(PROBE_RANGE),
+                    if probe_with_range {
+                        Some(PROBE_RANGE)
+                    } else {
+                        None
+                    },
                     &request.headers,
                     request.timeout,
                 )
@@ -189,6 +202,21 @@ impl TransferProtocol for H1H2Backend {
                         })?;
                 current = next.clone();
                 chain.push(next);
+                hops += 1;
+                continue;
+            }
+
+            // A 416 means the *probe range* was unsatisfiable, not that the representation is
+            // unusable. An empty representation has no byte 0, and some servers refuse
+            // `bytes=0-0` outright. Either way ranges are not usable here, but the file may be
+            // perfectly downloadable — docs/03 §2.1 says a non-206 means "single stream", not
+            // "fail". So drop the Range header and ask once more.
+            if status == 416 && probe_with_range {
+                tracing::debug!(
+                    url = %current,
+                    "server reports bytes=0-0 unsatisfiable; re-probing without a Range"
+                );
+                probe_with_range = false;
                 continue;
             }
 
@@ -242,6 +270,37 @@ impl TransferProtocol for H1H2Backend {
                     source: Box::new(source),
                 })?;
             let body_len = u64::try_from(body.len()).unwrap_or(u64::MAX);
+
+            // A rangeless probe cannot prove anything about ranges, but it still must not accept
+            // an encoded body: the length would disagree with the representation and the
+            // verification before rename (I-4) would compare against the wrong size.
+            if !probe_with_range {
+                if let Some(encoding) = content_encoding.as_deref()
+                    && !encoding.trim().is_empty()
+                    && !encoding.trim().eq_ignore_ascii_case("identity")
+                {
+                    return Err(ProbeError::ContentEncoding {
+                        url: current,
+                        source: downpour_types::RangeProofError::UnexpectedContentEncoding {
+                            encoding: encoding.trim().to_owned(),
+                        },
+                    });
+                }
+                let final_url = current.clone();
+                let resolved_name = filename::resolve(suggested_filename.as_deref(), &final_url);
+                return Ok(RemoteObject {
+                    suggested_filename: Some(resolved_name),
+                    final_url,
+                    redirect_chain: chain,
+                    total_length: content_length,
+                    range_support: RangeSupport::Absent,
+                    validator,
+                    digest,
+                    protocol,
+                    content_type: content_type.and_then(|value| value.parse().ok()),
+                    probed_at: std::time::SystemTime::now(),
+                });
+            }
 
             // I-6: this is the *only* place `Proven` can come from, and it is a pure function
             // over what was observed. Everything else is `Absent`.
@@ -300,11 +359,6 @@ impl TransferProtocol for H1H2Backend {
                 probed_at: std::time::SystemTime::now(),
             });
         }
-
-        Err(ProbeError::TooManyRedirects {
-            start,
-            limit: request.max_redirects,
-        })
     }
 
     async fn fetch_range(
@@ -391,6 +445,13 @@ impl TransferProtocol for H1H2Backend {
             }
         };
 
+        // What the response committed to delivering. Computed before the body is read so that a
+        // stream which dies part way can be reported as a truncation rather than as an opaque
+        // transport failure — the distinction drives the retry policy in docs/03 §7.
+        let promised = content_range
+            .and_then(|range| range.len())
+            .or(declared_length);
+
         let mut delivered = 0_u64;
         loop {
             let chunk = response.chunk().await.map_err(|source| {
@@ -398,6 +459,14 @@ impl TransferProtocol for H1H2Backend {
                     TransferError::Timeout {
                         url: request.url.clone(),
                         bytes_delivered: delivered,
+                    }
+                } else if let Some(expected) = promised.filter(|expected| delivered < *expected) {
+                    // Derived from the length we already knew rather than from the shape of the
+                    // library's error, which would be fragile and would change under us.
+                    TransferError::TruncatedBody {
+                        url: request.url.clone(),
+                        expected,
+                        delivered,
                     }
                 } else {
                     TransferError::Transport {

@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T15:35:00Z",
+  "updated_at": "2026-08-03T16:20:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -435,11 +435,11 @@
         {
           "id": "S1-T9",
           "title": "Single-stream download: .dppart target, Content-Encoding rejection, verify length and coverage and digest, then atomic rename",
-          "status": "todo",
-          "proof": "corpus category `framing` passes under `just corpus`, and every S1 case asserts silent_corruption 0 by full byte comparison against the generator plus file_renamed false on every failure case",
+          "status": "done",
+          "proof": "tests/corpus/tests/download.rs (14 tests). I-4 asserted on every failure path: the final name is never created unless the delivered length matches what the probe established, and the assertions check the directory listing rather than only the return value. A truncated body leaves content.dppart holding bytes that still match the generator, so a later resume can trust them. I-5: a compressed body produces no file at all, not even a .dppart, because the probe rejects it first. Byte-exactness against the generator over HTTP/1.1, h2c, chunked framing, a redirect chain, and a server without range support. Plus: a Content-Disposition traversal lands inside the target directory, an existing file is never overwritten, and a zero-length representation still produces a file. FOUND AND FIXED TWO ENGINE DEFECTS while writing these, both caught by the new tests, both with their regression test in this change (Gate D): (1) the probe treated 416 as fatal, so an empty representation - or any server that refuses bytes=0-0 - could not be downloaded at all; docs/03 section 2.1 says a non-206 means single stream, not failure, so the probe now re-asks without a Range. (2) a body that died before its declared Content-Length surfaced as an opaque transport error, losing both that it was a truncation and how many bytes arrived, which docs/03 section 7 needs for its retry policy; now reported as TruncatedBody, detected from the length already known rather than by matching the HTTP library's error shape.",
           "files": [
-            "crates/downpour-http/src/sink.rs",
-            "crates/downpour-http/src/download.rs"
+            "crates/downpour-http/src/download.rs",
+            "tests/corpus/tests/download.rs"
           ],
           "blocked_by": "S1-T7",
           "notes": null,
@@ -1355,7 +1355,7 @@
     "corpus_cases_total": 0,
     "corpus_cases_passing": 0,
     "sim_seeds_fixed": 0,
-    "invariants_covered": 0,
+    "invariants_covered": 5,
     "invariants_total": 14,
     "silent_corruption_findings": 0
   }
