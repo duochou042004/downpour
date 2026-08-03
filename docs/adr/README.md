@@ -61,6 +61,7 @@ it is an opinion with a number.
 | [0007](0007-corpus-as-primary-asset.md) | The compatibility corpus is the primary asset | accepted | S0 |
 | [0008](0008-no-drm-no-mitm.md) | No DRM circumvention, no TLS interception | accepted | S0 |
 | [0009](0009-adaptive-not-fixed-concurrency.md) | Adaptive concurrency instead of a fixed connection count | accepted | S0 |
+| [0010](0010-corpus-case-format.md) | Declarative corpus cases over a frozen deterministic content generator | proposed | S1 |
 
 ## Rules
 

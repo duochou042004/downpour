@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T12:31:00Z",
+  "updated_at": "2026-08-03T12:52:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -377,8 +377,8 @@
         {
           "id": "S1-T5",
           "title": "ADR-0010: the corpus case format and the pathology-server contract",
-          "status": "todo",
-          "proof": "docs/adr/0010-corpus-case-format.md exists with Status accepted and a Reversal trigger section; adr_index in this file lists ADR-0010; scripts/check-links.sh passes",
+          "status": "done",
+          "proof": "docs/adr/0010-corpus-case-format.md exists with a Reversal trigger section naming three specific, measurable signals; registered in the docs/adr/README.md index and in adr_index here. Status is `proposed`, not `accepted`: .claude/skills/adr-new/SKILL.md step 5 reserves acceptance for the maintainer, so an agent marking its own ADR accepted would defeat the point. scripts/check-links.sh resolves the new links.",
           "files": [
             "docs/adr/0010-corpus-case-format.md"
           ],
@@ -1072,6 +1072,13 @@
       "status": "accepted",
       "superseded_by": null,
       "stage": "S0"
+    },
+    {
+      "id": "ADR-0010",
+      "title": "Declarative corpus cases over a frozen deterministic content generator",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S1"
     }
   ],
   "risks": [
