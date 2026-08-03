@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T23:55:00Z",
+  "updated_at": "2026-08-04T00:15:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -1333,9 +1333,9 @@
     },
     {
       "id": "B-14",
-      "text": "Third-party GitHub Actions are pinned to major versions (actions/checkout@v7, actions/upload-artifact@v7, Swatinem/rust-cache@v2, taiki-e/install-action@v2), which trusts the tag to keep pointing somewhere safe. Before CI ever produces release artifacts, pin every third-party action to a full commit SHA - ADR-0011's first reversal trigger. Also configure branch protection on GitHub (master: no direct push; develop: require the CI check), because the GitLab protection that ADR-0003's release story assumes does not carry across hosts.",
+      "text": "PARTIALLY CLOSED 2026-08-03. Branch protection is now configured on GitHub, verified via the API: master requires all four CI checks with strict up-to-date branches, enforce_admins true (so nobody including the owner pushes directly, matching GitLab's push='No one'), linear history, no force pushes, no deletions; develop requires the same four checks with no force pushes or deletions; default_branch is develop, matching GitLab. STILL OPEN: third-party actions are pinned to major versions (actions/checkout@v7, actions/upload-artifact@v7, Swatinem/rust-cache@v2, taiki-e/install-action@v2), which trusts those tags. Pin every one to a full commit SHA before CI ever produces release artifacts - ADR-0011 reversal trigger 1.",
       "found_in_stage": "S1",
-      "target_stage": "S1",
+      "target_stage": "S10",
       "rationale": "Losing master protection in the move would be a silent regression in the release story"
     },
     {
