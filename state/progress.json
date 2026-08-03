@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T17:30:00Z",
+  "updated_at": "2026-08-03T17:45:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -458,7 +458,7 @@
             "tests/corpus/runner/"
           ],
           "blocked_by": "S1-T6",
-          "notes": null,
+          "notes": "YAML crate research done 2026-08-03 so it need not be repeated. serde_yaml is DEPRECATED - its latest release is literally version 0.9.34+deprecated, last updated 2024-03-25 - so it must not be used. Live options, verified against crates.io: serde_norway 0.9.42 (a maintained fork of serde_yaml by cafkafk, updated 2024-12, 8.5M downloads, drop-in serde integration); serde_yaml_ng 0.10.0 (another fork, updated 2024-05, 7.6M downloads); yaml-rust2 0.11.0 (updated 2025-12, 49M downloads, but a low-level parser with no serde derive support, so the case structs would be hand-parsed); saphyr 0.0.11 (yaml-rust2's successor, actively developed, but still 0.0.x). RECOMMENDATION: serde_norway, because ADR-0010 requires the runner to FAIL CLOSED on an unknown key, which serde's deny_unknown_fields gives directly - and a hand-rolled parser would have to reimplement exactly that. Record it in docs/14 section 1 rather than writing an ADR: the cases are plain YAML data, so any conformant parser can read them and the choice is cheap to reverse. Remember the fail-closed requirement is the point of the task: also needed are the tests/corpus/self-test/ fixture whose deliberately-wrong expectation must make the runner FAIL, and the unconditional byte-comparison and file_renamed assertions that no case may opt out of.",
           "invariants": []
         },
         {
@@ -470,7 +470,7 @@
             "tests/corpus/cases/"
           ],
           "blocked_by": "S1-T10",
-          "notes": null,
+          "notes": "Backlog B-10 must be closed here: cross-host redirects and protocol downgrade need two PathologyServers wired together, since one server serves one origin. I-8's proof list in docs/agent/INVARIANTS.md names redirect-chain-to-other-host explicitly, so S1 cannot close without it. The engine behaviours themselves are already proven by tests/corpus/tests/probe.rs and download.rs; what this task adds is the declarative inventory that exit criteria S1-C2, C5 and C6 are worded in terms of, plus the corpus_cases_total/passing metrics.",
           "invariants": [
             "I-5",
             "I-6"
@@ -1352,6 +1352,25 @@
         "state/progress.json"
       ],
       "left_in_progress": "8/13 S1 tasks done. Next: S1-T9 (single-stream download to .dppart, verify, atomic rename) is unblocked - RangeSink and fetch_range exist, and fetch_range is written but still has no behavioural coverage, so S1-T9's tests are what will first exercise it. Then S1-T10 (YAML runner; needs a maintained YAML crate chosen - serde_yaml is archived, so check serde_norway or saphyr and record the choice), S1-T11 (cases, including B-10's cross-host redirect needing two servers), S1-T12 (dp add), S1-T13 (1 GB). MR !1 is open against develop."
+    },
+    {
+      "at": "2026-08-03T17:45:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "S1-T9, T12, T13 plus a server rewrite. Single-stream download with verify-before-rename (I-4), which found TWO engine defects: the probe treated 416 as fatal, making an empty representation undownloadable, and a body that died before its declared Content-Length surfaced as an opaque transport error, losing the truncation and the byte count that docs/03 section 7's retry policy needs. Both fixed with their regression tests in the same change. `dp add <url>` works, verified both by subprocess tests and by hand against a real http.server (3 MB byte-identical, correct exit codes, refuses to overwrite, reports 404). The pathology server buffered whole bodies in memory, which made a 1 GB case impossible and silently capped the corpus at what fits in RAM; both protocols now stream from the generator. S1-C1 is met: 1 GB byte-exact over HTTP/1.1 (3.0s) and h2c (3.6s). 139 tests, 6 doctests, just gate green. Every behavioural claim was mutation-checked, and one mutation script was found to be silently no-op'ing, which had produced a meaningless pass.",
+      "tasks_touched": [
+        "S1-T9",
+        "S1-T12",
+        "S1-T13"
+      ],
+      "files_touched": [
+        "crates/downpour-http/",
+        "crates/downpour-cli/",
+        "tests/corpus/",
+        "justfile",
+        "state/progress.json"
+      ],
+      "left_in_progress": "11/13 S1 tasks done; exit criteria 3/6 met (C1, C3, C4). C2, C5 and C6 are NOT met and were not softened: all three are worded in terms of corpus categories that do not exist until S1-T10 and S1-T11, which are the only two tasks left. T10 is the YAML case runner - its notes carry the completed crate research (serde_yaml is deprecated; serde_norway recommended, because ADR-0010's fail-closed requirement is exactly serde's deny_unknown_fields) and the reminder that the self-test fixture and the unconditional assertions ARE the task. T11 is the case files, and must close backlog B-10 (cross-host redirects need two servers) because I-8's proof list names redirect-chain-to-other-host. MR !1 is open against develop."
     }
   ],
   "metrics": {
