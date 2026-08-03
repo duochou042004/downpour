@@ -1,0 +1,16 @@
+id: redirect-to-h2c-origin
+category: redirects
+description: >
+  A redirect chain served over HTTP/2, to check that hop-following does not depend on the
+  HTTP/1.1 path. Cleartext h2c, so ALPN is not involved (backlog B-8).
+references: ["RFC 9113 §8.3", "INVARIANTS.md#i-8"]
+
+server:
+  protocol: "http/2"
+  content: { size: 128KiB, seed: 77 }
+  redirect_chain: [302, 302]
+
+expect:
+  final_state: completed
+  file_renamed: true
+  redirect_chain_len: 3

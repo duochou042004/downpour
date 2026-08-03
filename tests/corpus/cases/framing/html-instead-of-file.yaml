@@ -1,0 +1,17 @@
+id: html-instead-of-file
+category: framing
+description: >
+  The server answers 200 with `text/html` and a login page where a binary was expected. Only
+  inspecting the content type catches it. The engine must report a session problem and write
+  nothing, rather than saving the login page under the requested filename.
+references: ["docs/03-transfer-engine-spec.md §2.1 step 7"]
+
+server:
+  content: { size: 64KiB, seed: 1 }
+  content_type: "text/html; charset=utf-8"
+  body: "<html><body>Please log in</body></html>"
+
+expect:
+  final_state: failed
+  error_kind: looks_like_error_page
+  file_renamed: false

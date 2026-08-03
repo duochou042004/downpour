@@ -36,6 +36,10 @@ reqwest = { version = "0.13.4", default-features = false, features = [
   "system-proxy",
 ] }
 serde = { version = "1.0.229", features = ["derive"] }
+# serde_yaml is deprecated upstream (its last release is literally 0.9.34+deprecated). This is the
+# maintained fork with the same serde integration, which matters because ADR-0010 requires the
+# corpus runner to fail closed on an unknown key and that is exactly `deny_unknown_fields`.
+serde_norway = "0.9.42"
 thiserror = "2.0.19"
 tokio = "1.53.1"
 tracing = "0.1.44"

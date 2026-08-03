@@ -1,0 +1,16 @@
+id: content-range-mismatch
+category: ranges
+description: >
+  The probe asks for `bytes=0-0` and the server describes `bytes 4096-4096/N`. Writing that body
+  at the requested offset would corrupt the file at exactly the expected size, so the response
+  must be rejected and ranges must not be proven.
+references: ["RFC 9110 §14.4", "INVARIANTS.md#i-5", "INVARIANTS.md#i-6"]
+
+server:
+  content: { size: 256KiB, seed: 11 }
+  ranges: !shifted-content-range { by: 4096 }
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent

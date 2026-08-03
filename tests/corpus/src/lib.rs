@@ -17,5 +17,7 @@
 //! Because this crate is only ever compiled for tests, it may `unwrap` where the engine crates
 //! may not: a panic here fails a test, it does not take down a user's transfers.
 
+pub mod case;
 pub mod content;
+pub mod runner;
 pub mod server;

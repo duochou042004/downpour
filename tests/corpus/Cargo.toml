@@ -13,6 +13,9 @@ publish = false
 blake3 = { workspace = true }
 downpour-http = { workspace = true }
 downpour-types = { workspace = true }
+serde = { workspace = true }
+serde_norway = { workspace = true }
+thiserror = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["server", "client", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["tokio"] }

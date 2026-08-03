@@ -133,6 +133,14 @@ pub struct ServerSpec {
     pub status_override: Option<u16>,
     /// Serve these bytes instead of generated content — an HTML login page, for instance.
     pub body_override: Option<Vec<u8>>,
+    /// Corrupt every byte from this offset onward, by inverting it.
+    ///
+    /// Exists for exactly one purpose: proving that the corpus can detect corruption at all. Every
+    /// other case relies on the runner's byte comparison firing when it should, and without a
+    /// server that can actually serve wrong bytes, that comparison is only ever observed passing —
+    /// which is indistinguishable from a comparison that never runs. Used only by
+    /// `tests/corpus/self-test/`.
+    pub corrupt_from: Option<u64>,
 }
 
 impl Default for ServerSpec {
@@ -153,6 +161,7 @@ impl Default for ServerSpec {
             truncate_body_after: None,
             status_override: None,
             body_override: None,
+            corrupt_from: None,
         }
     }
 }
@@ -760,9 +769,24 @@ fn next_chunk<'b>(
     }
 
     let first = plan.body.map_or(0, |(first, _)| first);
+    let absolute = first.saturating_add(offset);
     let out = buffer.get_mut(..take).unwrap_or(&mut []);
-    spec.content.fill(first.saturating_add(offset), out);
+    spec.content.fill(absolute, out);
+    corrupt(spec, absolute, out);
     out
+}
+
+/// Invert every byte at or after `spec.corrupt_from`. See that field's documentation.
+fn corrupt(spec: &ServerSpec, absolute_start: u64, buffer: &mut [u8]) {
+    let Some(from) = spec.corrupt_from else {
+        return;
+    };
+    for (index, byte) in buffer.iter_mut().enumerate() {
+        let offset = absolute_start.saturating_add(u64::try_from(index).unwrap_or(0));
+        if offset >= from {
+            *byte = !*byte;
+        }
+    }
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -787,6 +811,8 @@ struct GeneratedBody {
     first: u64,
     sent: u64,
     send_len: u64,
+    /// See `ServerSpec::corrupt_from`.
+    corrupt_from: Option<u64>,
 }
 
 impl GeneratedBody {
@@ -797,6 +823,7 @@ impl GeneratedBody {
             first: 0,
             sent: 0,
             send_len: 0,
+            corrupt_from: None,
         }
     }
 }
@@ -827,8 +854,15 @@ impl HttpBody for GeneratedBody {
             Bytes::copy_from_slice(literal.get(start..end).unwrap_or(&[]))
         } else {
             let mut buffer = vec![0_u8; take];
-            this.content
-                .fill(this.first.saturating_add(this.sent), &mut buffer);
+            let absolute = this.first.saturating_add(this.sent);
+            this.content.fill(absolute, &mut buffer);
+            if let Some(from) = this.corrupt_from {
+                for (index, byte) in buffer.iter_mut().enumerate() {
+                    if absolute.saturating_add(u64::try_from(index).unwrap_or(0)) >= from {
+                        *byte = !*byte;
+                    }
+                }
+            }
             Bytes::from(buffer)
         };
 
@@ -890,6 +924,7 @@ async fn serve_h2c(
                     first: plan.body.map_or(0, |(first, _)| first),
                     sent: 0,
                     send_len,
+                    corrupt_from: spec.corrupt_from,
                 };
 
                 let mut builder = hyper::Response::builder().status(plan.status);

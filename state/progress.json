@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T17:45:00Z",
+  "updated_at": "2026-08-03T18:55:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -452,10 +452,14 @@
         {
           "id": "S1-T10",
           "title": "Corpus runner: YAML case to server configuration to engine run to assertions, wired to `just corpus`",
-          "status": "todo",
-          "proof": "`just corpus` executes the S1 case set; a deliberately-wrong fixture case under tests/corpus/self-test/ makes the runner report a failure, proving the assertions are actually evaluated rather than skipped",
+          "status": "done",
+          "proof": "tests/corpus/tests/runner_self_test.rs (6 tests) - the fail-closed proof ADR-0010 requires - plus tests/corpus/tests/corpus_cases.rs (4 tests) which runs the whole case set. The two that matter: the_runner_fails_a_case_whose_expectation_is_wrong feeds the runner a fixture claiming a gzipped ranged response completes, and asserts the runner REJECTS it; and the_runner_detects_a_server_that_serves_corrupt_bytes has the server return the right length with correct headers and inverted content from 32 KiB on, and asserts a SILENT CORRUPTION finding naming byte 32768. That second one required adding ServerSpec::corrupt_from, and it is the most important self-test in the project: without a server that can serve wrong bytes, the runner's byte comparison is only ever observed passing, which is indistinguishable from a comparison that never runs. Mutation-checked: disabling the corruption check turns exactly that test red. Also asserted: an unknown key is a hard error naming the key (not a dropped assertion), a failure case with no error_kind is rejected, an unimplemented generator name is rejected rather than falling back, and a case describing mid-transfer `behaviour` is rejected because the server cannot enact it until S2. the_recorded_case_count_matches_reality pins metrics.corpus_cases_total to the files on disk so it cannot drift into a number nobody checks. YAML crate: serde_norway, recorded in docs/14.",
           "files": [
-            "tests/corpus/runner/"
+            "tests/corpus/src/case.rs",
+            "tests/corpus/src/runner.rs",
+            "tests/corpus/tests/corpus_cases.rs",
+            "tests/corpus/tests/runner_self_test.rs",
+            "tests/corpus/self-test/"
           ],
           "blocked_by": "S1-T6",
           "notes": "YAML crate research done 2026-08-03 so it need not be repeated. serde_yaml is DEPRECATED - its latest release is literally version 0.9.34+deprecated, last updated 2024-03-25 - so it must not be used. Live options, verified against crates.io: serde_norway 0.9.42 (a maintained fork of serde_yaml by cafkafk, updated 2024-12, 8.5M downloads, drop-in serde integration); serde_yaml_ng 0.10.0 (another fork, updated 2024-05, 7.6M downloads); yaml-rust2 0.11.0 (updated 2025-12, 49M downloads, but a low-level parser with no serde derive support, so the case structs would be hand-parsed); saphyr 0.0.11 (yaml-rust2's successor, actively developed, but still 0.0.x). RECOMMENDATION: serde_norway, because ADR-0010 requires the runner to FAIL CLOSED on an unknown key, which serde's deny_unknown_fields gives directly - and a hand-rolled parser would have to reimplement exactly that. Record it in docs/14 section 1 rather than writing an ADR: the cases are plain YAML data, so any conformant parser can read them and the choice is cheap to reverse. Remember the fail-closed requirement is the point of the task: also needed are the tests/corpus/self-test/ fixture whose deliberately-wrong expectation must make the runner FAIL, and the unconditional byte-comparison and file_renamed assertions that no case may opt out of.",
@@ -464,13 +468,13 @@
         {
           "id": "S1-T11",
           "title": "Write the S1 corpus cases for the ranges, framing and redirects categories",
-          "status": "todo",
-          "proof": "metrics.corpus_cases_total and corpus_cases_passing in this file match the count `just corpus` reports; every case carries an id, a category and a references field naming the RFC clause or invariant it exercises",
+          "status": "in_progress",
+          "proof": "11 cases written and passing under `just gate` (4 ranges, 5 framing, 2 redirects), with metrics.corpus_cases_total pinned to the on-disk count by a test. NOT YET SUFFICIENT for the stage gate - see notes.",
           "files": [
             "tests/corpus/cases/"
           ],
           "blocked_by": "S1-T10",
-          "notes": "Backlog B-10 must be closed here: cross-host redirects and protocol downgrade need two PathologyServers wired together, since one server serves one origin. I-8's proof list in docs/agent/INVARIANTS.md names redirect-chain-to-other-host explicitly, so S1 cannot close without it. The engine behaviours themselves are already proven by tests/corpus/tests/probe.rs and download.rs; what this task adds is the declarative inventory that exit criteria S1-C2, C5 and C6 are worded in terms of, plus the corpus_cases_total/passing metrics.",
+          "notes": "11 of roughly 50 cases written for the three S1 categories. docs/09-testing-strategy.md section 3.2 targets 25 ranges, 15 framing and 10 redirects. Present: ranges 4/25 (accept-ranges-lies, 206-with-whole-body, content-range-mismatch, content-range-absent), framing 5/15 (gzip-on-range, chunked-no-content-length, close-delimited-body, truncated-body, html-instead-of-file), redirects 2/10 (redirect-chain-mixed-statuses, redirect-to-h2c-origin). The runner and every server pathology needed are in place, so the remaining work is writing case files, not building machinery - with two exceptions that need server work: backlog B-10 (cross-host redirects and protocol downgrade need two PathologyServers wired together, and I-8's proof list names redirect-chain-to-other-host explicitly) and multipart/byteranges responses, which the server cannot yet emit. Exit criteria S1-C2, C5 and C6 are deliberately left UNMET until the categories reach their targets: marking them met at 4/25 would be exactly the optimistic-status anti-pattern docs/agent/HARNESS.md section 7 names, and would tell the next session the ranges pathology space is covered when it is not.",
           "invariants": [
             "I-5",
             "I-6"
@@ -1225,6 +1229,13 @@
       "found_in_stage": "S1",
       "target_stage": "S1",
       "rationale": "Named in I-8's proof list, so it must be covered before S1 closes"
+    },
+    {
+      "id": "B-11",
+      "text": "The pathology server cannot emit a multipart/byteranges response (RFC 9110 section 14.6), which the ranges category needs: a server answering a single-range request with a multipart body is a real pathology and the engine must reject it rather than write the MIME boundaries into the file.",
+      "found_in_stage": "S1",
+      "target_stage": "S1",
+      "rationale": "Named in docs/09 section 3.2's ranges description; needed before S1-C2 can honestly be met"
     }
   ],
   "session_log": [
@@ -1371,11 +1382,31 @@
         "state/progress.json"
       ],
       "left_in_progress": "11/13 S1 tasks done; exit criteria 3/6 met (C1, C3, C4). C2, C5 and C6 are NOT met and were not softened: all three are worded in terms of corpus categories that do not exist until S1-T10 and S1-T11, which are the only two tasks left. T10 is the YAML case runner - its notes carry the completed crate research (serde_yaml is deprecated; serde_norway recommended, because ADR-0010's fail-closed requirement is exactly serde's deny_unknown_fields) and the reminder that the self-test fixture and the unconditional assertions ARE the task. T11 is the case files, and must close backlog B-10 (cross-host redirects need two servers) because I-8's proof list names redirect-chain-to-other-host. MR !1 is open against develop."
+    },
+    {
+      "at": "2026-08-03T18:55:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "S1-T10 done, S1-T11 started. The declarative case format and runner are in, with serde_norway (serde_yaml is deprecated upstream) chosen specifically because ADR-0010's fail-closed requirement IS serde's deny_unknown_fields. The runner imposes the byte-for-byte corruption comparison and the file_renamed check on every case, and neither is a key a case can set. Added ServerSpec::corrupt_from so the corpus can prove its own corruption detector fires - the server now serves the right length with wrong content and the runner catches it at the exact offset; mutation-checked. 11 cases written across ranges, framing and redirects, all passing. 149 tests, 6 doctests, just gate green.",
+      "tasks_touched": [
+        "S1-T10",
+        "S1-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/cases/",
+        "tests/corpus/self-test/",
+        "tests/corpus/tests/",
+        "Cargo.toml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "12/13 S1 tasks done; only S1-T11 is open. Exit criteria remain 3/6 (C1, C3, C4). C2, C5 and C6 are deliberately NOT marked met even though every case that exists passes: the categories are at 4/25 ranges, 5/15 framing and 2/10 redirects against docs/09 section 3.2's targets, and marking them met would tell the next session the pathology space is covered when it is not. Remaining work is writing case files against machinery that already exists, plus two server gaps: B-10 (cross-host redirects need two servers; I-8's proof list names redirect-chain-to-other-host) and B-11 (multipart/byteranges). MR !1 is open against develop."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 0,
-    "corpus_cases_passing": 0,
+    "corpus_cases_total": 11,
+    "corpus_cases_passing": 11,
     "sim_seeds_fixed": 0,
     "invariants_covered": 5,
     "invariants_total": 14,

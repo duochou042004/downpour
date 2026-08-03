@@ -1,0 +1,16 @@
+id: 206-with-whole-body
+category: ranges
+description: >
+  The server answers the probe with 206 and a correct `Content-Range: bytes 0-0/N`, then streams
+  the entire representation. Every header is consistent, so only counting the delivered bytes
+  catches it. Range support must not be proven.
+references: ["RFC 9110 §15.3.7", "INVARIANTS.md#i-6"]
+
+server:
+  content: { size: 256KiB, seed: 7 }
+  ranges: ignore-but-claim
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent

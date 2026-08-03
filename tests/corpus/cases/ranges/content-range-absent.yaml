@@ -1,0 +1,15 @@
+id: content-range-absent
+category: ranges
+description: >
+  A 206 with no `Content-Range` at all does not say which bytes are in the body, so there is no
+  offset at which it is safe to write them. Range support must not be proven.
+references: ["RFC 9110 §15.3.7", "INVARIANTS.md#i-6"]
+
+server:
+  content: { size: 128KiB, seed: 3 }
+  ranges: omit-content-range
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent

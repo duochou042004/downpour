@@ -1,0 +1,17 @@
+id: gzip-on-range
+category: framing
+description: >
+  The server declares `Content-Encoding: gzip` on a response to a ranged request. The bytes on the
+  wire no longer correspond to the byte range that was asked for, so the engine must refuse to
+  write anything at all — not even a .dppart — rather than storing compressed bytes at a raw file
+  offset. This is the failure that completes at exactly the right size and is garbage.
+references: ["RFC 9110 §8.4", "INVARIANTS.md#i-5"]
+
+server:
+  content: { size: 128KiB, seed: 42 }
+  content_encoding: gzip
+
+expect:
+  final_state: failed
+  error_kind: unexpected_content_encoding
+  file_renamed: false
