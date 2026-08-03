@@ -13,8 +13,11 @@ authors = ["Downpour contributors"]
 # Versions are pinned from docs/14-tech-radar-2026.md. Do not bump one here without
 # updating that file and saying why — it is the record of what was verified when.
 [workspace.dependencies]
+clap = "4.6.5"
+downpour-corpus = { path = "tests/corpus" }
 downpour-http = { path = "crates/downpour-http" }
 downpour-types = { path = "crates/downpour-types" }
+anyhow = "1.0"
 async-trait = "0.1.91"
 blake3 = "1.8.5"
 http-body-util = "0.1.4"
@@ -36,6 +39,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.19"
 tokio = "1.53.1"
 tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
 # The `serde` feature is enabled per-crate, by whichever crate actually persists a URL.
 # Nothing does yet; persistence arrives with downpour-storage in S2.
 url = "2.5.8"

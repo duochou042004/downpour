@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T16:20:00Z",
+  "updated_at": "2026-08-03T16:50:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -479,12 +479,13 @@
         {
           "id": "S1-T12",
           "title": "dp add <url>: single-stream download from the command line",
-          "status": "todo",
-          "proof": "crates/downpour-cli/tests/dp_add.rs — runs the built `dp` binary against the pathology server and byte-compares the resulting file against the generator; asserts a non-zero exit and no renamed file when the probe rejects the response",
+          "status": "done",
+          "proof": "crates/downpour-cli/tests/dp_add.rs (7 tests) run the built dp binary as a subprocess, so argument parsing, the exit code, stdout and stderr are all under test - a library-level test would pass with a binary that never ran. Byte-compares the downloaded file against the generator over HTTP/1.1, h2c, and a server without range support; asserts exit 1 with an empty stdout and NO file created when the probe refuses a compressed body (I-5); asserts exit 1 and no final name when the body is truncated (I-4); asserts a bad URL is reported without touching the network; and asserts --version and --help work, which catches a clap misconfiguration that would otherwise first appear in front of a user. Also verified manually against a real python http.server: 3 MB downloaded byte-identical (cmp clean), exit 0, the path on stdout, then exit 1 with 'refusing to overwrite' on a re-run and exit 1 'answered 404' for a missing file. Test placement note: this lives in downpour-cli rather than tests/corpus because Cargo sets CARGO_BIN_EXE_dp only for integration tests in the binary's own package, and that is also what guarantees the binary was built first - from another package the path has to be guessed, and a guess that misses becomes a test that silently never ran the binary.",
           "files": [
-            "crates/downpour-cli/src/main.rs"
+            "crates/downpour-cli/src/main.rs",
+            "crates/downpour-cli/tests/dp_add.rs"
           ],
-          "blocked_by": "S1-T9",
+          "blocked_by": null,
           "notes": null,
           "invariants": [
             "I-4"
