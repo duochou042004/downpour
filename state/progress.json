@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T01:30:00Z",
+  "updated_at": "2026-08-04T02:10:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -270,7 +270,7 @@
           "id": "S1-C1",
           "text": "Downloads a 1 GB file correctly over HTTP/1.1 and HTTP/2",
           "met": true,
-          "evidence": "tests/corpus/tests/gigabyte.rs, run by `just corpus-slow`. Verified 2026-08-03: 1 000 000 000 bytes over HTTP/1.1 (3.0s) and over HTTP/2 as h2c (3.6s), each compared byte for byte against blake3-ctr-v1 with 0 mismatches. The verifier itself is proven able to fail by a companion test that flips one byte 3 MiB in. Caveat recorded as backlog B-8: HTTP/2 here is cleartext h2c, not h2 over TLS with ALPN, which the corpus cannot yet express.",
+          "evidence": "tests/corpus/tests/gigabyte.rs, run by `just corpus-slow`. Verified 2026-08-03: 1 000 000 000 bytes over HTTP/1.1 (3.0s) and over HTTP/2 as h2c (3.6s), each compared byte for byte against blake3-ctr-v1 with 0 mismatches. The verifier itself is proven able to fail by a companion test that flips one byte 3 MiB in. Caveat recorded as backlog B-8: HTTP/2 here is cleartext h2c, not h2 over TLS with ALPN, which the corpus cannot yet express. ALSO VERIFIED IN CI, not only locally: the slow-corpus job in .github/workflows/ci.yml ran both gigabyte cases on a GitHub runner in 107 s (run 30829132772, triggered with `gh workflow run CI`). That matters because 'green on the machine that produced it' is the property CI exists to rule out.",
           "invariants": []
         },
         {
@@ -328,7 +328,7 @@
           "id": "S1-C8",
           "text": "The workspace compiles and its test suite passes on Windows",
           "met": true,
-          "evidence": "The windows-latest job in .github/workflows/ci.yml runs clippy -D warnings and nextest --workspace and is green on two independent runs (30826537689: clippy 102 s, nextest 100 s; 30827248189: 128 s with a warm cache). Reproducible by anyone: push to the branch, or `gh workflow run CI`. Locally, `cargo check --locked --workspace --target x86_64-pc-windows-gnu` is clean in 25 s.",
+          "evidence": "The windows-latest job in .github/workflows/ci.yml runs clippy -D warnings and nextest --workspace and is green on two independent runs (30826537689: clippy 102 s, nextest 100 s; 30827248189: 128 s with a warm cache). Reproducible by anyone: push to the branch, or `gh workflow run CI`. Locally, `cargo check --locked --workspace --target x86_64-pc-windows-gnu` is clean in 25 s. Green on three independent runs by the end: 30826537689, 30827248189, 30828917886.",
           "invariants": [
             "I-1",
             "I-4",
@@ -1356,6 +1356,13 @@
       "found_in_stage": "S1",
       "target_stage": "S2",
       "rationale": "probed_at is recorded but nothing consumes it, which would otherwise look like dead weight"
+    },
+    {
+      "id": "B-17",
+      "text": "The nightly slow-corpus schedule in .github/workflows/ci.yml is NOT live yet. GitHub only fires `schedule` triggers from a repository's DEFAULT branch, and develop - which is the default - does not carry the workflow until this PR merges. Until then the 1 GB cases run only on demand via `gh workflow run CI`. Verify the nightly actually fires after the merge rather than assuming it; a schedule that silently never runs is the same class of problem as a corpus case that silently asserts nothing.",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "A scheduled job nobody checks is indistinguishable from one that does not exist"
     }
   ],
   "session_log": [
@@ -1602,6 +1609,17 @@
         "state/progress.json"
       ],
       "left_in_progress": "S1 is in GATE-REVIEW: 17/17 tasks, 8/8 criteria, awaiting a human decision. current_stage is deliberately still S1 - advancement is not an agent's call (HARNESS.md §2). Known limits recorded rather than hidden: the ranges category is 15 against docs/09's initial target of 25 (B-13; every classification path the corpus can express is covered, the rest needs S2/S3 features), the corpus is cleartext h1/h2c rather than h2-over-TLS with ALPN (B-8), and third-party GitHub Actions are pinned to major versions rather than commit SHAs (B-14, must change before any release artifacts). If the gate is approved, S2 is docs/04-storage-and-recovery-spec.md, and B-5, B-6, B-7 and B-16 all name work it must pick up - including upgrading S1's restart-from-zero retry into a real resume once If-Range exists."
+    },
+    {
+      "at": "2026-08-04T02:10:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "Verified the whole S1 gate on CI rather than only locally. All five jobs green on GitHub Actions, including windows-latest and the slow-corpus job, which transferred and byte-verified 1 GB over HTTP/1.1 and h2c in 107 s on a runner (run 30829132772). Recorded B-17: the nightly schedule is NOT live yet, because GitHub only fires `schedule` from the default branch and develop does not carry the workflow until this PR merges - a scheduled job nobody checks is indistinguishable from one that does not exist.",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1 is in gate-review with 17/17 tasks and 8/8 criteria, every criterion backed by evidence that someone else can re-run, and the full suite green on CI including Windows and the 1 GB transfers. Awaiting a human gate decision; do NOT advance current_stage without it. Open backlog for S2 to pick up: B-5, B-6, B-7, B-16 (including upgrading S1's restart-from-zero retry into a real resume once If-Range exists), plus B-13 (ranges 15/25), B-14 (pin actions to SHAs before release artifacts) and B-17 (confirm the nightly fires after merge)."
     }
   ],
   "metrics": {
