@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T16:50:00Z",
+  "updated_at": "2026-08-03T17:30:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -269,8 +269,8 @@
         {
           "id": "S1-C1",
           "text": "Downloads a 1 GB file correctly over HTTP/1.1 and HTTP/2",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "tests/corpus/tests/gigabyte.rs, run by `just corpus-slow`. Verified 2026-08-03: 1 000 000 000 bytes over HTTP/1.1 (3.0s) and over HTTP/2 as h2c (3.6s), each compared byte for byte against blake3-ctr-v1 with 0 mismatches. The verifier itself is proven able to fail by a companion test that flips one byte 3 MiB in. Caveat recorded as backlog B-8: HTTP/2 here is cleartext h2c, not h2 over TLS with ALPN, which the corpus cannot yet express.",
           "invariants": []
         },
         {
@@ -285,15 +285,15 @@
         {
           "id": "S1-C3",
           "text": "Filename sanitisation passes its property tests including path-traversal cases",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "crates/downpour-types/tests/filename_prop.rs::sanitised_name_is_always_exactly_one_normal_component - proptest over arbitrary char sequences asserting the result is exactly one Component::Normal, so it cannot escape the directory it is joined to; plus sanitise_is_idempotent, resolve_never_panics, and a 22-case table covering ../, absolute paths, Windows-style separators, NUL, control characters, the Windows reserved device names, trailing dots and spaces, and multibyte truncation. Proven end to end by tests/corpus/tests/download.rs::a_traversal_in_content_disposition_cannot_write_outside_the_target_directory, which asserts the written file's parent is the target directory.",
           "invariants": []
         },
         {
           "id": "S1-C4",
           "text": "Never writes a body received with an unexpected Content-Encoding",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "Four layers, each asserted independently. Header level: crates/downpour-types/tests/range_proof.rs::a_gzipped_range_response_is_rejected. Probe level: tests/corpus/tests/probe.rs::a_compressed_ranged_response_is_an_error_not_a_downgrade, which also asserts it is NOT downgraded to RangeSupport::Absent - conflating those would let the transfer proceed over bytes that do not correspond to the representation. Request level: ::the_probe_sends_accept_encoding_identity, asserted against the request the SERVER recorded rather than against our own code. Filesystem level: tests/corpus/tests/download.rs::a_compressed_body_is_never_written asserts the target directory is EMPTY afterwards - not even a .dppart - and crates/downpour-cli/tests/dp_add.rs asserts exit 1 with no file. Mutation-checked: deleting the Content-Encoding check turns the first two red. Also structural: no decompression feature is enabled on reqwest, so there is no code path that could inflate a body.",
           "invariants": [
             "I-5"
           ]
@@ -494,12 +494,14 @@
         {
           "id": "S1-T13",
           "title": "1 GB correctness over HTTP/1.1 and HTTP/2",
-          "status": "todo",
-          "proof": "corpus cases `gigabyte-h1` and `gigabyte-h2` in the slow profile: 1 GB of generated content downloaded and byte-compared in full, 0 mismatches; run by `just corpus-slow`, not on every push",
+          "status": "done",
+          "proof": "tests/corpus/tests/gigabyte.rs::a_gigabyte_over_http11_is_byte_exact and ::a_gigabyte_over_http2_is_byte_exact, run by `just corpus-slow` (release, --run-ignored all). Verified 2026-08-03: 1 000 000 000 bytes over HTTP/1.1 in 3.0s and over h2c in 3.6s, both compared byte for byte against the generator with 0 mismatches. Neither side holds a gigabyte: the server generates each chunk as it is polled and the verifier streams the file past the generator 1 MiB at a time. A third test, NOT ignored, corrupts one byte deep in the third window and asserts the verifier panics - without it the two gigabyte results would prove nothing. Ignored by default so the every-push budget stays under five minutes (docs/09 section 6). REQUIRED A SERVER FIX: the pathology server materialised the whole body in memory, which made a 1 GB case impossible and silently capped the corpus at what fits in RAM. Both protocols now stream from the generator, which is the reason the generator was made seekable in the first place.",
           "files": [
-            "tests/corpus/cases/protocols/"
+            "tests/corpus/tests/gigabyte.rs",
+            "tests/corpus/src/server.rs",
+            "justfile"
           ],
-          "blocked_by": "S1-T12",
+          "blocked_by": null,
           "notes": null,
           "invariants": [
             "I-1"

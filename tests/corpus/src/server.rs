@@ -22,8 +22,10 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use http_body_util::Full;
-use hyper::body::Bytes;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
+
+use hyper::body::{Body as HttpBody, Bytes, Frame, SizeHint};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -529,18 +531,36 @@ fn reason_phrase(status: u16) -> &'static str {
 }
 
 /// Bytes the plan will actually deliver.
-fn planned_body(spec: &ServerSpec, plan: &Plan) -> Vec<u8> {
+/// How many bytes the plan will deliver, computed without producing them.
+///
+/// Separate from producing the bytes because a 1 GB case must never materialise 1 GB: the whole
+/// point of the deterministic generator is that any range is computable on demand, and buffering
+/// the body here would throw that away and cap the corpus at whatever fits in memory.
+fn planned_body_len(spec: &ServerSpec, plan: &Plan) -> u64 {
     if let Some(literal) = &plan.literal_body {
-        return literal.clone();
+        return u64::try_from(literal.len()).unwrap_or(0);
     }
     match plan.body {
-        None => Vec::new(),
+        None => 0,
         Some((first, last)) if !spec.content.is_empty() => {
-            spec.content.range(first, last.saturating_add(1))
+            last.saturating_sub(first).saturating_add(1)
         }
-        Some(_) => Vec::new(),
+        Some(_) => 0,
     }
 }
+
+/// How many bytes will actually be written, after any truncation the case asked for.
+fn bytes_to_write(spec: &ServerSpec, plan: &Plan) -> u64 {
+    let full = planned_body_len(spec, plan);
+    match spec.truncate_body_after {
+        Some(limit) => limit.min(full),
+        None => full,
+    }
+}
+
+/// Chunk size for streaming a generated body. Large enough that the per-chunk overhead does not
+/// dominate a gigabyte, small enough to exercise a client's chunk-boundary handling.
+const STREAM_CHUNK: usize = 64 * 1024;
 
 // ---------------------------------------------------------------- HTTP/1.1
 
@@ -597,7 +617,9 @@ async fn serve_http11(
         }
 
         let plan = plan(spec, &path, range_header.as_deref());
-        let body = planned_body(spec, &plan);
+        let full_len = planned_body_len(spec, &plan);
+        let send_len = bytes_to_write(spec, &plan);
+        let truncated = send_len < full_len;
 
         // A redirect or an override answers with its own framing; only a content response takes
         // the case's framing pathology.
@@ -617,17 +639,9 @@ async fn serve_http11(
             response.push_str(&format!("{name}: {value}\r\n"));
         }
 
-        let truncate_at = spec
-            .truncate_body_after
-            .and_then(|n| usize::try_from(n).ok())
-            .unwrap_or(body.len())
-            .min(body.len());
-        let to_send = &body[..truncate_at];
-        let truncated = truncate_at < body.len();
-
         match framing {
             Framing::ContentLength => {
-                response.push_str(&format!("Content-Length: {}\r\n", body.len()));
+                response.push_str(&format!("Content-Length: {full_len}\r\n"));
             }
             Framing::WrongContentLength { declared } => {
                 response.push_str(&format!("Content-Length: {declared}\r\n"));
@@ -646,8 +660,8 @@ async fn serve_http11(
         }
 
         let wrote_body = match framing {
-            Framing::Chunked => write_chunked(&mut stream, to_send).await,
-            _ => stream.write_all(to_send).await,
+            Framing::Chunked => write_chunked(&mut stream, spec, &plan, send_len).await,
+            _ => write_plain(&mut stream, spec, &plan, send_len).await,
         };
         if wrote_body.is_err() {
             return;
@@ -672,18 +686,83 @@ async fn serve_http11(
     }
 }
 
-async fn write_chunked(stream: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
-    // A realistic chunk size: one chunk for a whole 256 KiB body would not exercise a client's
-    // chunk-boundary handling, which is the point of the chunked case.
-    const CHUNK: usize = 16 * 1024;
-    for piece in body.chunks(CHUNK) {
+/// Stream `send_len` bytes of the planned body, generating each chunk on demand.
+async fn write_plain(
+    stream: &mut TcpStream,
+    spec: &ServerSpec,
+    plan: &Plan,
+    send_len: u64,
+) -> std::io::Result<()> {
+    let mut buffer = vec![0_u8; STREAM_CHUNK];
+    let mut written = 0_u64;
+    while written < send_len {
+        let piece = next_chunk(spec, plan, written, send_len, &mut buffer);
+        if piece.is_empty() {
+            break;
+        }
+        stream.write_all(piece).await?;
+        written = written.saturating_add(u64::try_from(piece.len()).unwrap_or(0));
+    }
+    Ok(())
+}
+
+/// The same, with chunked transfer-encoding framing.
+async fn write_chunked(
+    stream: &mut TcpStream,
+    spec: &ServerSpec,
+    plan: &Plan,
+    send_len: u64,
+) -> std::io::Result<()> {
+    // Several chunks rather than one: a single chunk covering the whole body would not exercise a
+    // client's chunk-boundary handling, which is the point of the chunked case.
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let mut written = 0_u64;
+    while written < send_len {
+        let piece = next_chunk(spec, plan, written, send_len, &mut buffer);
+        if piece.is_empty() {
+            break;
+        }
         stream
             .write_all(format!("{:x}\r\n", piece.len()).as_bytes())
             .await?;
         stream.write_all(piece).await?;
         stream.write_all(b"\r\n").await?;
+        written = written.saturating_add(u64::try_from(piece.len()).unwrap_or(0));
     }
     stream.write_all(b"0\r\n\r\n").await
+}
+
+/// Fill `buffer` with the next piece of the planned body and return the filled slice.
+///
+/// `offset` counts from the start of the *body*, not of the representation, so a ranged response
+/// generates from the range's first byte.
+fn next_chunk<'b>(
+    spec: &ServerSpec,
+    plan: &Plan,
+    offset: u64,
+    send_len: u64,
+    buffer: &'b mut [u8],
+) -> &'b [u8] {
+    let remaining = send_len.saturating_sub(offset);
+    let take = usize::try_from(remaining)
+        .unwrap_or(usize::MAX)
+        .min(buffer.len());
+
+    if let Some(literal) = &plan.literal_body {
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(literal.len());
+        let end = start.saturating_add(take).min(literal.len());
+        let slice = literal.get(start..end).unwrap_or(&[]);
+        let out = buffer.get_mut(..slice.len()).unwrap_or(&mut []);
+        out.copy_from_slice(slice);
+        return out;
+    }
+
+    let first = plan.body.map_or(0, |(first, _)| first);
+    let out = buffer.get_mut(..take).unwrap_or(&mut []);
+    spec.content.fill(first.saturating_add(offset), out);
+    out
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -693,6 +772,79 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------- HTTP/2 (h2c)
+
+/// A response body generated chunk by chunk as `hyper` polls for it.
+///
+/// Exists so that an HTTP/2 case can serve a gigabyte without holding a gigabyte. Buffering the
+/// body would cap the corpus at whatever fits in memory and would throw away the whole reason the
+/// content generator is seekable.
+struct GeneratedBody {
+    content: Content,
+    /// Set when the case supplies literal bytes (an HTML error page, say) instead of content.
+    literal: Option<Vec<u8>>,
+    /// Offset in the representation at which this body begins, so a ranged response generates
+    /// from the range's first byte rather than from zero.
+    first: u64,
+    sent: u64,
+    send_len: u64,
+}
+
+impl GeneratedBody {
+    fn empty() -> Self {
+        Self {
+            content: Content::new(0, 0),
+            literal: Some(Vec::new()),
+            first: 0,
+            sent: 0,
+            send_len: 0,
+        }
+    }
+}
+
+impl HttpBody for GeneratedBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        // Every field is Unpin, so the pin can be discarded rather than projected through.
+        let this = self.get_mut();
+        if this.sent >= this.send_len {
+            return Poll::Ready(None);
+        }
+        let remaining = this.send_len.saturating_sub(this.sent);
+        let take = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(STREAM_CHUNK);
+
+        let chunk = if let Some(literal) = &this.literal {
+            let start = usize::try_from(this.sent)
+                .unwrap_or(usize::MAX)
+                .min(literal.len());
+            let end = start.saturating_add(take).min(literal.len());
+            Bytes::copy_from_slice(literal.get(start..end).unwrap_or(&[]))
+        } else {
+            let mut buffer = vec![0_u8; take];
+            this.content
+                .fill(this.first.saturating_add(this.sent), &mut buffer);
+            Bytes::from(buffer)
+        };
+
+        let len = u64::try_from(chunk.len()).unwrap_or(0);
+        if len == 0 {
+            return Poll::Ready(None);
+        }
+        this.sent = this.sent.saturating_add(len);
+        Poll::Ready(Some(Ok(Frame::data(chunk))))
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        // Exact, so hyper can set Content-Length without buffering the body to measure it.
+        SizeHint::with_exact(self.send_len)
+    }
+}
 
 async fn serve_h2c(
     stream: TcpStream,
@@ -731,12 +883,14 @@ async fn serve_h2c(
                     .map(|(_, value)| value.clone());
 
                 let plan = plan(&spec, &path, range_header.as_deref());
-                let body = planned_body(&spec, &plan);
-                let truncate_at = spec
-                    .truncate_body_after
-                    .and_then(|n| usize::try_from(n).ok())
-                    .unwrap_or(body.len())
-                    .min(body.len());
+                let send_len = bytes_to_write(&spec, &plan);
+                let body = GeneratedBody {
+                    content: spec.content,
+                    literal: plan.literal_body.clone(),
+                    first: plan.body.map_or(0, |(first, _)| first),
+                    sent: 0,
+                    send_len,
+                };
 
                 let mut builder = hyper::Response::builder().status(plan.status);
                 for (name, value) in &plan.headers {
@@ -745,8 +899,8 @@ async fn serve_h2c(
                 // HTTP/2 has no Content-Length requirement and no chunked encoding; the framing
                 // pathologies are HTTP/1.1-only and are documented as such on `Framing`.
                 let response = builder
-                    .body(Full::new(Bytes::from(body[..truncate_at].to_vec())))
-                    .unwrap_or_else(|_| hyper::Response::new(Full::new(Bytes::new())));
+                    .body(body)
+                    .unwrap_or_else(|_| hyper::Response::new(GeneratedBody::empty()));
                 Ok::<_, std::convert::Infallible>(response)
             }
         });

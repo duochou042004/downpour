@@ -53,6 +53,13 @@ corpus:
     @if [ -d tests/corpus ]; then cargo nextest run -p downpour-corpus; \
      else echo "  tests/corpus does not exist yet (Stage 2)"; fi
 
+# The slow corpus cases: the 1 GB transfers that prove S1-C1. Release, and excluded from
+# `just gate` so the every-push budget stays under five minutes (docs/09 section 6).
+corpus-slow:
+    @if [ -d tests/corpus ]; then \
+        cargo nextest run -p downpour-corpus --release --run-ignored all; \
+     else echo "  tests/corpus does not exist yet"; fi
+
 # Deterministic simulation suite. Stage 2 onward.
 sim:
     @if [ -d tests/sim ]; then cargo nextest run -p downpour-sim --release; \
