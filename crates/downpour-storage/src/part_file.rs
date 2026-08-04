@@ -92,6 +92,86 @@ impl PartFile {
         })
     }
 
+    /// Reopen an existing `.dppart` after an unclean shutdown and re-establish its extent.
+    ///
+    /// Unlike [`Self::create`] this takes the part path itself, because recovery reads it from
+    /// the persisted record rather than deriving it from a target.
+    ///
+    /// The extent is only ever *grown*. A file longer than `total_length` keeps every byte:
+    /// shortening it to make it fit would destroy the bytes a resume is meant to reuse, which
+    /// I-10 forbids as firmly as it forbids truncating on `ENOSPC`. Callers get the length
+    /// observed before preparation so they can refuse to trust journal records describing bytes
+    /// past the end that actually survived.
+    pub fn open_existing(
+        path: impl AsRef<Path>,
+        total_length: u64,
+    ) -> Result<RecoveredPartFile, PartFileError> {
+        let path = path.as_ref().to_path_buf();
+        let signed_length =
+            i64::try_from(total_length).map_err(|_| PartFileError::UnsupportedLength {
+                length: total_length,
+            })?;
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                return Err(PartFileError::Missing { path });
+            }
+            Err(source) => {
+                return Err(PartFileError::Io {
+                    operation: "reopen part file for recovery",
+                    path,
+                    source,
+                });
+            }
+        };
+        let observed_length = file
+            .metadata()
+            .map_err(|source| PartFileError::Io {
+                operation: "measure recovered part-file extent",
+                path: path.clone(),
+                source,
+            })?
+            .len();
+
+        // Preparation ends in `set_len`, which would shorten an overlong file. Only run it when
+        // the extent is genuinely short.
+        let (preallocation_method, reextended) = if observed_length < total_length {
+            let method =
+                platform::prepare(&file, total_length, signed_length).map_err(|source| {
+                    PartFileError::Io {
+                        operation: "restore part-file extent",
+                        path: path.clone(),
+                        source,
+                    }
+                })?;
+            (method, true)
+        } else {
+            (PreallocationMethod::SetLength, false)
+        };
+
+        let part = Self {
+            file,
+            path,
+            total_length,
+            preallocation_method,
+        };
+        // Without a fresh preparation there is no claim to make about reservation, so measure it
+        // instead of assuming it. A crash can leave a sparse file whose blocks were never
+        // reserved, and pretending otherwise is how `ENOSPC` becomes a surprise mid-resume.
+        let space_reserved = if reextended {
+            preallocation_method.space_reserved()
+        } else {
+            part.allocated_size()? >= total_length
+        };
+
+        Ok(RecoveredPartFile {
+            part,
+            observed_length,
+            reextended,
+            space_reserved,
+        })
+    }
+
     /// The path of the exclusively created `.dppart`.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -163,9 +243,59 @@ impl PartFile {
     }
 }
 
+/// An existing part file reopened for recovery.
+///
+/// Carries the extent observed *before* preparation, which is the only evidence available about
+/// which journalled bytes actually survived the crash.
+#[derive(Debug)]
+pub struct RecoveredPartFile {
+    part: PartFile,
+    observed_length: u64,
+    reextended: bool,
+    space_reserved: bool,
+}
+
+impl RecoveredPartFile {
+    /// The file extent as it was found, before any extent was restored.
+    #[must_use]
+    pub const fn observed_length(&self) -> u64 {
+        self.observed_length
+    }
+
+    /// Whether the extent had to be grown back to the representation length.
+    #[must_use]
+    pub const fn reextended(&self) -> bool {
+        self.reextended
+    }
+
+    /// Whether the full declared extent is now known to have physical space reserved.
+    #[must_use]
+    pub const fn space_reserved(&self) -> bool {
+        self.space_reserved
+    }
+
+    /// Borrow the reopened part file.
+    #[must_use]
+    pub const fn part(&self) -> &PartFile {
+        &self.part
+    }
+
+    /// Take the reopened part file, discarding the recovery observations.
+    #[must_use]
+    pub fn into_part(self) -> PartFile {
+        self.part
+    }
+}
+
 /// Why a part file could not be created, prepared, inspected, or written.
 #[derive(Debug, Error)]
 pub enum PartFileError {
+    /// The recorded part path does not exist, so its bytes are gone.
+    #[error("part file is missing: {path}", path = .path.display())]
+    Missing {
+        /// The recorded part path that no longer resolves.
+        path: PathBuf,
+    },
     /// The target has no filename to which `.dppart` can be appended.
     #[error("target path has no filename: {target}", target = .target.display())]
     InvalidTarget {

@@ -2,8 +2,8 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T14:46:34Z",
-  "updated_by": "codex",
+  "updated_at": "2026-08-05T00:00:00Z",
+  "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
     {
@@ -787,14 +787,19 @@
         {
           "id": "S2-T7",
           "title": "Reconcile part files, journals, interval coverage, and SQLite after an unclean shutdown",
-          "status": "todo",
-          "proof": "crates/downpour-storage/tests/recovery.rs::journal_is_authoritative_over_sqlite_and_no_in_progress_interval_survives_restart",
+          "status": "done",
+          "proof": "crates/downpour-storage/tests/recovery.rs::journal_is_authoritative_over_sqlite_and_no_in_progress_interval_survives_restart, plus a_lagging_sqlite_checkpoint_is_reported_as_the_journal_running_ahead, blocks_beyond_a_short_part_file_are_not_trusted_and_the_extent_is_restored, an_overlong_part_file_is_reported_and_never_truncated, a_torn_journal_tail_yields_only_its_valid_prefix, a_newer_journal_version_is_refused_without_touching_the_artifacts, a_missing_part_file_fails_the_download_without_discarding_its_record, a_journal_bound_to_another_transfer_is_refused, a_missing_journal_leaves_every_byte_pending_rather_than_trusting_sqlite, a_truncate_record_shrinks_coverage_and_the_recorded_total, reconciling_a_terminal_download_is_refused, an_unreadable_checkpoint_does_not_stop_recovery, a_sealed_journal_is_reported_but_never_completes_the_download, a_semantically_impossible_journal_fails_without_destroying_evidence, and reconciliation_preserves_the_recorded_identity; all 15 pass under just gate (245 tests, 2 skipped) and each was mutation-checked from a forced clean rebuild, 16 mutations caught 16 times by the test that names the behaviour",
           "files": [
             "crates/downpour-storage/src/recovery.rs",
-            "crates/downpour-storage/tests/recovery.rs"
+            "crates/downpour-storage/tests/recovery.rs",
+            "crates/downpour-storage/src/journal/state.rs",
+            "crates/downpour-storage/src/journal/compaction.rs",
+            "crates/downpour-storage/src/journal/mod.rs",
+            "crates/downpour-storage/src/part_file.rs",
+            "crates/downpour-storage/src/lib.rs"
           ],
           "blocked_by": "S2-T3, S2-T5, S2-T6",
-          "notes": null,
+          "notes": "Reconciles one download; daemon-wide iteration and the recovery summary event stay in S2-T14. Two decisions worth carrying forward. A Truncate record resets identity.range_support to Unknown, because range support proven against the old representation says nothing about the new one (I-6) and the metadata layer refuses the contradiction outright; that is also one of B-16's re-probe triggers. A Sealed record is reported but never acted on: a seal proves verification passed, not that the rename completed, and I-4 forbids inferring a finished download from a journal record, so completing a sealed download stays S2-T11's job. The record fold that decides which blocks survive a Truncate now lives in journal/state.rs and is shared with compaction, because two implementations of that rule would eventually disagree and the disagreement would be silent corruption.",
           "invariants": [
             "I-1",
             "I-9",
@@ -1679,6 +1684,20 @@
       "found_in_stage": "S1",
       "target_stage": "S2",
       "rationale": "The deferral file is only honest if something forces it to shrink"
+    },
+    {
+      "id": "B-19",
+      "text": "docs/04 section 3.4's verify_on_resume config (off / sample 1% / full) is not implemented. Recovery trusts the journal's BlockComplete records without rehashing part bytes, which is the documented `off` behaviour. The per-block BLAKE3 digests are already recorded, so sampling is cheap to add; compaction already verifies every surviving digest before it blesses merged bytes.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "S2-T7 delivers reconciliation; the optional post-hardware-fault verification mode is a separate behaviour with its own proof, and shipping the default silently would make `sample` look implemented"
+    },
+    {
+      "id": "B-20",
+      "text": "Recovery reports PartFileExtent::Overlong and leaves the file alone, because I-10 forbids shortening a part file to make it fit. Nothing consumes that signal yet. S2-T11's verification step 3 checks length on disk against total_length before the rename and is the natural place for an overlong file to become Failed(LengthMismatch) with the bytes preserved as evidence.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "An unconsumed enum variant looks like dead weight; recording who consumes it keeps the non-truncating choice from being 'simplified' away later"
     }
   ],
   "session_log": [
@@ -2281,6 +2300,26 @@
         "state/progress.json"
       ],
       "left_in_progress": "PR #7 (https://github.com/duochou042004/downpour/pull/7) awaits maintainer review and merge. ADR-0015 remains proposed pending maintainer decision. Do not begin or stack S2-T7 on this branch; after merge, fast-forward develop, mirror the merge to GitLab, create a fresh feature/s2-recovery-reconciliation branch, and begin with recovery_reconciliation.rs RED."
+    },
+    {
+      "at": "2026-08-05T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Audited the merged S2 foundation, then implemented S2-T7. Verified develop at 12e91a0 (PR #7 merged by the maintainer, all four CI jobs green) passes just gate at 230 tests locally, and mutation-checked the two load-bearing S2 claims already merged: reordering the interval swap before the journal fsync makes completion_is_never_observable_before_data_and_journal_are_durable red, and accepting every range in ensure_current_grant makes a_write_outside_the_current_grant_never_reaches_storage red. Mirrored develop to GitLab, which was one merge behind. Then wrote crates/downpour-storage/src/recovery.rs implementing docs/04 section 5 step 2 for one download: part-file presence, extent measured before it is restored, journal replay with durable tail repair, journal-over-SQLite checkpoint arbitration, an interval map rebuilt through the allocator so no InProgress survives, and a terminal state of Paused or Failed with a stable error kind. Added PartFile::open_existing, which only ever grows an extent. Extracted the record fold shared with compaction into journal/state.rs. just gate passes at 245 tests, 2 skipped; just corpus passes 88/88.",
+      "tasks_touched": [
+        "S2-T7"
+      ],
+      "files_touched": [
+        "crates/downpour-storage/src/recovery.rs",
+        "crates/downpour-storage/tests/recovery.rs",
+        "crates/downpour-storage/src/journal/state.rs",
+        "crates/downpour-storage/src/journal/compaction.rs",
+        "crates/downpour-storage/src/journal/mod.rs",
+        "crates/downpour-storage/src/part_file.rs",
+        "crates/downpour-storage/src/lib.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T7 is complete and unblocks S2-T8, S2-T11 and S2-T14. No exit criterion is claimed met: S2-C1 still needs the crash-injection simulation (S2-T12), because recovery is now proven against artifacts a crash could leave but not yet against crashes injected at every write boundary. Two behaviours are recorded in the S2-T7 note rather than an ADR because both follow directly from an existing invariant: a Truncate resets range_support to Unknown (I-6), and a Sealed record is reported but never completes a download (I-4). New backlog B-19 (verify_on_resume is unimplemented) and B-20 (nobody consumes PartFileExtent::Overlong yet; S2-T11 should)."
     }
   ],
   "metrics": {

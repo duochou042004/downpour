@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use blake3::Hasher;
 use thiserror::Error;
 
+use super::state::{CompletedBlock, EffectiveState, JournalStateError, effective_state};
 use super::{FileHeader, FormatError, FramedRecord, JournalRecord, ReplayError, recover_journal};
 
 const HASH_BUFFER_LEN: usize = 64 * 1024;
@@ -40,30 +41,12 @@ pub enum CompactionError {
     Format(#[from] FormatError),
 }
 
-#[derive(Clone, Debug)]
-struct CompletedBlock {
-    offset: u64,
-    len: u32,
-    blake3: [u8; 32],
-}
-
-impl CompletedBlock {
-    fn end(&self) -> Result<u64, CompactionError> {
-        self.offset
-            .checked_add(u64::from(self.len))
-            .ok_or(CompactionError::InvalidState {
-                detail: "completed block end overflows u64",
-            })
+impl From<JournalStateError> for CompactionError {
+    fn from(error: JournalStateError) -> Self {
+        Self::InvalidState {
+            detail: error.detail,
+        }
     }
-}
-
-#[derive(Debug)]
-struct EffectiveState {
-    effective_length: u64,
-    truncate: Option<u64>,
-    identities: Vec<Vec<u8>>,
-    blocks: Vec<CompletedBlock>,
-    sealed: Option<[u8; 32]>,
 }
 
 #[derive(Debug)]
@@ -91,79 +74,6 @@ pub fn compact_journal(
     let replacement = encode_replacement(replayed.header(), state, merged, wall_clock)?;
     replace_atomically(journal_path, &replacement)?;
     Ok(())
-}
-
-fn effective_state(
-    header: &FileHeader,
-    records: &[FramedRecord],
-) -> Result<EffectiveState, CompactionError> {
-    let mut state = EffectiveState {
-        effective_length: header.total_length(),
-        truncate: None,
-        identities: Vec::new(),
-        blocks: Vec::new(),
-        sealed: None,
-    };
-
-    for (index, framed) in records.iter().enumerate() {
-        match framed.record() {
-            JournalRecord::BlockComplete {
-                offset,
-                len,
-                blake3,
-            } => {
-                if *len == 0 {
-                    return Err(CompactionError::InvalidState {
-                        detail: "completed block has zero length",
-                    });
-                }
-                let block = CompletedBlock {
-                    offset: *offset,
-                    len: *len,
-                    blake3: *blake3,
-                };
-                if block.end()? > state.effective_length {
-                    return Err(CompactionError::InvalidState {
-                        detail: "completed block lies beyond the effective length",
-                    });
-                }
-                state.blocks.push(block);
-            }
-            JournalRecord::Checkpoint { .. } => {}
-            JournalRecord::IdentityUpdate { cbor } => state.identities.push(cbor.clone()),
-            JournalRecord::Truncate { new_length } => {
-                if *new_length > state.effective_length {
-                    return Err(CompactionError::InvalidState {
-                        detail: "truncate increases the effective length",
-                    });
-                }
-                state.effective_length = *new_length;
-                state.truncate = Some(*new_length);
-                state
-                    .blocks
-                    .retain(|block| block.end().is_ok_and(|end| end <= *new_length));
-            }
-            JournalRecord::Sealed { final_blake3 } => {
-                if state.sealed.is_some() || index + 1 != records.len() {
-                    return Err(CompactionError::InvalidState {
-                        detail: "sealed record is not unique and final",
-                    });
-                }
-                state.sealed = Some(*final_blake3);
-            }
-        }
-    }
-
-    state.blocks.sort_by_key(|block| block.offset);
-    for adjacent in state.blocks.windows(2) {
-        let previous_end = adjacent[0].end()?;
-        if adjacent[1].offset < previous_end {
-            return Err(CompactionError::InvalidState {
-                detail: "surviving completed blocks overlap",
-            });
-        }
-    }
-    Ok(state)
 }
 
 fn verify_and_merge(
