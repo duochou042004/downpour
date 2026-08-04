@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T04:57:49Z",
+  "updated_at": "2026-08-04T05:06:17Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -688,7 +688,7 @@
             "crates/downpour-storage/src/journal/"
           ],
           "blocked_by": "S2-T1",
-          "notes": "Use /adr-new before code for the persistent encoding and storage-path dependencies. ADR-0004 fixes the journal-plus-SQLite split but deliberately leaves the record encoding reversible.",
+          "notes": "Use /adr-new before code for the persistent encoding and storage-path dependencies. ADR-0004 fixes the journal-plus-SQLite split but deliberately leaves the record encoding reversible. Decision-blocking finding from the 2026-08-04 pre-ADR audit: docs/04 labels the file header as 64 bytes, but its listed fields total 72 bytes (4+2+2+16+8+4+32+4). Resolve that contradiction explicitly; do not encode an accidental layout. Evidence favours a manual little-endian 72-byte v1 header and framed records with CRC32C over every preceding header/record byte. `crc` 3.4.0 is the leading checksum dependency: current on crates.io, Rust 1.83 MSRV, MIT/Apache-2.0, one dependency (`crc-catalog`), and both crates forbid unsafe. `crc32c` 0.6.8 is faster but has no declared MSRV and contains hardware-specific unsafe paths. Keep UUID and CBOR out of this codec task by treating the 16-byte id and identity payload as opaque; their semantics belong to S2-T6. Re-verify all of this in ADR-0012 before code.",
           "invariants": [
             "I-9",
             "I-11"
@@ -1959,6 +1959,19 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T1 is done and S2-C3 is met. Next is S2-T2: use /adr-new before choosing the persistent journal encoding and storage-path dependencies, then write journal_format.rs::journal_records_round_trip_and_refuse_newer_versions RED before implementing the codec."
+    },
+    {
+      "at": "2026-08-04T05:06:17Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Kept S2-T2 todo while PR #2 awaits merge, and completed the bounded pre-ADR audit without stacking implementation. Found that docs/04's supposedly 64-byte journal header actually lists 72 bytes of fields. Re-verified checksum options: crc 3.4.0 plus crc-catalog is current, Apache/MIT, MSRV-compatible and forbids unsafe; crc32c 0.6.8 has hardware-specific unsafe and no declared MSRV. Recorded the evidence and the rule that UUID/CBOR semantics stay out of the journal codec task.",
+      "tasks_touched": [
+        "S2-T2"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "PR #2 is open, merge-clean and fully green but not merged. Do not stack S2-T2 or merge without maintainer authority. After merge: update develop, create feature/s2-journal-codec from develop, invoke /adr-new for ADR-0012, resolve the 72-byte layout and checksum coverage in the ADR, then write the named format test RED before code."
     }
   ],
   "metrics": {
