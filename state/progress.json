@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T10:14:38Z",
+  "updated_at": "2026-08-04T10:30:39Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -611,8 +611,8 @@
         {
           "id": "S2-C2",
           "text": "Journal replay never panics under proptest truncation and bit-flip",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "crates/downpour-storage/tests/journal_prop.rs::replay_never_panics_and_yields_a_prefix runs 10000 generated record sequences under arbitrary truncation or a single-bit flip and asserts the exact sequential prefix and exact valid byte boundary, with header damage remaining fatal. The always-empty-prefix mutation made this exact property fail. Companion tests prove valid-CRC sequence gaps stop before the gap and invalid headers leave files unchanged. `just gate` passed 185/185 tests (2 skipped) on 2026-08-04.",
           "invariants": [
             "I-9"
           ]
@@ -697,8 +697,8 @@
         {
           "id": "S2-T3",
           "title": "Replay and compact journals with prefix-consistent torn-tail recovery",
-          "status": "in_progress",
-          "proof": "crates/downpour-storage/tests/journal_prop.rs::replay_never_panics_and_yields_a_prefix (10000 truncation and bit-flip cases); journal_replay.rs::{invalid_header_is_fatal_and_unchanged,valid_crc_sequence_gap_stops_before_gap}; journal_compaction.rs::{compaction_preserves_replayed_state,compaction_refuses_to_bless_corrupt_part_bytes,compaction_survives_each_replace_boundary}",
+          "status": "done",
+          "proof": "crates/downpour-storage/tests/journal_prop.rs::replay_never_panics_and_yields_a_prefix (10000 truncation and bit-flip cases); journal_replay.rs::{invalid_header_is_fatal_and_unchanged,valid_crc_sequence_gap_stops_before_gap}; journal_compaction.rs::{compaction_preserves_replayed_state,compaction_refuses_to_bless_corrupt_part_bytes,compaction_rejects_semantically_invalid_records_without_replacement,compaction_preserves_a_final_seal}; journal::compaction::tests::compaction_survives_each_replace_boundary; all pass under just gate and each was mutation-checked",
           "files": [
             "docs/adr/0013-*.md",
             "crates/downpour-storage/src/journal/",
@@ -707,7 +707,7 @@
             "crates/downpour-storage/tests/journal_compaction.rs"
           ],
           "blocked_by": "S2-T2",
-          "notes": "ADR-0013 was proposed before code and remains pending maintainer review. It makes header damage fatal, recovers only an exact sequential record prefix after a valid header, and requires compaction to verify every surviving original block hash before emitting merged v1 evidence. Opaque identity updates are preserved in order; semantic invalidity or part-byte mismatch leaves the authoritative journal unchanged. Next: commit this design-only change, then write and observe the named replay and compaction proofs RED before implementation.",
+          "notes": "ADR-0013 was proposed and committed before code; it remains proposed pending maintainer review. All replay/compaction tests were first observed RED against absent APIs. Replay reads one bounded frame at a time, makes header damage fatal and unchanged, yields only the exact valid sequential prefix for record damage or gaps, and durably truncates only recoverable suffixes. Compaction rejects invalid state, verifies every surviving original block digest before merging, preserves opaque identity updates/effective truncation/final seal, writes and syncs a sibling, atomically renames it, and syncs the parent on Unix. Mutation checks proved the named tests detect: always returning an empty replay prefix, mutating an invalid header file, accepting a checksummed sequence gap, failing to merge equivalent coverage, bypassing original block verification, accepting zero-length semantic state, omitting a final seal, and renaming before the pre-rename boundary. Invariant check: I-9 replay/repair/compaction and I-11 are covered; I-1/I-3..I-8/I-10/I-12..I-14 are not affected; overlap rejection defensively covers I-2 without changing allocation. `just gate`: 185/185 passed, 2 skipped. `just corpus-slow`: 90/90 passed including both 1 GB cases. metrics.invariants_covered remains 3 until S2-T5 proves the actual append/commit path rather than counting I-9 early.",
           "invariants": [
             "I-9",
             "I-11"
@@ -2053,6 +2053,27 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T3 is in progress. ADR-0013 remains proposed pending maintainer review. Commit the design-only change, then write the named replay property, fatal-header, valid-CRC sequence-gap, semantic-equivalence, corrupt-part rejection, and replacement-boundary tests against absent APIs; observe RED before implementing replay or compaction."
+    },
+    {
+      "at": "2026-08-04T10:30:39Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Completed S2-T3 test-first. Journal replay now distinguishes fatal headers from recoverable record suffixes, returns an exact sequential prefix with bounded frame allocation, and durably truncates damaged tails. Compaction validates semantic state, verifies original BLAKE3 block evidence before merging, preserves opaque identities/truncation/sealing, and atomically replaces a synced sibling with parent-directory sync on Unix. Eight targeted mutations each made their owning proof red. S2-C2 is met; the fast and slow gates are green.",
+      "tasks_touched": [
+        "S2-T3"
+      ],
+      "files_touched": [
+        "Cargo.lock",
+        "crates/downpour-storage/Cargo.toml",
+        "crates/downpour-storage/src/lib.rs",
+        "crates/downpour-storage/src/journal/",
+        "crates/downpour-storage/tests/journal_prop.rs",
+        "crates/downpour-storage/tests/journal_replay.rs",
+        "crates/downpour-storage/tests/journal_compaction.rs",
+        "docs/agent/INVARIANTS.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T3 is done on feature/s2-journal-replay. ADR-0013 remains proposed pending maintainer review. Before opening the PR, commit the implementation/proofs, push to both remotes, and require GitHub Linux, Windows, security-audit, and harness checks. After review and merge, begin S2-T4 from updated develop; do not stack it on this branch."
     }
   ],
   "metrics": {
