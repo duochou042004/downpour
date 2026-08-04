@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T12:14:14Z",
+  "updated_at": "2026-08-04T12:18:00Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -728,7 +728,7 @@
             "docs/agent/INVARIANTS.md"
           ],
           "blocked_by": "S2-T2",
-          "notes": "ADR-0014 was proposed before code and remains proposed pending maintainer review. PartFile creates <target>.dppart exclusively, validates length and target before creation, reports truthful platform preallocation metadata, and rejects a complete positional write before I/O if it crosses the declared extent. Linux implements fallocate(KEEP_SIZE) -> posix_fallocate -> logical length and preserves operational errors. Native Windows CI first caught that sparse-then-allocate left AllocationSize short (run 30907036949); ADR/spec/code were corrected in that order to allocate -> set EOF -> mark sparse -> verify, after which both PR and push runs 30907490771/30907489849 passed Windows clippy and all 194 tests. All ten Linux proofs and four Windows-only proofs were mutation-checked; Windows mutation runs 30907822846 and 30907880672 made every owning test red while clippy and non-Windows jobs stayed green. Final `just gate`: 195/195 passed, 2 skipped; final `just corpus-slow`: 90/90 passed including both 1 GB cases. Invariant check: I-2's affected positional/bounds surface and I-10's preparation surface are covered; I-1 and I-3..I-9/I-11..I-14 are not affected. Grant enforcement remains T5 and transfer-time ENOSPC recovery remains T13, so metrics.invariants_covered deliberately stays 3.",
+          "notes": "ADR-0014 was proposed before code and remains proposed pending maintainer review. PartFile creates <target>.dppart exclusively, validates length and target before creation, reports truthful platform preallocation metadata, and rejects a complete positional write before I/O if it crosses the declared extent. Linux implements fallocate(KEEP_SIZE) -> posix_fallocate -> logical length and preserves operational errors. Native Windows CI first caught that sparse-then-allocate left AllocationSize short (run 30907036949); ADR/spec/code were corrected in that order to allocate -> set EOF -> mark sparse -> verify, after which both PR and push runs 30907490771/30907489849 passed Windows clippy and all 194 tests. All ten Linux proofs and four Windows-only proofs were mutation-checked; Windows mutation runs 30907822846 and 30907880672 made every owning test red while clippy and non-Windows jobs stayed green. Final `just gate`: 195/195 passed, 2 skipped; final `just corpus-slow`: 90/90 passed including both 1 GB cases. Final PR/push runs 30908291018/30908285831 passed the harness, Linux, Windows, and security jobs at 887c9b6. Invariant check: I-2's affected positional/bounds surface and I-10's preparation surface are covered; I-1 and I-3..I-9/I-11..I-14 are not affected. Grant enforcement remains T5 and transfer-time ENOSPC recovery remains T13, so metrics.invariants_covered deliberately stays 3.",
           "invariants": [
             "I-2",
             "I-10"
@@ -2162,6 +2162,19 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T4 is done on PR #5 (https://github.com/duochou042004/downpour/pull/5), which is mergeable and CI-green at 153cc28. ADR-0014 remains proposed pending maintainer review. Commit this final invariant/progress record, push it to both remotes, and require refreshed GitHub checks. Do not begin or stack S2-T5 until PR #5 is reviewed and merged; after merge, branch from updated develop and start with durable_writer.rs RED at every I-1 ordering boundary."
+    },
+    {
+      "at": "2026-08-04T12:18:00Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Published the completed S2-T4 invariant/progress record to both remotes. GitHub push and PR runs 30908285831 and 30908291018 passed the harness, Linux fmt/clippy/tests/doctests, native Windows clippy/tests, and security audit at 887c9b6; the PR is mergeable. Removed the two intentionally defective GitHub mutation refs after preserving their run IDs as evidence; their commits remain locally recoverable and the Actions logs remain available.",
+      "tasks_touched": [
+        "S2-T4"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "PR #5 (https://github.com/duochou042004/downpour/pull/5) awaits maintainer review and merge. ADR-0014 remains proposed pending maintainer decision. Do not begin or stack S2-T5 on this branch; after PR #5 merges, fast-forward develop, mirror the merge to GitLab, create a fresh feature/s2-durable-writer branch, and begin with the named crash-boundary proof RED."
     }
   ],
   "metrics": {
