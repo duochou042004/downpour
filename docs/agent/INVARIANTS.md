@@ -175,9 +175,10 @@ download cleanly rather than truncating or corrupting.
 **Why:** running out of disk at 97% is common. The engine must survive it in a resumable state.
 
 **Mechanism:** Linux uses `fallocate` then `posix_fallocate`, with a truthful non-reserving
-`ftruncate` fallback. Windows uses `FSCTL_SET_SPARSE` plus `FileAllocationInfo` and verifies
-the resulting allocation size. `SetFileValidData` is never used because it can expose
-uninitialised disk contents. The write boundary handles `ENOSPC` explicitly.
+`ftruncate` fallback. Windows requests `FileAllocationInfo` on the ordinary file, establishes
+EOF, then marks it sparse with `FSCTL_SET_SPARSE`, and verifies afterward that the allocation
+survived. `SetFileValidData` is never used because it can expose uninitialised disk contents.
+The write boundary handles `ENOSPC` explicitly.
 
 **Proof:** simulation scenario `disk-full-at-97pct`; asserts the download is resumable and
 the block map is accurate after space is freed.
