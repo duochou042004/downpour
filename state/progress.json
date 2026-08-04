@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T13:01:24Z",
+  "updated_at": "2026-08-04T14:46:34Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -760,16 +760,26 @@
         {
           "id": "S2-T6",
           "title": "Persist versioned download metadata and checkpoints without deserializing RangeProof",
-          "status": "todo",
-          "proof": "crates/downpour-storage/tests/metadata.rs::schema_round_trips_and_refuses_newer_versions and persisted_range_observation_is_revalidated_before_becoming_proven",
+          "status": "done",
+          "proof": "crates/downpour-storage/tests/metadata.rs::{schema_round_trips_and_refuses_newer_versions,version_one_with_the_wrong_shape_is_refused,version_one_without_required_constraints_is_refused,persisted_range_observation_is_revalidated_before_becoming_proven,newer_range_observation_is_refused_before_validation,range_observation_bytes_are_exact_canonical_and_versioned,identity_snapshot_range_observation_is_revalidated,proven_range_requires_matching_download_length,checkpoint_bytes_are_canonical_versioned_and_reject_invalid_coverage,checkpoint_sql_coverage_is_checked_when_the_cache_loads,checkpoint_total_must_match_the_owning_download,checkpoint_total_is_rechecked_when_the_cache_loads,checkpoint_collection_limit_is_checked_before_allocation,identity_snapshots_are_canonical_versioned_and_secret_free,identity_snapshot_respects_the_journal_payload_bound,sqlite_never_contains_url_queries_or_request_secrets,error_kinds_are_typed_and_cannot_carry_server_text,url_history_preserves_order_when_timestamps_match,metadata_enum_and_optional_variants_round_trip_without_defaults,unversioned_nonempty_database_is_refused_without_mutation,unversioned_database_with_only_freelist_pages_is_refused,download_ids_refuse_non_v7_bytes,sqlite_integer_overflow_is_rejected_before_a_transaction,native_paths_round_trip_without_loss}; all pass under just gate and each final test was mutation-checked",
           "files": [
+            "docs/adr/0015-versioned-metadata-and-secret-references.md",
+            "docs/04-storage-and-recovery-spec.md",
+            "docs/14-tech-radar-2026.md",
+            "Cargo.toml",
+            "Cargo.lock",
+            "crates/downpour-storage/Cargo.toml",
+            "crates/downpour-storage/src/lib.rs",
             "crates/downpour-storage/src/metadata.rs",
+            "crates/downpour-storage/tests/metadata.rs",
+            "crates/downpour-types/src/lib.rs",
             "crates/downpour-types/src/remote.rs"
           ],
           "blocked_by": "S2-T1, S2-T2",
-          "notes": "Closes B-7. Persist raw range observations and rebuild RangeProof through its validating constructor; RangeProof must not derive Deserialize or gain any unchecked constructor.",
+          "notes": "Closes B-7. ADR-0015 was proposed and committed before code and remains proposed pending maintainer review. The proof suite was observed RED against the absent metadata module. SQLite v1 now opens only an exact schema, initializes only a physically empty unversioned file in one transaction, verifies WAL/NORMAL/foreign-key/busy-timeout/trusted-schema policy, and refuses newer or malformed state without reinterpretation. Typed boundaries enforce 16-byte RFC-variant UUIDv7 ids, lossless native paths, lowercase dotted error kinds, query-free public URLs plus keyring references, ordered redirects/history, and checked SQLite integer conversions. Canonical bounded CBOR v1 covers raw range observations, complete-only checkpoints, and full idempotent identity snapshots; checkpoint union/SQL/download totals must agree, and both SQLite and identity loaders rebuild RangeProof only through its validating constructor. Twenty-eight targeted mutation runs were performed: every one of the final 24 tests went red under its owning fault; one initial HTTP/3 snapshot mutation survived, the proof was extended across CBOR, and the repeated mutation then went red. Invariant check: I-6, I-8, I-11 and I-14's changed persistence surfaces are covered; persisted validators and content-encoding evidence also preserve the I-3 and I-5 inputs, while their HTTP behavior remains T9; I-1, I-2, I-4, I-7, I-9, I-10, I-12 and I-13 runtime mechanisms are not changed. metrics.invariants_covered remains 5 because I-3, I-8, I-10 and I-11 still have later-stage integration gaps. `just gate`: 230/230 passed, 2 skipped. `just corpus-slow`: 90/90 passed. Windows GNU check and strict storage clippy pass; GitHub push run 30920383372 and pull-request run 30920421337 passed harness, Linux fmt/clippy/tests/doctests, native Windows clippy/tests, and security audit at 9ca94fa. Recovery reconciliation remains T7; sink integration T8; HTTP resume and keyring-backed URL reconstruction remain T9 and S7/S8.",
           "invariants": [
             "I-6",
+            "I-8",
             "I-11",
             "I-14"
           ]
@@ -1465,6 +1475,13 @@
     {
       "id": "ADR-0014",
       "title": "Thin platform bindings for truthful part-file allocation",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S2"
+    },
+    {
+      "id": "ADR-0015",
+      "title": "Strict SQLite metadata, versioned CBOR evidence, and secret references",
       "status": "proposed",
       "superseded_by": null,
       "stage": "S2"
@@ -2213,6 +2230,57 @@
         "state/progress.json"
       ],
       "left_in_progress": "PR #6 (https://github.com/duochou042004/downpour/pull/6) awaits maintainer review and merge. Do not begin or stack S2-T6 on this branch; after merge, fast-forward develop, mirror the merge to GitLab, create a fresh S2-T6 branch, and start the metadata writer proof test-first."
+    },
+    {
+      "at": "2026-08-04T13:49:12Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "PR #6 merged; fast-forwarded develop, mirrored GitHub develop to GitLab, and started S2-T6 on feature/s2-metadata. Proposed ADR-0015 before code to make SQLite, checkpoints, range evidence, identity snapshots, and secret references strict, versioned, canonical, and rebuildable without ever deserializing RangeProof.",
+      "tasks_touched": [
+        "S2-T6"
+      ],
+      "files_touched": [
+        "docs/adr/0015-versioned-metadata-and-secret-references.md",
+        "docs/adr/README.md",
+        "docs/04-storage-and-recovery-spec.md",
+        "docs/14-tech-radar-2026.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T6 is in progress on feature/s2-metadata. Commit the design-only ADR/spec/radar/progress change first. Then write all seven named metadata proofs against the absent API, observe RED, and only afterward add rusqlite/ciborium/serde dependencies and production code. ADR-0015 remains proposed pending maintainer decision."
+    },
+    {
+      "at": "2026-08-04T14:41:21Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Completed S2-T6 test-first with strict SQLite v1 metadata, canonical bounded CBOR range/checkpoint/identity formats, revalidated RangeProof evidence, validated UUIDv7 ids, lossless native paths, ordered identity history, and plaintext-secret exclusion through public URL/keyring-reference types. Every final proof was mutation-checked; the invariant walk found and closed a missing newer-range-format proof.",
+      "tasks_touched": [
+        "S2-T6"
+      ],
+      "files_touched": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/downpour-storage/Cargo.toml",
+        "crates/downpour-storage/src/lib.rs",
+        "crates/downpour-storage/src/metadata.rs",
+        "crates/downpour-storage/tests/metadata.rs",
+        "crates/downpour-types/src/lib.rs",
+        "crates/downpour-types/src/remote.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T6 is done locally on feature/s2-metadata. Commit the implementation/proof/progress change, push to github and origin, open a GitHub PR against develop, and require harness, Linux, native Windows, and security jobs to pass. ADR-0015 remains proposed pending maintainer decision. Do not begin or stack S2-T7 until this branch is reviewed and merged."
+    },
+    {
+      "at": "2026-08-04T14:46:34Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Published S2-T6 as PR #7 from commit 9ca94fa to both remotes. GitHub push run 30920383372 and pull-request run 30920421337 passed the harness, Linux fmt/clippy/tests/doctests, native Windows clippy/tests, and security audit; the intentionally manual 1 GB corpus job was skipped in CI after just corpus-slow passed 90/90 locally.",
+      "tasks_touched": [
+        "S2-T6"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "PR #7 (https://github.com/duochou042004/downpour/pull/7) awaits maintainer review and merge. ADR-0015 remains proposed pending maintainer decision. Do not begin or stack S2-T7 on this branch; after merge, fast-forward develop, mirror the merge to GitLab, create a fresh feature/s2-recovery-reconciliation branch, and begin with recovery_reconciliation.rs RED."
     }
   ],
   "metrics": {

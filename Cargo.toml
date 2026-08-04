@@ -21,6 +21,7 @@ downpour-types = { path = "crates/downpour-types" }
 anyhow = "1.0"
 async-trait = "0.1.91"
 blake3 = "1.8.5"
+ciborium = "0.2.2"
 # CRC-32C protects the journal header and every framed record. The polynomial and exact byte
 # coverage are pinned by ADR-0012 and byte-level golden tests in downpour-storage.
 crc = "3.4.0"
@@ -45,6 +46,7 @@ reqwest = { version = "0.13.4", default-features = false, features = [
   "charset",
   "system-proxy",
 ] }
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled-windows"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # serde_yaml is deprecated upstream (its last release is literally 0.9.34+deprecated). This is the
 # maintained fork with the same serde integration, which matters because ADR-0010 requires the
