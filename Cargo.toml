@@ -20,6 +20,9 @@ downpour-types = { path = "crates/downpour-types" }
 anyhow = "1.0"
 async-trait = "0.1.91"
 blake3 = "1.8.5"
+# CRC-32C protects the journal header and every framed record. The polynomial and exact byte
+# coverage are pinned by ADR-0012 and byte-level golden tests in downpour-storage.
+crc = "3.4.0"
 # Zero dependencies, and already in our tree via hyper, so using it directly costs nothing
 # transitively. Needed because Retry-After may be an HTTP-date as well as delay-seconds
 # (RFC 9110 §10.2.3), and a parser that only handled integers would silently retry early against

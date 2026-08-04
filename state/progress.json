@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T09:30:02Z",
+  "updated_at": "2026-08-04T09:44:16Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -681,14 +681,14 @@
         {
           "id": "S2-T2",
           "title": "Define and implement the versioned recovery-journal codec",
-          "status": "in_progress",
-          "proof": "crates/downpour-storage/tests/journal_format.rs::journal_records_round_trip_and_refuse_newer_versions",
+          "status": "done",
+          "proof": "crates/downpour-storage/tests/journal_format.rs::{journal_records_round_trip_and_refuse_newer_versions,golden_bytes_pin_the_header_and_every_record_kind,checksums_cover_header_and_record_framing_not_only_payloads,decoder_rejects_unknown_or_structurally_invalid_v1_data,identity_payload_length_is_bounded_before_encoding}; all pass under just gate",
           "files": [
             "docs/adr/0012-*.md",
             "crates/downpour-storage/src/journal/"
           ],
           "blocked_by": "S2-T1",
-          "notes": "ADR-0012 is proposed before code and fixes the format: manual little-endian encoding, a 72-byte v1 header (correcting docs/04's contradictory 64-byte label), 15-byte record overhead, CRC32C over every preceding header/record byte, zero v1 flags, bounded u16 payloads, and opaque id/identity bytes until S2-T6. `crc` 3.4.0 is selected over `crc32c` 0.6.8 because `crc` plus its one dependency forbids unsafe and declares a compatible MSRV; the ADR records the performance reversal trigger. Next: commit the ADR/spec/radar decision on its own, then write journal_format.rs RED against the absent storage crate before implementation.",
+          "notes": "ADR-0012 was proposed and committed before code; it remains proposed pending maintainer review. The proof was observed RED against the absent `journal` API, then GREEN after a manual little-endian codec with a 72-byte checksummed v1 header, exact five-kind payload definitions, strict version/flag/kind/length rejection, CRC32C over every preceding frame byte, and a checked u16 payload bound. Every named proof was mutation-checked: accepting v2, changing version byte order, bypassing header or record CRC, accepting unknown flags or kinds, skipping a fixed payload length, and truncating an oversized length each made the exact relevant test red. `just gate`: 176/176 passed, 2 skipped; `just corpus-slow`: 90/90 passed including both 1 GB cases. This covers the codec surface of I-9 and I-11; append/replay/compaction and their proptest remain S2-T3, so S2-C2 and metrics.invariants_covered are deliberately unchanged.",
           "invariants": [
             "I-9",
             "I-11"
@@ -1996,6 +1996,22 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T2 is in progress on feature/s2-journal-codec. ADR-0012 is proposed and must remain proposed pending maintainer decision. Next: commit this design-only change, then write crates/downpour-storage/tests/journal_format.rs against the absent crate, observe RED, and only then implement the codec. Replay and compaction remain S2-T3."
+    },
+    {
+      "at": "2026-08-04T09:44:16Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Completed S2-T2 test-first: added downpour-storage's exact version-1 recovery-journal codec with manual little-endian framing, CRC32C on headers and records, strict forward-version and structural rejection, all five record kinds, and a checked u16 payload limit. Independent golden bytes pin the on-disk contract. All five proof tests were mutation-checked, including separate header-CRC and record-CRC defects. The full fast gate and slow corpus are green.",
+      "tasks_touched": [
+        "S2-T2"
+      ],
+      "files_touched": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/downpour-storage/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T2 is done on feature/s2-journal-codec. ADR-0012 remains proposed pending maintainer review. Next after this branch is reviewed and merged: S2-T3, beginning with journal_prop.rs RED for prefix-consistent replay under truncation and bit flips; do not count S2-C2 or I-9 fully covered until that proof exists."
     }
   ],
   "metrics": {
