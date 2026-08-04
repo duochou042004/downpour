@@ -158,6 +158,12 @@ pub struct ServerCase {
     /// What redirect hops put in their `Location` header.
     #[serde(default)]
     pub redirect_location: RedirectLocationCase,
+    /// How the SECOND origin treats ranges, when it must differ from the first.
+    ///
+    /// I-6's `cdn-edge-disagrees` needs this: the pathology is an edge and an origin that do not
+    /// agree about range support.
+    #[serde(default)]
+    pub content_origin_ranges: Option<RangesCase>,
     /// Send the redirect chain to a **second origin**, which serves the content.
     ///
     /// One server serves one origin, so the runner starts two: the first only redirects, the
@@ -305,6 +311,13 @@ pub struct Expect {
     /// Counting requests distinguishes "recovered" from "never broke".
     #[serde(default)]
     pub min_requests: Option<usize>,
+    /// Assert that no request used `HEAD`.
+    ///
+    /// `docs/03` §2.1 step 2: only `GET` observations are authoritative. A case that checks only the
+    /// *conclusion* cannot tell whether the engine reached it by consulting `HEAD`, so this checks
+    /// the requests the server actually recorded.
+    #[serde(default)]
+    pub forbids_head: Option<bool>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -494,21 +507,7 @@ impl Case {
                 ProtocolCase::Http2 => Protocol::H2c,
             },
             content: self.content(),
-            ranges: match &self.server.ranges {
-                RangesCase::Supported => RangeBehaviour::Supported,
-                RangesCase::Absent => RangeBehaviour::Absent,
-                RangesCase::Lies => RangeBehaviour::Lies,
-                RangesCase::IgnoreButClaim => RangeBehaviour::IgnoreButClaim,
-                RangesCase::ShiftedContentRange { by } => {
-                    RangeBehaviour::ShiftedContentRange { by: *by }
-                }
-                RangesCase::OmitContentRange => RangeBehaviour::OmitContentRange,
-                RangesCase::LiteralContentRange { value } => {
-                    RangeBehaviour::LiteralContentRange(value.clone())
-                }
-                RangesCase::UnknownTotalLength => RangeBehaviour::UnknownTotalLength,
-                RangesCase::MultipartByteranges => RangeBehaviour::MultipartByteranges,
-            },
+            ranges: ranges_to_behaviour(&self.server.ranges),
             framing: match self.server.framing {
                 FramingCase::ContentLength => Framing::ContentLength,
                 FramingCase::Chunked => Framing::Chunked,
@@ -541,6 +540,7 @@ impl Case {
             transient_status_failures: self.server.transient_status_failures,
             transient_retry_after: self.server.transient_retry_after.clone(),
             transient_status: self.server.transient_status,
+            answer_head: true,
             omit_chunked_terminator: self.server.omit_chunked_terminator,
             redirect_location: match self.server.redirect_location {
                 RedirectLocationCase::Normal => RedirectLocation::Normal,
@@ -552,5 +552,27 @@ impl Case {
             redirect_final_target: None,
             corrupt_from: self.server.corrupt_from.map(|size| size.0),
         }
+    }
+}
+
+/// Map a case's declared range behaviour onto the server's.
+///
+/// A free function rather than a method so the runner can apply it to a *second* origin, which is
+/// what I-6's `cdn-edge-disagrees` needs: the pathology is an edge and an origin that disagree, and
+/// that cannot be expressed while both servers share one spec.
+#[must_use]
+pub fn ranges_to_behaviour(ranges: &RangesCase) -> RangeBehaviour {
+    match ranges {
+        RangesCase::Supported => RangeBehaviour::Supported,
+        RangesCase::Absent => RangeBehaviour::Absent,
+        RangesCase::Lies => RangeBehaviour::Lies,
+        RangesCase::IgnoreButClaim => RangeBehaviour::IgnoreButClaim,
+        RangesCase::ShiftedContentRange { by } => RangeBehaviour::ShiftedContentRange { by: *by },
+        RangesCase::OmitContentRange => RangeBehaviour::OmitContentRange,
+        RangesCase::LiteralContentRange { value } => {
+            RangeBehaviour::LiteralContentRange(value.clone())
+        }
+        RangesCase::UnknownTotalLength => RangeBehaviour::UnknownTotalLength,
+        RangesCase::MultipartByteranges => RangeBehaviour::MultipartByteranges,
     }
 }

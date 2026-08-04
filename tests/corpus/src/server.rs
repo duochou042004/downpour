@@ -172,6 +172,13 @@ pub struct ServerSpec {
     pub transient_retry_after: Option<String>,
     /// The status those failures carry. `503` unless a case says otherwise.
     pub transient_status: u16,
+    /// Answer `HEAD` with headers and no body, as a conforming server does.
+    ///
+    /// The probe never sends `HEAD` — `docs/03` §2.1 step 2 says only `GET` observations are
+    /// authoritative, because servers routinely answer the two differently. This exists so a case
+    /// can prove the engine does not consult `HEAD` even when `HEAD` would tell it what it wants to
+    /// hear (I-6's `head-differs-from-get`).
+    pub answer_head: bool,
     /// Omit the terminating zero-length chunk of a chunked response, then close.
     ///
     /// Distinct from `truncate_body_after`, which produces a *well-formed* chunked response that is
@@ -224,6 +231,7 @@ impl Default for ServerSpec {
             transient_status_failures: 0,
             transient_retry_after: None,
             transient_status: 503,
+            answer_head: true,
             omit_chunked_terminator: false,
             redirect_location: RedirectLocation::Normal,
             redirect_final_target: None,
@@ -796,6 +804,10 @@ async fn serve_http11(
             // byte qualify, so the capability probe is never the victim.
             send_len = full_len / 2;
             forced_close = true;
+        }
+        // A HEAD response carries the headers a GET would, Content-Length included, and no body.
+        if method.eq_ignore_ascii_case("HEAD") && spec.answer_head {
+            send_len = 0;
         }
         let truncated = send_len < full_len;
 

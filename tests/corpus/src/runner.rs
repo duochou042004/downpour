@@ -86,6 +86,10 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         // The second origin serves the representation and redirects nowhere.
         origin_spec.redirect_chain = Vec::new();
         origin_spec.redirect_loop = false;
+        // The whole point of cdn-edge-disagrees: the two origins must be able to differ.
+        if let Some(override_ranges) = &case.server.content_origin_ranges {
+            origin_spec.ranges = crate::case::ranges_to_behaviour(override_ranges);
+        }
         let origin = match PathologyServer::start(origin_spec).await {
             Ok(origin) => origin,
             Err(error) => return fail(format!("the content origin did not start: {error}")),
@@ -252,6 +256,23 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             failures.push(format!(
                 "expected the server to see at least {expected} requests but it saw {seen}; \
                  no retry occurred, so this case proves nothing about recovery"
+            ));
+        }
+    }
+
+    // ---- expectation: no HEAD was used (I-6; docs/03 §2.1 step 2)
+    if case.expect.forbids_head == Some(true) {
+        let heads: Vec<String> = server
+            .requests()
+            .iter()
+            .filter(|r| r.method.eq_ignore_ascii_case("HEAD"))
+            .map(|r| r.path.clone())
+            .collect();
+        if !heads.is_empty() {
+            failures.push(format!(
+                "the engine sent {} HEAD request(s) ({heads:?}); only GET observations are \
+                 authoritative (docs/03 §2.1 step 2)",
+                heads.len()
             ));
         }
     }

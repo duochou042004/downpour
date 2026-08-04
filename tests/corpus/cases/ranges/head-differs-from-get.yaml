@@ -1,0 +1,21 @@
+id: head-differs-from-get
+category: ranges
+description: >
+  The server answers HEAD with `Accept-Ranges: bytes` and then answers the ranged GET with 200 and
+  the whole body. Named in INVARIANTS.md as one of I-6's three proof cases. The engine must conclude
+  from the GET and must NOT have consulted HEAD at all — docs/03 §2.1 step 2 says only GET
+  observations are authoritative, precisely because servers routinely answer the two differently and
+  a HEAD that advertises ranges is the cheapest way to be misled. Asserting only the conclusion would
+  not distinguish "ignored HEAD" from "asked HEAD and got lucky", so this also asserts no HEAD
+  request reached the server.
+references: ["RFC 9110 §9.3.2", "RFC 9110 §14.3", "INVARIANTS.md#i-6", "docs/03-transfer-engine-spec.md §2.1"]
+
+server:
+  content: { size: 128KiB, seed: 101 }
+  ranges: lies
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent
+  forbids_head: true

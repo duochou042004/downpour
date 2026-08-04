@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T02:10:00Z",
+  "updated_at": "2026-08-04T03:10:00Z",
   "updated_by": "claude-code",
   "current_stage": "S1",
   "stages": [
@@ -277,7 +277,7 @@
           "id": "S1-C2",
           "text": "The capability probe correctly classifies range support on every 'ranges' corpus case",
           "met": true,
-          "evidence": "15 cases in tests/corpus/cases/ranges/, all passing, each asserting expect.range_support explicitly so the classification is checked rather than inferred from the download succeeding. They cover every range behaviour the pathology server can produce - correct 206, Accept-Ranges absent, Accept-Ranges lies, 206-with-whole-body, shifted Content-Range, omitted Content-Range, three malformed Content-Range shapes, unknown total length, multipart/byteranges for a single range, totals both overstated and understated - plus the proven path over h2c and with no validator and with a weak-ETag-only validator. Exactly one behaviour yields Proven; the other fourteen do not, and five of those answer with 206. HONEST LIMIT: the category is 15 against docs/09 section 3.2's initial target of 25. What is covered is every classification path the corpus can currently express; the remainder need features from later stages (multi-range requests, If-Range, CDN edge disagreement) and are tracked as B-13.",
+          "evidence": "15 cases in tests/corpus/cases/ranges/, all passing, each asserting expect.range_support explicitly so the classification is checked rather than inferred from the download succeeding. They cover every range behaviour the pathology server can produce - correct 206, Accept-Ranges absent, Accept-Ranges lies, 206-with-whole-body, shifted Content-Range, omitted Content-Range, three malformed Content-Range shapes, unknown total length, multipart/byteranges for a single range, totals both overstated and understated - plus the proven path over h2c and with no validator and with a weak-ETag-only validator. Exactly one behaviour yields Proven; the other fourteen do not, and five of those answer with 206. I-6's proof list in docs/agent/INVARIANTS.md names three cases and all three now exist: accept-ranges-lies, head-differs-from-get (which also asserts NO HEAD request reached the server, since checking only the conclusion cannot distinguish 'ignored HEAD' from 'asked and got lucky'), and cdn-edge-disagrees (an edge that advertises ranges redirecting to an origin that does not honour them). Guarded mechanically from here on by tests/corpus/tests/invariant_proofs.rs, which parses INVARIANTS.md and fails if any named proof case neither exists nor is deferred with a stage and a reason. HONEST LIMIT: the category is 17 against docs/09 §3.2's initial target of 25; the remainder needs S2/S3 features and is tracked as B-13.",
           "invariants": [
             "I-6"
           ]
@@ -1363,6 +1363,13 @@
       "found_in_stage": "S1",
       "target_stage": "S2",
       "rationale": "A scheduled job nobody checks is indistinguishable from one that does not exist"
+    },
+    {
+      "id": "B-18",
+      "text": "docs/agent/INVARIANTS.md names 14 corpus cases as proofs; 9 exist and 5 are deferred with reasons in tests/corpus/invariant-proof-deferrals.yaml (etag-changed-midway and 200-instead-of-206 need S2's resume; signed-url-expiry, referer-required and session-cookie-required need S7/S8's request context). Work through the deferrals as those stages land - tests/corpus/tests/invariant_proofs.rs fails on a stale entry, so the file cannot rot into an excuse list.",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "The deferral file is only honest if something forces it to shrink"
     }
   ],
   "session_log": [
@@ -1620,11 +1627,30 @@
         "state/progress.json"
       ],
       "left_in_progress": "S1 is in gate-review with 17/17 tasks and 8/8 criteria, every criterion backed by evidence that someone else can re-run, and the full suite green on CI including Windows and the 1 GB transfers. Awaiting a human gate decision; do NOT advance current_stage without it. Open backlog for S2 to pick up: B-5, B-6, B-7, B-16 (including upgrading S1's restart-from-zero retry into a real resume once If-Range exists), plus B-13 (ranges 15/25), B-14 (pin actions to SHAs before release artifacts) and B-17 (confirm the nightly fires after merge)."
+    },
+    {
+      "at": "2026-08-04T03:10:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "Re-audited the S1 gate before merging, because 'recorded, not hidden' is only acceptable if nothing recorded actually undermines a criterion. It did. docs/agent/INVARIANTS.md states I-6's proof as THREE corpus cases and only accept-ranges-lies existed - head-differs-from-get and cdn-edge-disagrees were missing, and nothing detected that. I-6 is the probe invariant, which is S1's core deliverable and exactly what S1-C2 covers, so the stage was very nearly declared complete with two thirds of one invariant's stated proof absent. Wrote both cases (adding HEAD support to the server and a per-origin ranges override so an edge and an origin can disagree), renamed two existing cases to the names INVARIANTS.md uses so traceability is by name, and - the part that matters - added tests/corpus/tests/invariant_proofs.rs, which parses INVARIANTS.md and fails if any named proof case neither exists nor is deferred with a stage and a substantive reason. Mutation-checked both directions: removing a case names it as missing, and a stale deferral for an existing case fails too. 48 corpus cases.",
+      "tasks_touched": [
+        "S1-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/cases/ranges/",
+        "tests/corpus/invariant-proof-deferrals.yaml",
+        "tests/corpus/tests/invariant_proofs.rs",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1 gate re-verified and ready to merge. 17/17 tasks, 8/8 criteria, 48 corpus cases, invariant proof lists now mechanically checked."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 46,
-    "corpus_cases_passing": 46,
+    "corpus_cases_total": 48,
+    "corpus_cases_passing": 48,
     "sim_seeds_fixed": 0,
     "invariants_covered": 3,
     "invariants_total": 14,

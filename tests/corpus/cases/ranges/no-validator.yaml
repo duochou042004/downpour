@@ -1,4 +1,4 @@
-id: proven-ranges-without-a-validator
+id: no-validator
 category: ranges
 description: >
   Ranges work, and the server offers neither `ETag` nor `Last-Modified`. Both facts must be

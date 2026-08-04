@@ -1,4 +1,4 @@
-id: proven-ranges-with-weak-etag-only
+id: weak-etag-only
 category: ranges
 description: >
   Ranges are proven, but the only validator offered is a weak `ETag`. A weak validator may compare
