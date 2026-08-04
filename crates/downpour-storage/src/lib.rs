@@ -1,7 +1,7 @@
 //! Crash-safe storage for Downpour.
 //!
-//! This crate owns I-9 and I-11 for the recovery-journal format, replay, repair, and compaction.
-//! Part-file allocation and durable block commits are added by later S2 tasks.
+//! This crate owns I-9 and I-11 for the recovery journal and I-10 for exclusive, preallocated
+//! part files. Durable block commits are added by a later S2 task.
 
 #![cfg_attr(
     not(test),
@@ -16,3 +16,4 @@
 )]
 
 pub mod journal;
+pub mod part_file;

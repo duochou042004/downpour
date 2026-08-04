@@ -31,6 +31,7 @@ httpdate = "1.0.3"
 http-body-util = "0.1.4"
 hyper = "1.11.0"
 hyper-util = "0.1.20"
+libc = "0.2.189"
 mime = "0.3.17"
 percent-encoding = "2.3.2"
 proptest = "1.11.0"
@@ -48,6 +49,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 # maintained fork with the same serde integration, which matters because ADR-0010 requires the
 # corpus runner to fail closed on an unknown key and that is exactly `deny_unknown_fields`.
 serde_norway = "0.9.42"
+rustix = { version = "1.1.4", features = ["fs"] }
 thiserror = "2.0.19"
 tokio = "1.53.1"
 tracing = "0.1.44"
@@ -55,6 +57,12 @@ tracing-subscriber = "0.3.23"
 # The `serde` feature is enabled per-crate, by whichever crate actually persists a URL.
 # Nothing does yet; persistence arrives with downpour-storage in S2.
 url = "2.5.8"
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+] }
 
 # Lints that encode .claude/rules/rust.md mechanically, so the rule is enforced by
 # the compiler rather than by whoever is reviewing.
