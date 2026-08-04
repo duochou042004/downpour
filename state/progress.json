@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T10:34:50Z",
+  "updated_at": "2026-08-04T12:18:00Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -716,14 +716,19 @@
         {
           "id": "S2-T4",
           "title": "Create sparse preallocated part files and expose positional writes on Linux and Windows",
-          "status": "todo",
-          "proof": "crates/downpour-storage/tests/part_file.rs::creation_is_exclusive_and_positional_writes_preserve_other_offsets, with platform preallocation tests on GitHub windows-latest and Linux",
+          "status": "done",
+          "proof": "crates/downpour-storage/tests/part_file.rs::{creation_is_exclusive_and_positional_writes_preserve_other_offsets,out_of_bounds_write_is_rejected_without_partial_mutation,zero_length_needs_no_reservation_and_accepts_no_bytes,an_unrepresentable_length_is_rejected_before_the_part_file_is_created,a_target_without_a_filename_is_rejected_before_creation,linux_preallocation_reserves_physical_blocks_before_the_first_write,windows_preallocation_marks_sparse_and_reserves_physical_clusters}; part_file::platform::tests::{fallocate_success_sets_length_without_trying_a_weaker_reservation,unsupported_fallocate_uses_posix_fallocate_before_logical_length,unsupported_reservation_falls_back_truthfully_to_logical_length,no_space_is_not_hidden_by_a_weaker_fallback,verified_allocation_is_the_only_reserving_windows_result,unsupported_windows_features_fall_back_without_claiming_reservation,windows_disk_full_is_not_hidden_at_either_preparation_step}; all pass under just gate or native GitHub Windows CI and every test was mutation-checked",
           "files": [
+            "Cargo.toml",
+            "crates/downpour-storage/Cargo.toml",
             "crates/downpour-storage/src/part_file.rs",
+            "crates/downpour-storage/tests/part_file.rs",
+            "docs/adr/0014-thin-platform-bindings-for-part-files.md",
+            "docs/04-storage-and-recovery-spec.md",
             "docs/agent/INVARIANTS.md"
           ],
           "blocked_by": "S2-T2",
-          "notes": "Before implementation, reconcile I-10's stale SetFileValidData wording with docs/04 section 2.1, which explicitly forbids SetFileValidData because it can expose uninitialised disk contents. The normative storage spec wins; do not use SetFileValidData.",
+          "notes": "ADR-0014 was proposed before code and remains proposed pending maintainer review. PartFile creates <target>.dppart exclusively, validates length and target before creation, reports truthful platform preallocation metadata, and rejects a complete positional write before I/O if it crosses the declared extent. Linux implements fallocate(KEEP_SIZE) -> posix_fallocate -> logical length and preserves operational errors. Native Windows CI first caught that sparse-then-allocate left AllocationSize short (run 30907036949); ADR/spec/code were corrected in that order to allocate -> set EOF -> mark sparse -> verify, after which both PR and push runs 30907490771/30907489849 passed Windows clippy and all 194 tests. All ten Linux proofs and four Windows-only proofs were mutation-checked; Windows mutation runs 30907822846 and 30907880672 made every owning test red while clippy and non-Windows jobs stayed green. Final `just gate`: 195/195 passed, 2 skipped; final `just corpus-slow`: 90/90 passed including both 1 GB cases. Final PR/push runs 30908291018/30908285831 passed the harness, Linux, Windows, and security jobs at 887c9b6. Invariant check: I-2's affected positional/bounds surface and I-10's preparation surface are covered; I-1 and I-3..I-9/I-11..I-14 are not affected. Grant enforcement remains T5 and transfer-time ENOSPC recovery remains T13, so metrics.invariants_covered deliberately stays 3.",
           "invariants": [
             "I-2",
             "I-10"
@@ -1451,6 +1456,13 @@
       "status": "proposed",
       "superseded_by": null,
       "stage": "S2"
+    },
+    {
+      "id": "ADR-0014",
+      "title": "Thin platform bindings for truthful part-file allocation",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S2"
     }
   ],
   "risks": [
@@ -2087,6 +2099,82 @@
         "state/progress.json"
       ],
       "left_in_progress": "PR #4 (https://github.com/duochou042004/downpour/pull/4) awaits maintainer review and merge. ADR-0013 remains proposed pending maintainer decision. Do not begin or stack S2-T4 on this branch; after PR #4 merges, fast-forward develop, mirror it to GitLab, and create feature/s2-part-files from the merged develop tip."
+    },
+    {
+      "at": "2026-08-04T11:57:02Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Implemented the test-first Linux and Windows S2-T4 PartFile surface after ADR-0014: exclusive sibling creation, truthful platform preallocation reporting, cursor-independent positional writes, whole-extent bounds, and operational-error preservation. The absent API was observed RED; all ten Linux tests were independently mutation-checked, including both ENOSPC fallback stages. Linux local gates and Windows cross-compilation/clippy are green; native Windows execution remains deliberately outstanding.",
+      "tasks_touched": [
+        "S2-T4"
+      ],
+      "files_touched": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/downpour-storage/Cargo.toml",
+        "crates/downpour-storage/src/lib.rs",
+        "crates/downpour-storage/src/part_file.rs",
+        "crates/downpour-storage/tests/part_file.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T4 remains in progress on feature/s2-part-files. Commit and push this implementation to both remotes, open a GitHub PR, require native windows-latest to prove sparse marking plus physical AllocationSize, then run targeted Windows mutation branches so each of the four Windows-only proof paths is observed red. Only after those proofs and refreshed full gates may T4 be marked done; I-2's grant barrier remains T5 and I-10's disk-full recovery remains T13."
+    },
+    {
+      "at": "2026-08-04T12:02:27Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Native Windows CI supplied the evidence ADR-0014 required: the sparse-first order returned API success but left AllocationSize short, so the integration proof failed rather than allowing a false reservation claim. Amended ADR-0014 and the normative storage spec before code to request allocation and set EOF on the ordinary file, then mark sparse, then verify allocation. This follows Microsoft's documented rule that setting the sparse flag should not deallocate already allocated clusters.",
+      "tasks_touched": [
+        "S2-T4"
+      ],
+      "files_touched": [
+        "docs/adr/0014-thin-platform-bindings-for-part-files.md",
+        "docs/04-storage-and-recovery-spec.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T4 remains in progress on PR #5 after GitHub CI run 30907036949 failed only windows_preallocation_marks_sparse_and_reserves_physical_clusters. Commit this ADR/spec amendment before production code, then update Windows preparation policy and unit event expectations, cross-check locally, and require a fresh native Windows green run before starting mutation branches."
+    },
+    {
+      "at": "2026-08-04T12:03:44Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Implemented the ADR-0014 Windows correction after the native RED proof: FileAllocationInfo now runs on the ordinary file, EOF is established while allocation is held, sparse marking follows, and AllocationSize is queried last. Unsupported allocation still produces a sparse logical-length fallback, while operational failures from either step remain fatal. Updated unit event proofs and improved the native assertion diagnostic; Linux tests and Windows cross-clippy/test compilation pass.",
+      "tasks_touched": [
+        "S2-T4"
+      ],
+      "files_touched": [
+        "crates/downpour-storage/src/part_file.rs",
+        "crates/downpour-storage/tests/part_file.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T4 remains in progress on PR #5. Commit and push the Windows-order fix to both remotes, then require a fresh native windows-latest green run. If allocation remains short after sparse marking, stop and revisit ADR-0014 again; if green, mutation-check the Windows integration proof and each Windows unit policy path before marking T4 done."
+    },
+    {
+      "at": "2026-08-04T12:14:14Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Completed S2-T4 with truthful cross-platform part-file preparation and positional writes. A real native Windows failure triggered ADR-0014's reversal clause; the amended allocate-then-sparse order subsequently passed both GitHub event runs. Every one of the ten Linux proofs and four Windows-only proofs was mutation-checked, including separate sparse-stage and allocation-stage disk-full faults. The invariant walk found I-2's affected bounds surface and I-10's preparation surface covered, with the remaining grant and transfer-time disk-full responsibilities still assigned to T5/T13. Final fast and slow gates are green.",
+      "tasks_touched": [
+        "S2-T4"
+      ],
+      "files_touched": [
+        "docs/agent/INVARIANTS.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T4 is done on PR #5 (https://github.com/duochou042004/downpour/pull/5), which is mergeable and CI-green at 153cc28. ADR-0014 remains proposed pending maintainer review. Commit this final invariant/progress record, push it to both remotes, and require refreshed GitHub checks. Do not begin or stack S2-T5 until PR #5 is reviewed and merged; after merge, branch from updated develop and start with durable_writer.rs RED at every I-1 ordering boundary."
+    },
+    {
+      "at": "2026-08-04T12:18:00Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Published the completed S2-T4 invariant/progress record to both remotes. GitHub push and PR runs 30908285831 and 30908291018 passed the harness, Linux fmt/clippy/tests/doctests, native Windows clippy/tests, and security audit at 887c9b6; the PR is mergeable. Removed the two intentionally defective GitHub mutation refs after preserving their run IDs as evidence; their commits remain locally recoverable and the Actions logs remain available.",
+      "tasks_touched": [
+        "S2-T4"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "PR #5 (https://github.com/duochou042004/downpour/pull/5) awaits maintainer review and merge. ADR-0014 remains proposed pending maintainer decision. Do not begin or stack S2-T5 on this branch; after PR #5 merges, fast-forward develop, mirror the merge to GitLab, create a fresh feature/s2-durable-writer branch, and begin with the named crash-boundary proof RED."
     }
   ],
   "metrics": {

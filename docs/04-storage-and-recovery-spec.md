@@ -39,15 +39,30 @@ folder does not silently destroy recovery information for an active transfer.
 
 1. Create `<target>.dppart` exclusively (`O_EXCL` / `CREATE_NEW`). A collision means another
    process owns this download — do not proceed.
-2. Mark it sparse where supported (`FSCTL_SET_SPARSE` on Windows; sparse by default on
-   ext4/xfs/btrfs).
-3. Preallocate the full length (I-10):
+2. Preallocate the full length (I-10):
    - Linux: `fallocate(FALLOC_FL_KEEP_SIZE)`, falling back to `posix_fallocate`, falling back
      to `ftruncate` + accepting that space is not reserved.
-   - Windows: `SetFileInformationByHandle(FileAllocationInfo)`. `SetFileValidData` is **not**
-     used — it requires a privilege and exposes uninitialised disk contents.
+   - Windows: `SetFileInformationByHandle(FileAllocationInfo)`, then establish the logical EOF.
+     `SetFileValidData` is **not** used — it requires a privilege and exposes uninitialised disk
+     contents.
+3. Mark it sparse where supported (`FSCTL_SET_SPARSE` after Windows allocation; sparse by
+   default on ext4/xfs/btrfs).
 4. Record which preallocation method succeeded. If none reserved space, set
    `space_reserved: false` and warn: `ENOSPC` becomes likely rather than impossible.
+
+ADR-0014 fixes the platform policy behind those steps:
+
+- advance to a weaker method only when the preceding operation is unsupported; `ENOSPC`,
+  `EFBIG`, access errors, and I/O errors fail preparation rather than being hidden by a
+  logical-length fallback;
+- on Windows specifically, request `FileAllocationInfo` on the ordinary file, establish EOF,
+  then mark it sparse. Native NTFS proved that the sparse-first order can report success without
+  reserving the requested clusters. Query `FileStandardInfo.AllocationSize` after sparse
+  marking and report `space_reserved: true` only when the allocation still covers the requested
+  length. The sparse attribute permits future holes but is not itself evidence about current
+  physical allocation;
+- a zero-length object records `NotNeeded` and `space_reserved: true`; and
+- a logical-length-only fallback records `SetLength` and `space_reserved: false`.
 
 Preallocating up front converts "disk full at 97%" from a data-integrity event into a
 start-time error, which is the whole point.
