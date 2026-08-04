@@ -1,0 +1,16 @@
+[package]
+name = "downpour-storage"
+description = "Crash-safe part-file, journal and metadata storage for Downpour."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+crc.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
