@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T14:41:21Z",
+  "updated_at": "2026-08-04T14:46:34Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -776,7 +776,7 @@
             "crates/downpour-types/src/remote.rs"
           ],
           "blocked_by": "S2-T1, S2-T2",
-          "notes": "Closes B-7. ADR-0015 was proposed and committed before code and remains proposed pending maintainer review. The proof suite was observed RED against the absent metadata module. SQLite v1 now opens only an exact schema, initializes only a physically empty unversioned file in one transaction, verifies WAL/NORMAL/foreign-key/busy-timeout/trusted-schema policy, and refuses newer or malformed state without reinterpretation. Typed boundaries enforce 16-byte RFC-variant UUIDv7 ids, lossless native paths, lowercase dotted error kinds, query-free public URLs plus keyring references, ordered redirects/history, and checked SQLite integer conversions. Canonical bounded CBOR v1 covers raw range observations, complete-only checkpoints, and full idempotent identity snapshots; checkpoint union/SQL/download totals must agree, and both SQLite and identity loaders rebuild RangeProof only through its validating constructor. Twenty-eight targeted mutation runs were performed: every one of the final 24 tests went red under its owning fault; one initial HTTP/3 snapshot mutation survived, the proof was extended across CBOR, and the repeated mutation then went red. Invariant check: I-6, I-8, I-11 and I-14's changed persistence surfaces are covered; persisted validators and content-encoding evidence also preserve the I-3 and I-5 inputs, while their HTTP behavior remains T9; I-1, I-2, I-4, I-7, I-9, I-10, I-12 and I-13 runtime mechanisms are not changed. metrics.invariants_covered remains 5 because I-3, I-8, I-10 and I-11 still have later-stage integration gaps. `just gate`: 230/230 passed, 2 skipped. `just corpus-slow`: 90/90 passed. Windows GNU check and strict storage clippy pass; native Windows CI remains required on the PR. Recovery reconciliation remains T7; sink integration T8; HTTP resume and keyring-backed URL reconstruction remain T9 and S7/S8.",
+          "notes": "Closes B-7. ADR-0015 was proposed and committed before code and remains proposed pending maintainer review. The proof suite was observed RED against the absent metadata module. SQLite v1 now opens only an exact schema, initializes only a physically empty unversioned file in one transaction, verifies WAL/NORMAL/foreign-key/busy-timeout/trusted-schema policy, and refuses newer or malformed state without reinterpretation. Typed boundaries enforce 16-byte RFC-variant UUIDv7 ids, lossless native paths, lowercase dotted error kinds, query-free public URLs plus keyring references, ordered redirects/history, and checked SQLite integer conversions. Canonical bounded CBOR v1 covers raw range observations, complete-only checkpoints, and full idempotent identity snapshots; checkpoint union/SQL/download totals must agree, and both SQLite and identity loaders rebuild RangeProof only through its validating constructor. Twenty-eight targeted mutation runs were performed: every one of the final 24 tests went red under its owning fault; one initial HTTP/3 snapshot mutation survived, the proof was extended across CBOR, and the repeated mutation then went red. Invariant check: I-6, I-8, I-11 and I-14's changed persistence surfaces are covered; persisted validators and content-encoding evidence also preserve the I-3 and I-5 inputs, while their HTTP behavior remains T9; I-1, I-2, I-4, I-7, I-9, I-10, I-12 and I-13 runtime mechanisms are not changed. metrics.invariants_covered remains 5 because I-3, I-8, I-10 and I-11 still have later-stage integration gaps. `just gate`: 230/230 passed, 2 skipped. `just corpus-slow`: 90/90 passed. Windows GNU check and strict storage clippy pass; GitHub push run 30920383372 and pull-request run 30920421337 passed harness, Linux fmt/clippy/tests/doctests, native Windows clippy/tests, and security audit at 9ca94fa. Recovery reconciliation remains T7; sink integration T8; HTTP resume and keyring-backed URL reconstruction remain T9 and S7/S8.",
           "invariants": [
             "I-6",
             "I-8",
@@ -2268,6 +2268,19 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T6 is done locally on feature/s2-metadata. Commit the implementation/proof/progress change, push to github and origin, open a GitHub PR against develop, and require harness, Linux, native Windows, and security jobs to pass. ADR-0015 remains proposed pending maintainer decision. Do not begin or stack S2-T7 until this branch is reviewed and merged."
+    },
+    {
+      "at": "2026-08-04T14:46:34Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Published S2-T6 as PR #7 from commit 9ca94fa to both remotes. GitHub push run 30920383372 and pull-request run 30920421337 passed the harness, Linux fmt/clippy/tests/doctests, native Windows clippy/tests, and security audit; the intentionally manual 1 GB corpus job was skipped in CI after just corpus-slow passed 90/90 locally.",
+      "tasks_touched": [
+        "S2-T6"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "PR #7 (https://github.com/duochou042004/downpour/pull/7) awaits maintainer review and merge. ADR-0015 remains proposed pending maintainer decision. Do not begin or stack S2-T7 on this branch; after merge, fast-forward develop, mirror the merge to GitLab, create a fresh feature/s2-recovery-reconciliation branch, and begin with recovery_reconciliation.rs RED."
     }
   ],
   "metrics": {
