@@ -1,0 +1,17 @@
+id: redirect-to-unusable-location
+category: redirects
+description: >
+  A 301 whose `Location` cannot be resolved to a usable URL. The engine must report that
+  specifically, not fold it into a generic transport failure — the two need different responses
+  from whoever reads the error, since one is the origin's fault and the other may be the network.
+references: ["RFC 9110 §10.2.2", "RFC 3986 §5"]
+
+server:
+  content: { size: 64KiB, seed: 72 }
+  redirect_chain: [301]
+  redirect_location: unusable
+
+expect:
+  final_state: failed
+  error_kind: unusable_redirect_target
+  file_renamed: false

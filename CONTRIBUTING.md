@@ -15,7 +15,7 @@ humans and AI agents alike.
 ## Setup
 
 ```bash
-git clone https://gitlab.com/duochou042004/downpour.git
+git clone https://github.com/duochou042004/downpour.git
 cd downpour
 just setup      # installs the git hooks, then runs the environment check
 just brief      # what stage we are in and what is open

@@ -1,0 +1,18 @@
+id: accept-ranges-lies
+category: ranges
+description: >
+  The server advertises `Accept-Ranges: bytes` and then answers a ranged GET with 200 and the
+  whole representation. The engine must NOT conclude that ranges are usable: believing the
+  advertisement would make N workers each download the entire file and assemble nonsense.
+  The download itself must still succeed, as a single stream.
+references: ["RFC 9110 §14.3", "INVARIANTS.md#i-6", "docs/01-idm-teardown.md §3"]
+
+server:
+  content: { size: 256KiB, seed: 42 }
+  ranges: lies
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent
+  total_length: 256KiB

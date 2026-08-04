@@ -1,0 +1,19 @@
+id: redirect-then-no-range-support
+category: redirects
+description: >
+  A redirect chain that ends at an origin which does not support ranges. Both facts must be
+  recorded: the full chain (I-8) and the absence of range support (I-6). A probe that concluded
+  range support from the wrong hop, or that lost the chain when it fell back to a single stream,
+  would fail this.
+references: ["INVARIANTS.md#i-6", "INVARIANTS.md#i-8"]
+
+server:
+  content: { size: 128KiB, seed: 44 }
+  ranges: lies
+  redirect_chain: [302, 301]
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent
+  redirect_chain_len: 3

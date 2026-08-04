@@ -1,0 +1,42 @@
+# Corpus cases that docs/agent/INVARIANTS.md names as an invariant's proof, but which cannot exist
+# yet. Every entry needs a stage and a reason.
+#
+# tests/corpus/tests/invariant_proofs.rs reads this file and asserts that each case named in
+# INVARIANTS.md either EXISTS under tests/corpus/cases/ or appears here. It also fails on a stale
+# entry — one listed here for a case that now exists — so this file cannot rot into an excuse list.
+#
+# This exists because the gap it guards was real: I-6 named three proof cases and only
+# accept-ranges-lies existed, and nothing detected that. S1 was very nearly declared complete with
+# two thirds of one invariant's stated proof missing.
+
+etag-changed-midway:
+  stage: S2
+  reason: >
+    Needs the server to change its ETag part way through a transfer. ADR-0010's `behaviour` key
+    describes exactly this and the case loader deliberately REJECTS it while unimplemented, so a
+    case cannot silently pass without anything changing mid-transfer.
+
+200-instead-of-206:
+  stage: S2
+  reason: >
+    A 200 where 206 was expected only means "the representation changed" in the context of a resume
+    request carrying If-Range. Resume does not exist until S2, and the probe-time version of this
+    shape is already covered by accept-ranges-lies.
+
+signed-url-expiry:
+  stage: S8
+  reason: >
+    Requires an expiring signed URL and the refresh flow of docs/03 §5.2. S1 correctly reports
+    401/403/410 as needs_refresh but has nothing to refresh with.
+
+referer-required:
+  stage: S8
+  reason: >
+    Requires replaying a browser request context. The plumbing exists (ProbeRequest.headers) but
+    nothing supplies it until the extension lands in S7 and auth in S8.
+
+session-cookie-required:
+  stage: S8
+  reason: >
+    Same as referer-required, and additionally needs cookies, which must come from the OS keyring
+    rather than the corpus (I-14).

@@ -1,0 +1,17 @@
+id: deliberately-wrong
+category: framing
+description: >
+  NOT A REAL CASE. This fixture exists to prove the runner actually evaluates expectations
+  instead of reporting green. The server refuses the transfer with a gzipped ranged response, so
+  no file can exist — but this case claims the download completes and was renamed. The runner MUST
+  report it as a failure. If tests/runner_self_test.rs ever passes this fixture, every green
+  result in the corpus is meaningless.
+references: ["ADR-0010 contract rule 3", "state/progress.json risk R-7"]
+
+server:
+  content: { size: 64KiB, seed: 42 }
+  content_encoding: gzip
+
+expect:
+  final_state: completed
+  file_renamed: true

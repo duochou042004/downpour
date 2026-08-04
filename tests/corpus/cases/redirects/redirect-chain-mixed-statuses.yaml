@@ -1,0 +1,17 @@
+id: redirect-chain-mixed-statuses
+category: redirects
+description: >
+  A 301 to a 302 to a 307 to the content. The engine must follow all three and record the whole
+  chain, including the URL that was submitted: re-resolving from the original URL on resume is
+  what gets a 403 on a signed URL, and the naive reaction is to discard every byte already held.
+references: ["RFC 9110 §15.4", "INVARIANTS.md#i-8"]
+
+server:
+  content: { size: 128KiB, seed: 42 }
+  redirect_chain: [301, 302, 307]
+
+expect:
+  final_state: completed
+  file_renamed: true
+  filename: content
+  redirect_chain_len: 4

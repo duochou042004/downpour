@@ -1,0 +1,18 @@
+id: serves-corrupt-bytes
+category: framing
+description: >
+  NOT A REAL CASE. The server serves the right number of bytes, with correct headers, but inverts
+  everything from 32 KiB onward — a file of exactly the expected size whose contents are wrong,
+  which is the failure mode the whole project exists to prevent. This case claims success, and the
+  runner must reject it with a SILENT CORRUPTION finding naming the offset. Without this fixture
+  the runner's byte comparison is only ever observed passing, which is indistinguishable from a
+  comparison that never runs.
+references: ["ADR-0010 contract rule 1", "INVARIANTS.md#i-1", "state/progress.json risk R-2"]
+
+server:
+  content: { size: 128KiB, seed: 42 }
+  corrupt_from: 32KiB
+
+expect:
+  final_state: completed
+  file_renamed: true

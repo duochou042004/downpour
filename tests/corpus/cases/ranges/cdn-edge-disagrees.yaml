@@ -1,0 +1,22 @@
+id: cdn-edge-disagrees
+category: ranges
+description: >
+  An edge that advertises range support redirects to an origin that does not honour it. Named in
+  INVARIANTS.md as one of I-6's three proof cases, and the everyday shape of a CDN download: the
+  host that answers first is not the host that serves the bytes. The engine must draw its conclusion
+  from the FINAL origin, so range support must come out absent even though the first hop looked
+  willing — and the transfer must still complete byte-exactly as a single stream.
+references: ["RFC 9110 §14.3", "INVARIANTS.md#i-6", "INVARIANTS.md#i-8"]
+
+server:
+  content: { size: 128KiB, seed: 102 }
+  ranges: supported
+  content_origin_ranges: lies
+  redirect_chain: [302]
+  cross_origin: true
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent
+  crosses_origin: true

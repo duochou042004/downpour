@@ -1,0 +1,19 @@
+id: multipart-byteranges-for-single-range
+category: ranges
+description: >
+  The server answers a SINGLE-range request with a `multipart/byteranges` body. RFC 9110 permits
+  that shape only for a multi-range request, but appliances and some proxies emit it regardless.
+  There is no top-level `Content-Range`, so an engine that treated the body as raw bytes would write
+  the MIME boundary and the part headers into the file — at roughly the right size, which is the
+  worst kind of wrong. The engine must decline to prove range support and fall back to a single
+  stream, and the resulting file must be byte-exact.
+references: ["RFC 9110 §14.4", "RFC 9110 §15.3.7", "INVARIANTS.md#i-6"]
+
+server:
+  content: { size: 128KiB, seed: 61 }
+  ranges: multipart-byteranges
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent

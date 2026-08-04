@@ -1,0 +1,26 @@
+[package]
+name = "downpour-corpus"
+description = "The compatibility corpus: the pathology server, the deterministic content generator, and the case runner. Test-only; never compiled into a release binary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+blake3 = { workspace = true }
+downpour-http = { workspace = true }
+downpour-types = { workspace = true }
+serde = { workspace = true }
+serde_norway = { workspace = true }
+thiserror = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["server", "client", "http1", "http2"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+url = { workspace = true }
+
+[lints]
+workspace = true

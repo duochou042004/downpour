@@ -1,0 +1,18 @@
+id: no-validator
+category: ranges
+description: >
+  Ranges work, and the server offers neither `ETag` nor `Last-Modified`. Both facts must be
+  recorded independently: range support is proven, and there is no validator to resume against.
+  Conflating them is how a resume gets attempted with nothing to check the representation against,
+  which is the setup for splicing two versions of a file together (I-3).
+references: ["RFC 9110 §8.8", "INVARIANTS.md#i-3", "INVARIANTS.md#i-6"]
+
+server:
+  content: { size: 128KiB, seed: 86 }
+  ranges: supported
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: proven
+  total_length: 128KiB

@@ -1,0 +1,16 @@
+id: zero-length-representation
+category: framing
+description: >
+  An empty file. The probe's `Range: bytes=0-0` is unsatisfiable because there is no byte 0, so the
+  server answers 416 — and a probe that treated 416 as fatal would make empty files undownloadable
+  entirely. docs/03 §2.1 says a non-206 means single stream, not failure. This case is the
+  regression test for that defect.
+references: ["RFC 9110 §15.5.17", "docs/03-transfer-engine-spec.md §2.1"]
+
+server:
+  content: { size: 0, seed: 34 }
+
+expect:
+  final_state: completed
+  file_renamed: true
+  filename: content

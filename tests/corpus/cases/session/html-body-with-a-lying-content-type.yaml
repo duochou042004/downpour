@@ -1,0 +1,19 @@
+id: html-body-with-a-lying-content-type
+category: session
+description: >
+  A login page served with `Content-Type: application/octet-stream`. The Content-Type check cannot
+  catch this one — the header says binary — so only sniffing the body's magic bytes does, which is why
+  docs/03 §2.1 step 7 says "content-type, OR magic bytes". This is what an expired session looks like
+  on an origin that sets the type from the file it *meant* to serve. Before the sniff existed the HTML
+  was written to disk under the requested filename and the download reported success.
+references: ["docs/03-transfer-engine-spec.md §2.1 step 7", "INVARIANTS.md#i-4"]
+
+server:
+  content: { size: 64KiB, seed: 104 }
+  content_type: "application/octet-stream"
+  body: "<!DOCTYPE html>\n<html><body>Please sign in to continue</body></html>"
+
+expect:
+  final_state: failed
+  error_kind: looks_like_error_page
+  file_renamed: false

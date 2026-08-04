@@ -1,0 +1,15 @@
+id: close-delimited-body
+category: framing
+description: >
+  Neither `Content-Length` nor chunked framing: the body ends when the connection does, so
+  "complete" and "truncated" are indistinguishable from the framing alone. The engine must still
+  produce the correct file.
+references: ["RFC 9112 §6.3", "INVARIANTS.md#i-1"]
+
+server:
+  content: { size: 128KiB, seed: 5 }
+  framing: close-delimited
+
+expect:
+  final_state: completed
+  file_renamed: true

@@ -1,0 +1,18 @@
+id: unknown-total-length
+category: ranges
+description: >
+  The server answers the probe with 206 and `Content-Range: bytes 0-0/*`. That is legal HTTP, but
+  it leaves the representation length unknown, so there is nothing to segment against. Range
+  support must not be proven, and the length must NOT be taken from Content-Length — on a 206 that
+  header describes the enclosed part, not the whole, and treating it as the total is an
+  off-by-a-lot that would size the file at one byte.
+references: ["RFC 9110 §14.4", "INVARIANTS.md#i-6"]
+
+server:
+  content: { size: 128KiB, seed: 21 }
+  ranges: unknown-total-length
+
+expect:
+  final_state: completed
+  file_renamed: true
+  range_support: absent

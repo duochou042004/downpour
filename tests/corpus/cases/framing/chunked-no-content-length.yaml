@@ -1,0 +1,14 @@
+id: chunked-no-content-length
+category: framing
+description: >
+  The body arrives with `Transfer-Encoding: chunked` and no `Content-Length`. The engine must
+  reassemble it byte-exactly across chunk boundaries.
+references: ["RFC 9112 §7.1", "INVARIANTS.md#i-1"]
+
+server:
+  content: { size: 256KiB, seed: 99 }
+  framing: chunked
+
+expect:
+  final_state: completed
+  file_renamed: true

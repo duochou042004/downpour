@@ -73,6 +73,16 @@ The boring foundation, done properly.
 4. Never writes a body received with an unexpected `Content-Encoding` (I-5).
 5. `redirects` and `framing` corpus categories pass.
 6. Zero silent corruption across the S1 corpus subset.
+7. A transient transport failure mid-body is retried and the download still completes
+   byte-correctly; `Retry-After` is honoured exactly; back-off is per-origin (`03` §7).
+8. The workspace compiles and its test suite passes on Windows.
+
+Criteria 7 and 8 were added during Stage 1, on 2026-08-03, because the original six did not
+test the two things the stage's own name promises. The stage is called **robust**, and nothing
+in 1–6 exercises recovery from a transient failure — a single connection reset simply failed
+the download. Downpour is also billed as Linux **and Windows**, and nothing had ever been
+compiled for Windows at all, so the `cfg(windows)` branches behind I-10 had never seen a
+compiler. A gate that a stage can pass while both of those are true is not a wall.
 
 ---
 

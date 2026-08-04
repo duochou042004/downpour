@@ -1,0 +1,18 @@
+id: content-range-total-overstated
+category: ranges
+description: >
+  The probe's `Content-Range` is well formed and consistent with the request, so range support is
+  genuinely proven — but its stated total is larger than the representation actually is. Nothing at
+  probe time can detect that. The download must therefore catch it at verification and refuse to
+  give the final name to a file shorter than the length it committed to, rather than renaming a
+  short file because "the transfer ended cleanly".
+references: ["RFC 9110 §14.4", "INVARIANTS.md#i-4"]
+
+server:
+  content: { size: 128KiB, seed: 27 }
+  ranges: !literal-content-range { value: "bytes 0-0/999999" }
+
+expect:
+  final_state: failed
+  error_kind: incomplete
+  file_renamed: false

@@ -6,16 +6,16 @@
 
 *Open source. Apache-2.0. Built from scratch, in stages, in Rust.*
 
-[![Stage](https://img.shields.io/badge/stage-S0%20foundations-blue?style=flat-square)](docs/12-roadmap-stages.md)
-[![Status](https://img.shields.io/badge/status-specification-orange?style=flat-square)](state/progress.json)
+[![Stage](https://img.shields.io/badge/stage-S1%20single--stream%20downloader-blue?style=flat-square)](docs/12-roadmap-stages.md)
+[![Status](https://img.shields.io/badge/status-engine%20in%20progress-orange?style=flat-square)](state/progress.json)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-000000?style=flat-square&logo=rust&logoColor=white)](rust-toolchain.toml)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-informational?style=flat-square)](docs/11-packaging-release.md)
 
-[![Pipeline](https://gitlab.com/duochou042004/downpour/badges/develop/pipeline.svg?style=flat-square)](https://gitlab.com/duochou042004/downpour/-/pipelines)
+[![CI](https://github.com/duochou042004/downpour/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/duochou042004/downpour/actions/workflows/ci.yml)
 [![Invariants](https://img.shields.io/badge/invariants-14-critical?style=flat-square)](docs/agent/INVARIANTS.md)
-[![ADRs](https://img.shields.io/badge/ADRs-9%20accepted-purple?style=flat-square)](docs/adr/README.md)
-[![Corpus](https://img.shields.io/badge/corpus-0%20%2F%20159%20planned-lightgrey?style=flat-square)](docs/09-testing-strategy.md)
+[![ADRs](https://img.shields.io/badge/ADRs-11-purple?style=flat-square)](docs/adr/README.md)
+[![Corpus](https://img.shields.io/badge/corpus-42%20%2F%20159%20planned-lightgrey?style=flat-square)](docs/09-testing-strategy.md)
 [![Silent corruption](https://img.shields.io/badge/silent%20corruption-0-brightgreen?style=flat-square)](docs/00-vision-and-scorecard.md)
 
 [![Agents](https://img.shields.io/badge/built%20with-Claude%20Code%20%2B%20Codex-8A2BE2?style=flat-square)](docs/agent/HARNESS.md)

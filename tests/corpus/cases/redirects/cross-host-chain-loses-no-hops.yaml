@@ -1,0 +1,18 @@
+id: cross-host-chain-loses-no-hops
+category: redirects
+description: >
+  A two-hop chain within the first origin that then leaves it for a second origin. Every hop must
+  appear in the recorded chain, including the intra-origin ones — a client that recorded only the
+  submitted URL and the final one would pass `redirect-chain-to-other-host` and fail this.
+references: ["INVARIANTS.md#i-8"]
+
+server:
+  content: { size: 64KiB, seed: 52 }
+  redirect_chain: [301, 302]
+  cross_origin: true
+
+expect:
+  final_state: completed
+  file_renamed: true
+  redirect_chain_len: 3
+  crosses_origin: true

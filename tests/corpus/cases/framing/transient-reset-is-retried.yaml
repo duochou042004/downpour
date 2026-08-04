@@ -1,0 +1,20 @@
+id: transient-reset-is-retried
+category: framing
+description: >
+  The first body request is truncated mid-transfer and the connection closed — what a reset looks
+  like to a client — and the second succeeds. The download must recover and produce a byte-exact
+  file. This is the case the stage's own name depends on: before the retry policy was wired in, one
+  reset failed the whole download, and "robust single-stream downloader" was not true.
+  Note the probe is untouched: only bodies longer than one byte can consume a transient failure, so
+  the failure lands in the transfer where it is interesting.
+references: ["docs/03-transfer-engine-spec.md §7", "INVARIANTS.md#i-1"]
+
+server:
+  content: { size: 256KiB, seed: 101 }
+  transient_body_failures: 1
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # probe + the failed body + the retried body. Two would mean no retry happened.
+  min_requests: 3

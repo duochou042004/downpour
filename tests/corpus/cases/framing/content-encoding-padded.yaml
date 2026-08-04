@@ -1,0 +1,17 @@
+id: content-encoding-padded
+category: framing
+description: >
+  `Content-Encoding` with surrounding whitespace around a non-identity token. As with
+  `content-encoding-uppercase`, this proves the rejection survives padding but not that the value is
+  trimmed — an untrimmed comparison also rejects "  gzip  ". Trimming is proved on the accept side,
+  by `content-encoding-identity-padded`.
+references: ["RFC 9110 §5.5", "INVARIANTS.md#i-5"]
+
+server:
+  content: { size: 64KiB, seed: 82 }
+  content_encoding: "  gzip  "
+
+expect:
+  final_state: failed
+  error_kind: unexpected_content_encoding
+  file_renamed: false

@@ -1,0 +1,18 @@
+id: content-encoding-uppercase
+category: framing
+description: >
+  `Content-Encoding: GZIP`. Proves only that the rejection does not depend on the token's case —
+  an engine keying off a lowercase allowlist of *bad* encodings would let this through. It does NOT
+  prove case-folding in general: this case still passes under a case-sensitive check, because a
+  case-sensitive comparison also rejects "GZIP". The folding is proved on the accept side, by
+  `content-encoding-identity-uppercase`.
+references: ["RFC 9110 §8.4.1", "INVARIANTS.md#i-5"]
+
+server:
+  content: { size: 64KiB, seed: 81 }
+  content_encoding: GZIP
+
+expect:
+  final_state: failed
+  error_kind: unexpected_content_encoding
+  file_renamed: false

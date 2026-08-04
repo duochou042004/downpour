@@ -1,0 +1,16 @@
+id: truncated-body
+category: framing
+description: >
+  The server declares the full length and then stops part way and closes. The engine must not
+  give the final name to a short file — a partial file wearing the real filename cannot be told
+  from a good one — and what did arrive must still be byte-correct so a later resume can use it.
+references: ["docs/03-transfer-engine-spec.md §7", "INVARIANTS.md#i-4"]
+
+server:
+  content: { size: 256KiB, seed: 42 }
+  truncate_body_after: 8KiB
+
+expect:
+  final_state: failed
+  error_kind: truncated_body
+  file_renamed: false

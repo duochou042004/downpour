@@ -2,16 +2,16 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-03T09:58:29Z",
+  "updated_at": "2026-08-04T03:40:00Z",
   "updated_by": "claude-code",
-  "current_stage": "S0",
+  "current_stage": "S2",
   "stages": [
     {
       "id": "S0",
       "name": "Foundations: specs, ADRs, agent harness, CI skeleton",
-      "status": "active",
+      "status": "complete",
       "started_at": "2026-08-02T00:00:00Z",
-      "completed_at": null,
+      "completed_at": "2026-08-03T11:44:43Z",
       "spec": "docs/12-roadmap-stages.md",
       "exit_criteria": [
         {
@@ -45,15 +45,15 @@
         {
           "id": "S0-C5",
           "text": "A fresh agent session can read CLAUDE.md then HARNESS.md then progress.json and correctly state what to work on next, without asking",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "Session 2026-08-03T11:44Z (claude-code, no prior context): read CLAUDE.md then docs/agent/HARNESS.md then state/progress.json then CONTEXT-MAP.md and stated unprompted that S0 was active with 17/17 tasks done, that S0-C5 was the only unmet criterion, and that the next work was the S0 gate followed by S1 per docs/03-transfer-engine-spec.md sections 1-2. Reproducible: `just brief` prints the same stage, open tasks and unmet criteria.",
           "invariants": []
         },
         {
           "id": "S0-C6",
           "text": "Repository skeleton complete: LICENSE, SECURITY.md, CONTRIBUTING.md, CI workflow",
           "met": true,
-          "evidence": "LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md, .gitlab-ci.yml all present at root",
+          "evidence": "LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md all present at root; CI workflow present. NOTE: the CI workflow was .gitlab-ci.yml when S0 closed and is now .github/workflows/ci.yml, with the GitLab config retained at .gitlab-ci.yml.disabled (ADR-0011). The criterion is still satisfied; only the path changed.",
           "invariants": []
         }
       ],
@@ -179,7 +179,7 @@
           "id": "S0-T11",
           "title": "Add the CI workflow skeleton (fmt, clippy, test, check-progress)",
           "status": "done",
-          "proof": ".gitlab-ci.yml present; harness stage (progress, agent-assets, docs-links) runs on every commit; rust jobs guarded on Cargo.toml existing",
+          "proof": "CI workflow present with a harness stage that runs on every commit and Rust jobs guarded on Cargo.toml existing. Originally .gitlab-ci.yml; superseded in S1 by .github/workflows/ci.yml after the GitLab quota was exhausted (ADR-0011). The GitLab config is kept current and disabled at .gitlab-ci.yml.disabled.",
           "files": [],
           "blocked_by": null,
           "notes": null,
@@ -261,23 +261,23 @@
     {
       "id": "S1",
       "name": "Robust single-stream HTTP/1.1 + HTTP/2 downloader",
-      "status": "planned",
-      "started_at": null,
-      "completed_at": null,
+      "status": "complete",
+      "started_at": "2026-08-03T11:44:43Z",
+      "completed_at": "2026-08-04T03:40:00Z",
       "spec": "docs/03-transfer-engine-spec.md",
       "exit_criteria": [
         {
           "id": "S1-C1",
           "text": "Downloads a 1 GB file correctly over HTTP/1.1 and HTTP/2",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "tests/corpus/tests/gigabyte.rs, run by `just corpus-slow`. Verified 2026-08-03: 1 000 000 000 bytes over HTTP/1.1 (3.0s) and over HTTP/2 as h2c (3.6s), each compared byte for byte against blake3-ctr-v1 with 0 mismatches. The verifier itself is proven able to fail by a companion test that flips one byte 3 MiB in. Caveat recorded as backlog B-8: HTTP/2 here is cleartext h2c, not h2 over TLS with ALPN, which the corpus cannot yet express. ALSO VERIFIED IN CI, not only locally: the slow-corpus job in .github/workflows/ci.yml ran both gigabyte cases on a GitHub runner in 107 s (run 30829132772, triggered with `gh workflow run CI`). That matters because 'green on the machine that produced it' is the property CI exists to rule out.",
           "invariants": []
         },
         {
           "id": "S1-C2",
           "text": "The capability probe correctly classifies range support on every 'ranges' corpus case",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "15 cases in tests/corpus/cases/ranges/, all passing, each asserting expect.range_support explicitly so the classification is checked rather than inferred from the download succeeding. They cover every range behaviour the pathology server can produce - correct 206, Accept-Ranges absent, Accept-Ranges lies, 206-with-whole-body, shifted Content-Range, omitted Content-Range, three malformed Content-Range shapes, unknown total length, multipart/byteranges for a single range, totals both overstated and understated - plus the proven path over h2c and with no validator and with a weak-ETag-only validator. Exactly one behaviour yields Proven; the other fourteen do not, and five of those answer with 206. I-6's proof list in docs/agent/INVARIANTS.md names three cases and all three now exist: accept-ranges-lies, head-differs-from-get (which also asserts NO HEAD request reached the server, since checking only the conclusion cannot distinguish 'ignored HEAD' from 'asked and got lucky'), and cdn-edge-disagrees (an edge that advertises ranges redirecting to an origin that does not honour them). Guarded mechanically from here on by tests/corpus/tests/invariant_proofs.rs, which parses INVARIANTS.md and fails if any named proof case neither exists nor is deferred with a stage and a reason. HONEST LIMIT: the category is 17 against docs/09 §3.2's initial target of 25; the remainder needs S2/S3 features and is tracked as B-13.",
           "invariants": [
             "I-6"
           ]
@@ -285,15 +285,15 @@
         {
           "id": "S1-C3",
           "text": "Filename sanitisation passes its property tests including path-traversal cases",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "crates/downpour-types/tests/filename_prop.rs::sanitised_name_is_always_exactly_one_normal_component - proptest over arbitrary char sequences asserting the result is exactly one Component::Normal, so it cannot escape the directory it is joined to; plus sanitise_is_idempotent, resolve_never_panics, and a 22-case table covering ../, absolute paths, Windows-style separators, NUL, control characters, the Windows reserved device names, trailing dots and spaces, and multibyte truncation. Proven end to end by tests/corpus/tests/download.rs::a_traversal_in_content_disposition_cannot_write_outside_the_target_directory, which asserts the written file's parent is the target directory.",
           "invariants": []
         },
         {
           "id": "S1-C4",
           "text": "Never writes a body received with an unexpected Content-Encoding",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "Four layers, each asserted independently. Header level: crates/downpour-types/tests/range_proof.rs::a_gzipped_range_response_is_rejected. Probe level: tests/corpus/tests/probe.rs::a_compressed_ranged_response_is_an_error_not_a_downgrade, which also asserts it is NOT downgraded to RangeSupport::Absent - conflating those would let the transfer proceed over bytes that do not correspond to the representation. Request level: ::the_probe_sends_accept_encoding_identity, asserted against the request the SERVER recorded rather than against our own code. Filesystem level: tests/corpus/tests/download.rs::a_compressed_body_is_never_written asserts the target directory is EMPTY afterwards - not even a .dppart - and crates/downpour-cli/tests/dp_add.rs asserts exit 1 with no file. Mutation-checked: deleting the Content-Encoding check turns the first two red. Also structural: no decompression feature is enabled on reqwest, so there is no code path that could inflate a body.",
           "invariants": [
             "I-5"
           ]
@@ -301,28 +301,301 @@
         {
           "id": "S1-C5",
           "text": "'redirects' and 'framing' corpus categories pass",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "Both categories are at or over docs/09 section 3.2's target and every case passes under `just gate`. framing 17/15: gzip-on-range, brotli, uppercase and padded non-identity tokens, a list containing identity, identity accepted in uppercase and padded form, chunked, close-delimited, chunked-short-but-well-formed, chunked-missing-terminator, truncated body, truncated after one byte, wrong Content-Length, HTML-instead-of-file, zero-length representation, and a body with no HTTP/1.1 length signal over h2c. redirects 10/10: mixed-status chain, 303, 308, loop bounded by the hop limit, chain over h2c, chain ending at an origin without range support, redirect with no Location, redirect to an unusable Location, cross-host handoff, and a cross-host chain that keeps its intra-origin hops. The last two assert expect.crosses_origin, without which they passed even with the cross-origin wiring disabled.",
           "invariants": []
         },
         {
           "id": "S1-C6",
           "text": "Zero silent corruption across the S1 corpus subset",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "42 corpus cases, 0 silent-corruption findings, and the detector is proven able to fire rather than merely observed passing: ServerSpec::corrupt_from makes the server return the right length with inverted content from 32 KiB on, and tests/corpus/tests/runner_self_test.rs::the_runner_detects_a_server_that_serves_corrupt_bytes asserts the runner reports SILENT CORRUPTION naming byte 32768. Mutation-checked: disabling the comparison turns exactly that test red. The comparison is imposed by the runner on every case and is not a key a case can set (ADR-0010). Broadest single statement: 1 000 000 000 bytes byte-exact over HTTP/1.1 and h2c via `just corpus-slow`. metrics.silent_corruption_findings is 0, which the validator treats as a release blocker if it ever is not.",
           "invariants": [
             "I-1",
             "I-4"
           ]
+        },
+        {
+          "id": "S1-C7",
+          "text": "A transient transport failure mid-body is retried and the download still completes byte-correctly; Retry-After is honoured exactly; back-off is per-origin",
+          "met": true,
+          "evidence": "Three corpus cases plus 15 unit tests. framing/transient-reset-is-retried: the first body request is truncated mid-transfer and the connection closed, and the download recovers to a byte-exact file - with expect.min_requests: 3 asserting a retry actually happened, without which the case would pass just as well if nothing had broken. framing/repeated-resets-exhaust-the-budget: every body fails, and the engine gives up after MAX_RETRIES instead of looping, leaving no final name (I-4). connections/retry-after-is-honoured: a 503 with Retry-After: 1 is waited out rather than replaced by our own back-off. crates/downpour-http/tests/retry_policy.rs pins the rest without a network: exact honouring of both delay-seconds and HTTP-date forms, malformed values falling back to computed back-off, absurd values clamped, the full status table including 408 as a timeout, and per-origin rather than per-worker accounting. All mutation-checked.",
+          "invariants": [
+            "I-1"
+          ]
+        },
+        {
+          "id": "S1-C8",
+          "text": "The workspace compiles and its test suite passes on Windows",
+          "met": true,
+          "evidence": "The windows-latest job in .github/workflows/ci.yml runs clippy -D warnings and nextest --workspace and is green on two independent runs (30826537689: clippy 102 s, nextest 100 s; 30827248189: 128 s with a warm cache). Reproducible by anyone: push to the branch, or `gh workflow run CI`. Locally, `cargo check --locked --workspace --target x86_64-pc-windows-gnu` is clean in 25 s. Green on three independent runs by the end: 30826537689, 30827248189, 30828917886.",
+          "invariants": [
+            "I-1",
+            "I-4",
+            "I-10"
+          ]
         }
       ],
-      "tasks": []
+      "tasks": [
+        {
+          "id": "S1-T1",
+          "title": "Create the cargo workspace and wire the rust gates, with versions pinned from the tech radar",
+          "status": "done",
+          "proof": "`just gate` now runs the rust-gate recipe instead of skipping it, and every step passes: cargo fmt --all --check clean, clippy --all-targets --all-features -D warnings clean, 48 nextest tests passed, 6 doctests passed. Verified 2026-08-03. Scope note: downpour-http and downpour-cli are created by S1-T7 and S1-T12, the tasks that give them content, rather than as empty placeholders here; `members = [\"crates/*\"]` picks them up with no workspace edit.",
+          "files": [
+            "Cargo.toml",
+            ".config/nextest.toml",
+            "crates/downpour-types/Cargo.toml",
+            "docs/14-tech-radar-2026.md"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T2",
+          "title": "downpour-types: RemoteObject and a RangeSupport whose Proven variant cannot be constructed without a validated 206",
+          "status": "done",
+          "proof": "crates/downpour-types/tests/range_proof.rs (12 tests) — RangeSupport::Proven is reachable only through RangeProof::from_observed_response, whose 12 negative cases cover 200-instead-of-206, 416, absent Content-Range, malformed Content-Range, mismatched Content-Range, gzip-on-range, unknown total length, and a full body behind a 206. Plus crates/downpour-types/tests/validator.rs (10 tests) for validator classification and digest capture. Verified red-before-green: deleting the Content-Encoding check makes a_gzipped_range_response_is_rejected fail.",
+          "files": [
+            "crates/downpour-types/src/remote.rs"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": [
+            "I-3",
+            "I-5",
+            "I-6"
+          ]
+        },
+        {
+          "id": "S1-T3",
+          "title": "Strict Content-Range parser that validates the response against the range that was actually requested",
+          "status": "done",
+          "proof": "crates/downpour-types/tests/content_range_prop.rs::never_accepts_a_range_inconsistent_with_the_request — proptest over arbitrary requested/returned range pairs asserting consistency iff the start matches exactly and the end is within the request; plus parsing_never_panics, parsing_preserves_the_range, and a 15-case malformed-header table from RFC 9110 section 14.4. Verified red-before-green: deleting the start-offset check makes the property and a_short_but_aligned_range_is_consistent both fail.",
+          "files": [
+            "crates/downpour-types/src/content_range.rs"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": [
+            "I-5"
+          ]
+        },
+        {
+          "id": "S1-T4",
+          "title": "Filename resolution (Content-Disposition RFC 6266 including filename*, URL-path fallback) and sanitisation",
+          "status": "done",
+          "proof": "crates/downpour-types/tests/filename_prop.rs::sanitised_name_is_always_exactly_one_normal_component — proptest over arbitrary char sequences asserting the result is one Component::Normal, non-empty, at most 255 bytes, and free of separators and control characters; plus sanitise_is_idempotent, resolve_never_panics, and a 22-case table covering ../, absolute paths, Windows-style paths, NUL, control characters, the Windows reserved device names, trailing dots and spaces, and multibyte truncation.",
+          "files": [
+            "crates/downpour-types/src/filename.rs"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T5",
+          "title": "ADR-0010: the corpus case format and the pathology-server contract",
+          "status": "done",
+          "proof": "docs/adr/0010-corpus-case-format.md exists with a Reversal trigger section naming three specific, measurable signals; registered in the docs/adr/README.md index and in adr_index here. Status is `proposed`, not `accepted`: .claude/skills/adr-new/SKILL.md step 5 reserves acceptance for the maintainer, so an agent marking its own ADR accepted would defeat the point. scripts/check-links.sh resolves the new links.",
+          "files": [
+            "docs/adr/0010-corpus-case-format.md"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T6",
+          "title": "Pathology server: deterministic PRNG content, HTTP/1.1 and HTTP/2, and the ranges/framing/redirects behaviours",
+          "status": "done",
+          "proof": "tests/corpus/tests/content_generator.rs (12 tests) and tests/corpus/tests/pathology_server.rs (29 tests), 41 total. Determinism: the server serves exactly the generator's bytes over both HTTP/1.1 and h2c, two servers with the same seed agree, and both protocols produce identical bytes. Pathologies verified against a reference client (hyper for h2, a hand-written reader for h1 - deliberately not downpour-http, which would be circular): accept-ranges-absent, accept-ranges-lies, 206-with-whole-body, shifted Content-Range, omitted Content-Range, literal malformed Content-Range, unknown total length, 416, chunked, close-delimited, wrong Content-Length, mid-body truncation, gzip-on-range, redirect chains, redirect loops, keep-alive reuse, request recording on both protocols, and an HTML error page where a binary was expected. Mutation-checked: making Lies honour ranges, ignoring truncate_body_after, and always emitting a correct Content-Range each turn red exactly the tests that claim those pathologies and no others.",
+          "files": [
+            "tests/corpus/src/content.rs",
+            "tests/corpus/src/server.rs",
+            "tests/corpus/tests/"
+          ],
+          "blocked_by": "S1-T5",
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T7",
+          "title": "The TransferProtocol trait and the h1h2 backend over reqwest/rustls",
+          "status": "done",
+          "proof": "crates/downpour-http/tests/trait_object.rs (9 tests). TransferProtocol is object-safe: usable as Box<dyn>, held in a Vec<Box<dyn>>, and shared across four tokio tasks as Arc<dyn> - which is what ADR-0005 rests on, since the simulator is just another backend. A stub backend satisfies the trait with no reqwest type in any signature, proving the abstraction does not leak. H1H2Backend coerces to the trait object and reports capabilities that differ by transport mode, so the scheduler never needs a version check. RangeSink is append-only from a fixed base offset, refuses a write past its grant whole rather than partially, and does not write anything on refusal (I-2 precondition); sync reaches the target (I-1 commit point). SCOPE LIMIT, stated rather than implied: h1h2::probe and h1h2::fetch_range are written but have NO behavioural test coverage yet - nothing has exercised them against a server. That is S1-T8's job and S1-T8's proof, and no exit criterion may be marked met on the strength of this task.",
+          "files": [
+            "crates/downpour-http/src/protocol.rs",
+            "crates/downpour-http/src/sink.rs",
+            "crates/downpour-http/src/error.rs",
+            "crates/downpour-http/src/h1h2.rs"
+          ],
+          "blocked_by": "S1-T2",
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T8",
+          "title": "Capability probe: ranged GET, redirect-chain capture, validator and digest capture, HTML-instead-of-file detection",
+          "status": "done",
+          "proof": "tests/corpus/tests/probe.rs (19 tests) against PathologyServer. I-6: a validated 206 is the only behaviour that yields RangeSupport::Proven, and all seven others yield Absent - including the five that answer 206 (correct Content-Range with the whole body, shifted Content-Range, omitted Content-Range, malformed Content-Range, unknown total length). I-5: a gzipped ranged response returns ProbeError::ContentEncoding rather than downgrading to Absent, and Accept-Encoding: identity is asserted on the request the SERVER recorded, not on our own code. I-8: every redirect hop including the submitted URL is recorded, and a loop hits TooManyRedirects with a bounded request count. Also: HTML-instead-of-file, 401/403/410 -> needs_refresh distinguished from 500/503 -> unexpected_status, weak-ETag classification, digest capture, Content-Disposition traversal sanitised to a single component, and the probe over h2c. Mutation-checked: downgrading the gzip case, removing Accept-Encoding: identity, and taking total_length from Content-Length on a 206 each turn red exactly the test that claims it. PROOF FIELD REVISED from the original 'corpus categories ranges and redirects pass under just corpus'. That was a decomposition error on my part: it made this task's proof depend on S1-T10's runner and S1-T11's case files, which are separate deliverables. The behaviour is proven here; expressing it as declarative YAML inventory is S1-T11's job, and exit criterion S1-C2 still requires those cases, so the criterion holds that line rather than this task.",
+          "files": [
+            "crates/downpour-http/src/h1h2.rs",
+            "tests/corpus/tests/probe.rs"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": [
+            "I-5",
+            "I-6",
+            "I-8"
+          ]
+        },
+        {
+          "id": "S1-T9",
+          "title": "Single-stream download: .dppart target, Content-Encoding rejection, verify length and coverage and digest, then atomic rename",
+          "status": "done",
+          "proof": "tests/corpus/tests/download.rs (14 tests). I-4 asserted on every failure path: the final name is never created unless the delivered length matches what the probe established, and the assertions check the directory listing rather than only the return value. A truncated body leaves content.dppart holding bytes that still match the generator, so a later resume can trust them. I-5: a compressed body produces no file at all, not even a .dppart, because the probe rejects it first. Byte-exactness against the generator over HTTP/1.1, h2c, chunked framing, a redirect chain, and a server without range support. Plus: a Content-Disposition traversal lands inside the target directory, an existing file is never overwritten, and a zero-length representation still produces a file. FOUND AND FIXED TWO ENGINE DEFECTS while writing these, both caught by the new tests, both with their regression test in this change (Gate D): (1) the probe treated 416 as fatal, so an empty representation - or any server that refuses bytes=0-0 - could not be downloaded at all; docs/03 section 2.1 says a non-206 means single stream, not failure, so the probe now re-asks without a Range. (2) a body that died before its declared Content-Length surfaced as an opaque transport error, losing both that it was a truncation and how many bytes arrived, which docs/03 section 7 needs for its retry policy; now reported as TruncatedBody, detected from the length already known rather than by matching the HTTP library's error shape.",
+          "files": [
+            "crates/downpour-http/src/download.rs",
+            "tests/corpus/tests/download.rs"
+          ],
+          "blocked_by": "S1-T7",
+          "notes": null,
+          "invariants": [
+            "I-1",
+            "I-4",
+            "I-5"
+          ]
+        },
+        {
+          "id": "S1-T10",
+          "title": "Corpus runner: YAML case to server configuration to engine run to assertions, wired to `just corpus`",
+          "status": "done",
+          "proof": "tests/corpus/tests/runner_self_test.rs (6 tests) - the fail-closed proof ADR-0010 requires - plus tests/corpus/tests/corpus_cases.rs (4 tests) which runs the whole case set. The two that matter: the_runner_fails_a_case_whose_expectation_is_wrong feeds the runner a fixture claiming a gzipped ranged response completes, and asserts the runner REJECTS it; and the_runner_detects_a_server_that_serves_corrupt_bytes has the server return the right length with correct headers and inverted content from 32 KiB on, and asserts a SILENT CORRUPTION finding naming byte 32768. That second one required adding ServerSpec::corrupt_from, and it is the most important self-test in the project: without a server that can serve wrong bytes, the runner's byte comparison is only ever observed passing, which is indistinguishable from a comparison that never runs. Mutation-checked: disabling the corruption check turns exactly that test red. Also asserted: an unknown key is a hard error naming the key (not a dropped assertion), a failure case with no error_kind is rejected, an unimplemented generator name is rejected rather than falling back, and a case describing mid-transfer `behaviour` is rejected because the server cannot enact it until S2. the_recorded_case_count_matches_reality pins metrics.corpus_cases_total to the files on disk so it cannot drift into a number nobody checks. YAML crate: serde_norway, recorded in docs/14.",
+          "files": [
+            "tests/corpus/src/case.rs",
+            "tests/corpus/src/runner.rs",
+            "tests/corpus/tests/corpus_cases.rs",
+            "tests/corpus/tests/runner_self_test.rs",
+            "tests/corpus/self-test/"
+          ],
+          "blocked_by": "S1-T6",
+          "notes": "YAML crate research done 2026-08-03 so it need not be repeated. serde_yaml is DEPRECATED - its latest release is literally version 0.9.34+deprecated, last updated 2024-03-25 - so it must not be used. Live options, verified against crates.io: serde_norway 0.9.42 (a maintained fork of serde_yaml by cafkafk, updated 2024-12, 8.5M downloads, drop-in serde integration); serde_yaml_ng 0.10.0 (another fork, updated 2024-05, 7.6M downloads); yaml-rust2 0.11.0 (updated 2025-12, 49M downloads, but a low-level parser with no serde derive support, so the case structs would be hand-parsed); saphyr 0.0.11 (yaml-rust2's successor, actively developed, but still 0.0.x). RECOMMENDATION: serde_norway, because ADR-0010 requires the runner to FAIL CLOSED on an unknown key, which serde's deny_unknown_fields gives directly - and a hand-rolled parser would have to reimplement exactly that. Record it in docs/14 section 1 rather than writing an ADR: the cases are plain YAML data, so any conformant parser can read them and the choice is cheap to reverse. Remember the fail-closed requirement is the point of the task: also needed are the tests/corpus/self-test/ fixture whose deliberately-wrong expectation must make the runner FAIL, and the unconditional byte-comparison and file_renamed assertions that no case may opt out of.",
+          "invariants": []
+        },
+        {
+          "id": "S1-T11",
+          "title": "Write the S1 corpus cases for the ranges, framing and redirects categories",
+          "status": "done",
+          "proof": "42 cases under tests/corpus/cases/, all passing, verified by tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes which reports the count it actually ran. Per category: ranges 15, framing 17, redirects 10 (docs/09 section 3.2 targets 25/15/10, so framing and redirects are at or over target and ranges is short - see backlog B-13). Three companion tests keep the inventory honest: unique ids matching filenames, each case in its category's directory, and metrics.corpus_cases_total pinned to the on-disk count. Every case was mutation-checked by breaking the server behaviour it names.",
+          "files": [
+            "tests/corpus/cases/"
+          ],
+          "blocked_by": "S1-T10",
+          "notes": null,
+          "invariants": [
+            "I-5",
+            "I-6"
+          ]
+        },
+        {
+          "id": "S1-T12",
+          "title": "dp add <url>: single-stream download from the command line",
+          "status": "done",
+          "proof": "crates/downpour-cli/tests/dp_add.rs (7 tests) run the built dp binary as a subprocess, so argument parsing, the exit code, stdout and stderr are all under test - a library-level test would pass with a binary that never ran. Byte-compares the downloaded file against the generator over HTTP/1.1, h2c, and a server without range support; asserts exit 1 with an empty stdout and NO file created when the probe refuses a compressed body (I-5); asserts exit 1 and no final name when the body is truncated (I-4); asserts a bad URL is reported without touching the network; and asserts --version and --help work, which catches a clap misconfiguration that would otherwise first appear in front of a user. Also verified manually against a real python http.server: 3 MB downloaded byte-identical (cmp clean), exit 0, the path on stdout, then exit 1 with 'refusing to overwrite' on a re-run and exit 1 'answered 404' for a missing file. Test placement note: this lives in downpour-cli rather than tests/corpus because Cargo sets CARGO_BIN_EXE_dp only for integration tests in the binary's own package, and that is also what guarantees the binary was built first - from another package the path has to be guessed, and a guess that misses becomes a test that silently never ran the binary.",
+          "files": [
+            "crates/downpour-cli/src/main.rs",
+            "crates/downpour-cli/tests/dp_add.rs"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": [
+            "I-4"
+          ]
+        },
+        {
+          "id": "S1-T13",
+          "title": "1 GB correctness over HTTP/1.1 and HTTP/2",
+          "status": "done",
+          "proof": "tests/corpus/tests/gigabyte.rs::a_gigabyte_over_http11_is_byte_exact and ::a_gigabyte_over_http2_is_byte_exact, run by `just corpus-slow` (release, --run-ignored all). Verified 2026-08-03: 1 000 000 000 bytes over HTTP/1.1 in 3.0s and over h2c in 3.6s, both compared byte for byte against the generator with 0 mismatches. Neither side holds a gigabyte: the server generates each chunk as it is polled and the verifier streams the file past the generator 1 MiB at a time. A third test, NOT ignored, corrupts one byte deep in the third window and asserts the verifier panics - without it the two gigabyte results would prove nothing. Ignored by default so the every-push budget stays under five minutes (docs/09 section 6). REQUIRED A SERVER FIX: the pathology server materialised the whole body in memory, which made a 1 GB case impossible and silently capped the corpus at what fits in RAM. Both protocols now stream from the generator, which is the reason the generator was made seekable in the first place.",
+          "files": [
+            "tests/corpus/tests/gigabyte.rs",
+            "tests/corpus/src/server.rs",
+            "justfile"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": [
+            "I-1"
+          ]
+        },
+        {
+          "id": "S1-T14",
+          "title": "Migrate CI to GitHub Actions and fix the pipeline that burned 400 GitLab minutes",
+          "status": "done",
+          "proof": "MEASURED, three runs on GitHub Actions. GitLab's last green pipeline: 1706 s = 28.4 min, Linux only, cache achieving nothing. GitHub cold with the new Windows job added: 412 s = 6.9 min. GitHub WARM: 196 s = 3.3 min for MORE coverage than GitLab ever had. Per job, cold -> warm: rust 112 s -> 38 s, windows 264 s -> 128 s, security 23-28 s (was 370-511 s on GitLab because it compiled cargo-audit every run), harness 5-8 s (was ~35 s across three jobs). Against GitLab that is 88 percent less compute while also testing Windows. Runs: 30826183828 (cold), 30826537689 (cold + windows), 30827248189 (warm). ADR-0011 records the diagnosis and the reversal triggers. Root causes fixed: tools now arrive as prebuilt binaries (taiki-e/install-action on GitHub, cargo-binstall on GitLab) instead of being compiled; one Rust job replaces four so the workspace compiles once; the redundant corpus job is gone because nextest --workspace already covered it; and the cache includes ~/.cargo/bin, which is the entry whose absence made every `cargo install` recompile from scratch. GitLab's config is kept current and disabled at .gitlab-ci.yml.disabled so re-enabling is a rename.",
+          "files": [
+            ".github/workflows/ci.yml",
+            ".gitlab-ci.yml.disabled",
+            "docs/adr/0011-ci-on-github-actions.md"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T15",
+          "title": "Retry and back-off: the 'robust' half of the stage title is not implemented",
+          "status": "done",
+          "proof": "crates/downpour-http/tests/retry_policy.rs (15 unit tests on the pure policy) plus three corpus cases that prove recovery end to end: framing/transient-reset-is-retried, framing/repeated-resets-exhaust-the-budget, connections/retry-after-is-honoured. The success case would have been VACUOUS on its own - it expects , which also happens when the injected failure does nothing - so expect.min_requests was added to the case format and the runner now asserts the server saw at least 3 requests (probe + failed body + retried body). Mutation-checked three ways: disabling the retry loop makes both retry cases fail WITH the min_requests message naming that no retry occurred; making the server never inject the failure makes the exhaustion case fail AND trips min_requests on the success case; and neutralising the magic-byte sniff makes the lying-content-type case fail. The corpus runner uses RetryPolicy::fast_for_tests because truncation cases now legitimately retry five times first, which at the spec's real delays cost 72 s for the case set - it is 6.6 s now, and the real values stay pinned by the unit tests. max_server_delay is deliberately NOT shortened, so retry-after-is-honoured still waits the full second the server asked for.",
+          "files": [
+            "crates/downpour-http/src/retry.rs",
+            "crates/downpour-http/src/download.rs",
+            "crates/downpour-http/tests/retry_policy.rs",
+            "tests/corpus/src/server.rs"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        },
+        {
+          "id": "S1-T16",
+          "title": "Verify the Windows target actually builds and passes its tests",
+          "status": "done",
+          "proof": "The windows job in .github/workflows/ci.yml runs `cargo clippy --locked --all-targets --all-features -- -D warnings` and `cargo nextest run --locked --workspace` on windows-latest. Green on runs 30826537689 (clippy 102 s, nextest 100 s) and 30827248189 (128 s warm) - the step durations confirm it genuinely compiled and ran the suite rather than skipping. Also verified locally that the workspace cross-compiles: `cargo check --locked --workspace --target x86_64-pc-windows-gnu` finishes clean in 25 s. This is the first time anything in this project has ever been compiled for Windows, so the cfg!(windows) ENOSPC branches behind I-10 and the rename/fsync paths behind I-1 and I-4 have now been through a compiler and a test run.",
+          "files": [
+            ".github/workflows/ci.yml"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": [
+            "I-1",
+            "I-4",
+            "I-10"
+          ]
+        },
+        {
+          "id": "S1-T17",
+          "title": "Detect an HTML error page by magic bytes, not only by Content-Type",
+          "status": "done",
+          "proof": "tests/corpus/cases/session/html-body-with-a-lying-content-type - a login page served as application/octet-stream, which the Content-Type check cannot catch because the header claims binary. body_looks_like_a_web_page sniffs the first chunk BEFORE it reaches the sink, so nothing is written; the case asserts error_kind looks_like_error_page and file_renamed false. Mutation-checked: neutralising the sniff makes the HTML get written to disk and the case reports both the wrong outcome and an I-4 violation. Deliberately conditional on the declared type being absent or generic - an explicit text/html is already refused at the probe, and firing on a type we have no reason to doubt would reject legitimate files whose first byte is '<'.",
+          "files": [
+            "crates/downpour-http/src/h1h2.rs",
+            "tests/corpus/cases/session/html-body-with-a-lying-content-type.yaml"
+          ],
+          "blocked_by": null,
+          "notes": null,
+          "invariants": []
+        }
+      ]
     },
     {
       "id": "S2",
       "name": "Range, resume, validators, crash-safe storage",
-      "status": "planned",
-      "started_at": null,
+      "status": "active",
+      "started_at": "2026-08-04T03:40:00Z",
       "completed_at": null,
       "spec": "docs/04-storage-and-recovery-spec.md",
       "exit_criteria": [
@@ -783,8 +1056,8 @@
         "id": 1,
         "category": "Correctness - no corrupted files",
         "weight": 25,
-        "score": 0,
-        "evidence": null
+        "score": 35,
+        "evidence": "S1 only. 48 corpus cases with 0 silent-corruption findings, and the detector is proven able to fire (ServerSpec::corrupt_from serves the right length with wrong content; the runner names byte 32768). 1 GB byte-exact over HTTP/1.1 and h2c, verified on CI as well as locally. I-4, I-5 and I-6 fully covered. Deliberately NOT higher: I-1's real proof is crash injection at every write boundary, which is S2, and I-2's disjointness needs the S3 allocator. Correctness under interruption is essentially untested until S2."
       },
       {
         "id": 2,
@@ -822,8 +1095,8 @@
         "evidence": null
       }
     ],
-    "total_estimate": 0,
-    "assessed_at": "2026-08-02T00:00:00Z",
+    "total_estimate": 8.8,
+    "assessed_at": "2026-08-04T03:40:00Z",
     "blocking_findings": []
   },
   "adr_index": [
@@ -889,6 +1162,20 @@
       "status": "accepted",
       "superseded_by": null,
       "stage": "S0"
+    },
+    {
+      "id": "ADR-0010",
+      "title": "Declarative corpus cases over a frozen deterministic content generator",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S1"
+    },
+    {
+      "id": "ADR-0011",
+      "title": "CI on GitHub Actions; GitLab kept as a mirror with CI disabled",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S1"
     }
   ],
   "risks": [
@@ -978,6 +1265,111 @@
       "found_in_stage": "S0",
       "target_stage": "S2",
       "rationale": "The simulation-nightly job exists but needs a schedule to fire"
+    },
+    {
+      "id": "B-4",
+      "text": "downpour-cli links downpour-http directly in S1 because no daemon exists yet. When downpour-daemon lands, move the transfer behind IPC so the architecture rule 'clients never link the engine' (docs/02 section 3) holds again.",
+      "found_in_stage": "S1",
+      "target_stage": "S3",
+      "rationale": "Roadmap S1 lists only three crates, so a direct link is the only option now; recorded so it is not mistaken for the intended end state"
+    },
+    {
+      "id": "B-5",
+      "text": "The minimal file sink written in S1 (crates/downpour-http/src/sink.rs) is superseded by downpour-storage in S2, which owns preallocation, positional writes, the journal and the durability ordering (I-1, I-9, I-10).",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "S1-C6 needs verify-before-rename now, but S1 has no storage crate to put it in"
+    },
+    {
+      "id": "B-6",
+      "text": "S1 captures a server-supplied Repr-Digest/Content-Digest but does not verify it. S2 must verify a captured digest before the final rename (I-4), which needs base64 decoding and sha2. Until then, no S1 corpus case may supply a digest, or the engine would be ignoring evidence it holds.",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "docs/03 section 2.1 step 6 says record it; I-4 says check it when the server supplied one. S1 does the first half only, deliberately."
+    },
+    {
+      "id": "B-7",
+      "text": "RangeProof deliberately does not derive Deserialize: a derived impl would be a second constructor that skips the validation, turning the compiler-enforced I-6 back into a convention. When S2 persists a RemoteObject it must either re-validate on load or store the raw observation and rebuild the proof from it.",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "The hazard is invisible at the point where someone will reach for #[derive(Deserialize)], so it is recorded rather than left to be rediscovered"
+    },
+    {
+      "id": "B-8",
+      "text": "The corpus serves plaintext HTTP/1.1 and h2c (prior knowledge), not TLS. docs/09 section 7 requires local offline tests and TLS would add certificate management for no S1 coverage: nothing in ranges, framing or redirects depends on it. ALPN negotiation, Alt-Svc and h2-over-TLS belong to the protocols category, so the corpus needs a TLS listener with a test-only CA by S5.",
+      "found_in_stage": "S1",
+      "target_stage": "S5",
+      "rationale": "Recorded so that 'HTTP/2 works' is not later over-read as 'HTTP/2 over TLS with ALPN works'"
+    },
+    {
+      "id": "B-9",
+      "text": "HTTP/2 framing pathologies are not expressible through the current h2c server, which goes through hyper: hyper owns h2 framing, so a wrong Content-Length or a missing terminator cannot be emitted. The Framing enum documents itself as HTTP/1.1-only. If an h2-specific framing pathology is ever needed, it requires the h2 crate directly or a hand-rolled frame writer.",
+      "found_in_stage": "S1",
+      "target_stage": "S5",
+      "rationale": "The limitation is invisible from the case side, so it is recorded rather than left to be rediscovered"
+    },
+    {
+      "id": "B-10",
+      "text": "CLOSED 2026-08-03: cross-host redirects are implemented. The runner starts a second PathologyServer for the content origin and sets redirect_final_target on the first, and cases assert expect.crosses_origin so the behaviour is actually pinned. Protocol downgrade (https to http) remains out of reach until B-8 gives the corpus a TLS listener.",
+      "found_in_stage": "S1",
+      "target_stage": "S5",
+      "rationale": "Named in I-8's proof list, so it must be covered before S1 closes"
+    },
+    {
+      "id": "B-11",
+      "text": "CLOSED 2026-08-03: RangeBehaviour::MultipartByteranges serves a multipart/byteranges body for a single-range request, with no top-level Content-Range, and case ranges/multipart-byteranges-for-single-range asserts the engine declines to prove range support and still produces a byte-exact file. Mutation-checked.",
+      "found_in_stage": "S1",
+      "target_stage": null,
+      "rationale": "Named in docs/09 section 3.2's ranges description; needed before S1-C2 can honestly be met"
+    },
+    {
+      "id": "B-12",
+      "text": "Invariant coverage accounting, corrected 2026-08-03 from an over-generous 5 to 3. FULLY covered by S1 tests: I-4 (verify before rename, asserted on every corpus case), I-5 (four layers, mutation-checked), I-6 (one of eight server behaviours proves range support). PARTIALLY covered, and must not be counted until their real proof exists: I-1 (the sync is plumbed and tested, but I-1's proof is crash injection at every write boundary - S2), I-2 (the sink is append-only and refuses writes past its grant, but disjointness needs the allocator - S3), I-3 (weak-ETag classification is tested, but refusing resume on a changed validator is S2), I-8 (the redirect chain is captured and tested, but the URL-refresh flow is S8). Not affected in S1: I-7, I-9 to I-14.",
+      "found_in_stage": "S1",
+      "target_stage": null,
+      "rationale": "invariants_covered gets quoted as release evidence, so an inflated count is worse than a low one"
+    },
+    {
+      "id": "B-13",
+      "text": "The ranges corpus category is at 15 cases against docs/09 section 3.2's initial target of 25. Every classification path the corpus can currently express is covered, so the shortfall is pathologies needing features that do not exist yet: multi-range requests and multipart responses with more than one part (S3), If-Range and validator-conditional ranges (S2), CDN edge disagreement between HEAD and GET across two origins, and a proxy that strips Accept-Ranges (S8). Grow the category as those stages land rather than padding it with further malformed-header variants, which belong at the parser's unit layer per docs/09 section 1.",
+      "found_in_stage": "S1",
+      "target_stage": "S3",
+      "rationale": "S1-C2 is met as worded but the category is not exhaustive; recording the gap keeps that visible"
+    },
+    {
+      "id": "B-14",
+      "text": "PARTIALLY CLOSED 2026-08-03. Branch protection is now configured on GitHub, verified via the API: master requires all four CI checks with strict up-to-date branches, enforce_admins true (so nobody including the owner pushes directly, matching GitLab's push='No one'), linear history, no force pushes, no deletions; develop requires the same four checks with no force pushes or deletions; default_branch is develop, matching GitLab. STILL OPEN: third-party actions are pinned to major versions (actions/checkout@v7, actions/upload-artifact@v7, Swatinem/rust-cache@v2, taiki-e/install-action@v2), which trusts those tags. Pin every one to a full commit SHA before CI ever produces release artifacts - ADR-0011 reversal trigger 1.",
+      "found_in_stage": "S1",
+      "target_stage": "S10",
+      "rationale": "Losing master protection in the move would be a silent regression in the release story"
+    },
+    {
+      "id": "B-15",
+      "text": "docs/03 §2.1 step 1 specifies reading a DNS HTTPS/SVCB record's alpn parameter before connecting, to learn h3 support without an Alt-Svc round trip. Not implemented. This is a deliberate deviation, not an oversight: docs/14-tech-radar-2026.md §3 marks RFC 9460 as 'Adopt in S6', and hickory-resolver is in Trial for that stage. Recorded so the gap between §2's text and S1's scope is visible rather than looking like a miss.",
+      "found_in_stage": "S1",
+      "target_stage": "S6",
+      "rationale": "The spec section that defines S1's probe contains one step that the radar defers to S6"
+    },
+    {
+      "id": "B-16",
+      "text": "docs/03 §2.3 defines four re-probe triggers (final URL changed, worker saw a status inconsistent with recorded capabilities, resume after the freshness window, user supplied a refreshed URL). None is implemented; RemoteObject.probed_at exists to support the third. All four only become meaningful once resume (S2) and URL refresh (S8) exist, so this is scoped there rather than in S1.",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "probed_at is recorded but nothing consumes it, which would otherwise look like dead weight"
+    },
+    {
+      "id": "B-17",
+      "text": "The nightly slow-corpus schedule in .github/workflows/ci.yml is NOT live yet. GitHub only fires `schedule` triggers from a repository's DEFAULT branch, and develop - which is the default - does not carry the workflow until this PR merges. Until then the 1 GB cases run only on demand via `gh workflow run CI`. Verify the nightly actually fires after the merge rather than assuming it; a schedule that silently never runs is the same class of problem as a corpus case that silently asserts nothing.",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "A scheduled job nobody checks is indistinguishable from one that does not exist"
+    },
+    {
+      "id": "B-18",
+      "text": "docs/agent/INVARIANTS.md names 14 corpus cases as proofs; 9 exist and 5 are deferred with reasons in tests/corpus/invariant-proof-deferrals.yaml (etag-changed-midway and 200-instead-of-206 need S2's resume; signed-url-expiry, referer-required and session-cookie-required need S7/S8's request context). Work through the deferrals as those stages land - tests/corpus/tests/invariant_proofs.rs fails on a stale entry, so the file cannot rot into an excuse list.",
+      "found_in_stage": "S1",
+      "target_stage": "S2",
+      "rationale": "The deferral file is only honest if something forces it to shrink"
     }
   ],
   "session_log": [
@@ -1013,7 +1405,7 @@
       "at": "2026-08-03T09:56:15Z",
       "agent": "claude-code",
       "stage": "S0",
-      "summary": "Completed the Codex agent surface: verified empirically that Codex 0.146 loads all 9 project skills via a repo marketplace at .agents/plugins/marketplace.json, and that plugin_hooks is REMOVED \u2014 so enforcement moved to .githooks/pre-commit, which is agent-agnostic. Added a sync script so both agents read one source with CI drift detection. Fixed doctor.sh to find cargo in non-interactive shells. Added LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md, .gitignore, .gitattributes, rust-toolchain.toml, justfile, GitLab CI, and a link checker. Rewrote README with badges and mermaid. Reconciled docs from GitHub to GitLab.",
+      "summary": "Completed the Codex agent surface: verified empirically that Codex 0.146 loads all 9 project skills via a repo marketplace at .agents/plugins/marketplace.json, and that plugin_hooks is REMOVED — so enforcement moved to .githooks/pre-commit, which is agent-agnostic. Added a sync script so both agents read one source with CI drift detection. Fixed doctor.sh to find cargo in non-interactive shells. Added LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, CHANGELOG.md, .gitignore, .gitattributes, rust-toolchain.toml, justfile, GitLab CI, and a link checker. Rewrote README with badges and mermaid. Reconciled docs from GitHub to GitLab.",
       "tasks_touched": [
         "S0-T9",
         "S0-T10",
@@ -1040,13 +1432,238 @@
         "docs/agent/CODEX-NOTES.md"
       ],
       "left_in_progress": "S0 has one criterion left: S0-C5, the fresh-session orientation test. It is verified by the NEXT session reading CLAUDE.md then HARNESS.md then progress.json and correctly stating what to work on without being told. If that works, S0 goes to gate-review and Stage 1 begins."
+    },
+    {
+      "at": "2026-08-03T11:44:43Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "Passed the S0-C5 orientation test as a fresh session with no prior context, then ran the S0 gate: all six criteria met with re-runnable evidence (9/9 ADRs carry a Reversal trigger, check-progress exit 0, doctor exit 0, 115/115 links resolve, agent assets in sync). The maintainer approved advancement, so S0 is complete and S1 is active. Decomposed S1 into 13 tasks, each naming the test that will prove it. Verified the toolchain (rustc/cargo 1.97.1, nextest 0.9.140) and that index.crates.io is reachable before committing to a dependency plan. No product code yet.",
+      "tasks_touched": [
+        "S1-T1",
+        "S1-T2",
+        "S1-T3",
+        "S1-T4",
+        "S1-T5",
+        "S1-T6",
+        "S1-T7",
+        "S1-T8",
+        "S1-T9",
+        "S1-T10",
+        "S1-T11",
+        "S1-T12",
+        "S1-T13"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1-T1 is next: the cargo workspace. Two S1 tasks have no blocker and can start immediately — S1-T1 (workspace) and S1-T5 (ADR-0010, the corpus case format, which must be written before the pathology server in S1-T6). Everything else chains off those two. Branch: feature/s1-foundations."
+    },
+    {
+      "at": "2026-08-03T12:31:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "S1-T1 through S1-T4: cargo workspace (resolver 3, edition 2024, MSRV 1.97.1) with the tech-radar pins re-verified against crates.io, nextest profiles, and workspace lints that encode .claude/rules/rust.md mechanically. downpour-types implements the pure half of the probe: a strict Content-Range parser validated against the requested range, filename resolution and sanitisation, validator classification, and digest capture. I-6 is enforced structurally rather than by discipline: RangeSupport::Proven carries a RangeProof whose fields are private and whose single constructor returns Err unless the response validated, so no expression in the workspace can produce Proven without the evidence. 48 tests and 6 doctests pass; fmt and clippy -D warnings clean.",
+      "tasks_touched": [
+        "S1-T1",
+        "S1-T2",
+        "S1-T3",
+        "S1-T4"
+      ],
+      "files_touched": [
+        "Cargo.toml",
+        ".config/nextest.toml",
+        "crates/downpour-types/",
+        "docs/14-tech-radar-2026.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1-T5 (ADR-0010, the corpus case format) is next and unblocks S1-T6, the pathology server. S1-T7 (TransferProtocol trait + h1h2 backend) can proceed in parallel; it only needed downpour-types, which is now done. Branch: feature/s1-foundations."
+    },
+    {
+      "at": "2026-08-03T15:35:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "S1-T6 through S1-T8. Pathology server: hand-rolled HTTP/1.1 (hyper would correct or refuse the exact framing pathologies the corpus needs) plus h2c via hyper, verified against a reference client for 17 distinct pathologies. TransferProtocol trait with object safety asserted directly, since ADR-0005 and the future simulator depend on it. RangeSink is append-only from a fixed base offset, so a backend has no API for choosing an offset at all - I-2 made structural before there is any concurrency to get it wrong. h1h2 backend with hand-followed redirects (I-8 needs the whole chain) and no decompression features enabled (I-5). Capability probe proven against the server: one behaviour yields Proven, seven do not, five of which answer 206. Everything mutation-checked. Found and corrected one silently no-op mutation script, which had produced a meaningless pass.",
+      "tasks_touched": [
+        "S1-T6",
+        "S1-T7",
+        "S1-T8"
+      ],
+      "files_touched": [
+        "tests/corpus/",
+        "crates/downpour-http/",
+        "docs/adr/0010-corpus-case-format.md",
+        "docs/14-tech-radar-2026.md",
+        "Cargo.toml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "8/13 S1 tasks done. Next: S1-T9 (single-stream download to .dppart, verify, atomic rename) is unblocked - RangeSink and fetch_range exist, and fetch_range is written but still has no behavioural coverage, so S1-T9's tests are what will first exercise it. Then S1-T10 (YAML runner; needs a maintained YAML crate chosen - serde_yaml is archived, so check serde_norway or saphyr and record the choice), S1-T11 (cases, including B-10's cross-host redirect needing two servers), S1-T12 (dp add), S1-T13 (1 GB). MR !1 is open against develop."
+    },
+    {
+      "at": "2026-08-03T17:45:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "S1-T9, T12, T13 plus a server rewrite. Single-stream download with verify-before-rename (I-4), which found TWO engine defects: the probe treated 416 as fatal, making an empty representation undownloadable, and a body that died before its declared Content-Length surfaced as an opaque transport error, losing the truncation and the byte count that docs/03 section 7's retry policy needs. Both fixed with their regression tests in the same change. `dp add <url>` works, verified both by subprocess tests and by hand against a real http.server (3 MB byte-identical, correct exit codes, refuses to overwrite, reports 404). The pathology server buffered whole bodies in memory, which made a 1 GB case impossible and silently capped the corpus at what fits in RAM; both protocols now stream from the generator. S1-C1 is met: 1 GB byte-exact over HTTP/1.1 (3.0s) and h2c (3.6s). 139 tests, 6 doctests, just gate green. Every behavioural claim was mutation-checked, and one mutation script was found to be silently no-op'ing, which had produced a meaningless pass.",
+      "tasks_touched": [
+        "S1-T9",
+        "S1-T12",
+        "S1-T13"
+      ],
+      "files_touched": [
+        "crates/downpour-http/",
+        "crates/downpour-cli/",
+        "tests/corpus/",
+        "justfile",
+        "state/progress.json"
+      ],
+      "left_in_progress": "11/13 S1 tasks done; exit criteria 3/6 met (C1, C3, C4). C2, C5 and C6 are NOT met and were not softened: all three are worded in terms of corpus categories that do not exist until S1-T10 and S1-T11, which are the only two tasks left. T10 is the YAML case runner - its notes carry the completed crate research (serde_yaml is deprecated; serde_norway recommended, because ADR-0010's fail-closed requirement is exactly serde's deny_unknown_fields) and the reminder that the self-test fixture and the unconditional assertions ARE the task. T11 is the case files, and must close backlog B-10 (cross-host redirects need two servers) because I-8's proof list names redirect-chain-to-other-host. MR !1 is open against develop."
+    },
+    {
+      "at": "2026-08-03T18:55:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "S1-T10 done, S1-T11 started. The declarative case format and runner are in, with serde_norway (serde_yaml is deprecated upstream) chosen specifically because ADR-0010's fail-closed requirement IS serde's deny_unknown_fields. The runner imposes the byte-for-byte corruption comparison and the file_renamed check on every case, and neither is a key a case can set. Added ServerSpec::corrupt_from so the corpus can prove its own corruption detector fires - the server now serves the right length with wrong content and the runner catches it at the exact offset; mutation-checked. 11 cases written across ranges, framing and redirects, all passing. 149 tests, 6 doctests, just gate green.",
+      "tasks_touched": [
+        "S1-T10",
+        "S1-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/cases/",
+        "tests/corpus/self-test/",
+        "tests/corpus/tests/",
+        "Cargo.toml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "12/13 S1 tasks done; only S1-T11 is open. Exit criteria remain 3/6 (C1, C3, C4). C2, C5 and C6 are deliberately NOT marked met even though every case that exists passes: the categories are at 4/25 ranges, 5/15 framing and 2/10 redirects against docs/09 section 3.2's targets, and marking them met would tell the next session the pathology space is covered when it is not. Remaining work is writing case files against machinery that already exists, plus two server gaps: B-10 (cross-host redirects need two servers; I-8's proof list names redirect-chain-to-other-host) and B-11 (multipart/byteranges). MR !1 is open against develop."
+    },
+    {
+      "at": "2026-08-03T20:35:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "CI VERIFIED GREEN on commit 0307050: all ten GitLab jobs passed, including unit, corpus, audit and secret-scan. Earlier pipelines had been cancelled by successive pushes (interruptible: true), so this is the first confirmed full-stage pass. Then grew the corpus from 11 to 30 cases and closed both server-side blockers: B-10 cross-host redirects (a second PathologyServer, wired by the runner) and B-11 multipart/byteranges. The notable finding is a test-quality one: the first cross-host case proved nothing, because chain length and filename are identical whether or not a chain leaves its origin, and a mutation disabling the cross-origin wiring still passed. Fixed with expect.crosses_origin, which compares authorities; the mutation now fails. Recorded in S1-T11's notes as guidance for every future case.",
+      "tasks_touched": [
+        "S1-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/cases/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "12/13 tasks done, S1-T11 the only one open. Exit criteria 3/6 (C1, C3, C4). C2, C5 and C6 remain unmet by choice: 30 of ~50 cases, at ranges 12/25, framing 10/15, redirects 8/10. No further server or runner work is needed for those three categories - it is case-writing from here, and each new case must be mutation-checked. MR !1 open against develop, CI green on 0307050."
+    },
+    {
+      "at": "2026-08-03T21:40:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "S1-T11 done; S1 proposed for gate review with 13/13 tasks and 6/6 criteria. Corpus grew 30 to 42 cases: framing 17/15 and redirects 10/10 are at or over docs/09 target, ranges 15/25 is short and the gap is recorded as B-13 rather than padded. Added server support for redirect Location pathologies (omitted, unusable) and for omitting the chunked terminator, which covered three error variants that had no test at all. TWO CASES CAUGHT PROVING LESS THAN THEY CLAIMED, both by mutation rather than by review: the first cross-host redirect case passed with the cross-origin wiring disabled (chain length and filename are identical either way; fixed with expect.crosses_origin), and content-encoding-uppercase/padded passed under a case-sensitive untrimmed check, because a stricter check also rejects them - case folding and trimming can only be proved on the ACCEPT side, so identity-uppercase and identity-padded were added and the two descriptions corrected to stop overclaiming. Also corrected one expectation I had written before observing: a truncated chunked response is well-formed and short, so it is caught by verify-before-rename as `incomplete`, not by the transport as `truncated_body`.",
+      "tasks_touched": [
+        "S1-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/cases/",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1 is in gate-review awaiting a human decision; do NOT advance current_stage without it. CI CONSTRAINT: the GitLab account's CI minutes are exhausted - pipeline 2727438932 failed with ci_quota_exceeded on the harness jobs. All CODE is CI-verified green (4924ac5, the last commit containing code, passed all ten jobs); everything since touches only progress.json and corpus YAML plus test-only server code, verified locally by `just gate` and `just corpus-slow`. Do not 'fix' that failure by changing CI config. If the gate is approved, S2 is next: docs/04-storage-and-recovery-spec.md, and B-5/B-6/B-7 all name work it must pick up."
+    },
+    {
+      "at": "2026-08-04T00:35:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "Migrated CI to GitHub Actions after GitLab's 400 free minutes ran out, and fixed the pipeline rather than just moving it. Measured first: 28.4 min billed per GitLab run, cache achieving nothing across three consecutive pipelines (clippy actually got SLOWER, 98/116/136 s). Causes: six `cargo install` invocations with ~/.cargo/bin absent from cache.paths; four Rust jobs each compiling the workspace, with `unit` and `corpus` running the same corpus tests twice; and fmt/clippy sharing a cache key inside one stage. Result after the fix: 3.3 min warm, including a Windows job GitLab never had. Also audited S1 against docs/03 section by section and found the gate was not a wall: all six criteria were met while retry/back-off did not exist at all (§7, in a stage titled ROBUST) and Windows had NEVER been compiled. Added criteria 7 and 8 to docs/12 and progress.json. Implemented the §7 retry policy as a tested pure function; wiring it into the download loop is what remains. Restored branch protection on GitHub, which the migration had silently dropped.",
+      "tasks_touched": [
+        "S1-T14",
+        "S1-T15",
+        "S1-T16",
+        "S1-T17"
+      ],
+      "files_touched": [
+        ".github/workflows/ci.yml",
+        ".gitlab-ci.yml.disabled",
+        "docs/adr/0011-ci-on-github-actions.md",
+        "docs/12-roadmap-stages.md",
+        "docs/11-packaging-release.md",
+        "docs/14-tech-radar-2026.md",
+        "crates/downpour-http/src/retry.rs",
+        "README.md",
+        "CONTRIBUTING.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1 is 15/17 tasks and 7/8 criteria. OPEN: S1-T15 (wire the retry policy into SingleStream::download and add server support for injecting a mid-body reset and a 503 with Retry-After - this is what makes S1-C7 true; note the DELIBERATE constraint that S1's retry must restart from byte 0, because resuming needs If-Range against a strong validator and that is I-3/S2) and S1-T17 (detect an HTML page by magic bytes, not only Content-Type). CI now runs on GitHub Actions only; GitLab is a mirror whose config is kept current and disabled at gitlab-ci.yml.disabled. Do NOT re-enable GitLab CI - the quota is exhausted. Branch protection is configured on GitHub. B-14 remains open for pinning actions to commit SHAs before any release artifacts are built."
+    },
+    {
+      "at": "2026-08-04T01:30:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "Closed the two gaps the audit found, so S1 is 17/17 tasks and 8/8 criteria. S1-T15: wired the retry policy into SingleStream::download and taught the pathology server to inject transient failures (truncate mid-body and close, or answer 503 with Retry-After), consuming a budget shared ACROSS connections because a retry opens a new one. Each attempt restarts from byte 0 on purpose - resuming needs If-Range against a strong validator, which is I-3 and belongs to S2, and resuming without it splices two file versions at exactly the expected size. S1-T17: added the magic-byte half of the HTML check, sniffing the first chunk before it reaches the sink. The important find: framing/transient-reset-is-retried was VACUOUS as first written. It expects `completed`, which is also what happens when the injected failure does nothing, so it asserted nothing about recovery - the same trap as the first cross-host case. Added expect.min_requests, and mutation-checking now reports 'saw 2; no retry occurred' instead of passing. Also: truncation cases legitimately retry five times now, which cost 72 s at the spec's real delays, so the runner uses RetryPolicy::fast_for_tests while the unit tests keep the real values pinned. max_server_delay is untouched so retry-after-is-honoured still waits the second the server asked for.",
+      "tasks_touched": [
+        "S1-T15",
+        "S1-T17"
+      ],
+      "files_touched": [
+        "crates/downpour-http/src/retry.rs",
+        "crates/downpour-http/src/download.rs",
+        "crates/downpour-http/src/h1h2.rs",
+        "crates/downpour-http/src/error.rs",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/cases/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1 is in GATE-REVIEW: 17/17 tasks, 8/8 criteria, awaiting a human decision. current_stage is deliberately still S1 - advancement is not an agent's call (HARNESS.md §2). Known limits recorded rather than hidden: the ranges category is 15 against docs/09's initial target of 25 (B-13; every classification path the corpus can express is covered, the rest needs S2/S3 features), the corpus is cleartext h1/h2c rather than h2-over-TLS with ALPN (B-8), and third-party GitHub Actions are pinned to major versions rather than commit SHAs (B-14, must change before any release artifacts). If the gate is approved, S2 is docs/04-storage-and-recovery-spec.md, and B-5, B-6, B-7 and B-16 all name work it must pick up - including upgrading S1's restart-from-zero retry into a real resume once If-Range exists."
+    },
+    {
+      "at": "2026-08-04T02:10:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "Verified the whole S1 gate on CI rather than only locally. All five jobs green on GitHub Actions, including windows-latest and the slow-corpus job, which transferred and byte-verified 1 GB over HTTP/1.1 and h2c in 107 s on a runner (run 30829132772). Recorded B-17: the nightly schedule is NOT live yet, because GitHub only fires `schedule` from the default branch and develop does not carry the workflow until this PR merges - a scheduled job nobody checks is indistinguishable from one that does not exist.",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1 is in gate-review with 17/17 tasks and 8/8 criteria, every criterion backed by evidence that someone else can re-run, and the full suite green on CI including Windows and the 1 GB transfers. Awaiting a human gate decision; do NOT advance current_stage without it. Open backlog for S2 to pick up: B-5, B-6, B-7, B-16 (including upgrading S1's restart-from-zero retry into a real resume once If-Range exists), plus B-13 (ranges 15/25), B-14 (pin actions to SHAs before release artifacts) and B-17 (confirm the nightly fires after merge)."
+    },
+    {
+      "at": "2026-08-04T03:10:00Z",
+      "agent": "claude-code",
+      "stage": "S1",
+      "summary": "Re-audited the S1 gate before merging, because 'recorded, not hidden' is only acceptable if nothing recorded actually undermines a criterion. It did. docs/agent/INVARIANTS.md states I-6's proof as THREE corpus cases and only accept-ranges-lies existed - head-differs-from-get and cdn-edge-disagrees were missing, and nothing detected that. I-6 is the probe invariant, which is S1's core deliverable and exactly what S1-C2 covers, so the stage was very nearly declared complete with two thirds of one invariant's stated proof absent. Wrote both cases (adding HEAD support to the server and a per-origin ranges override so an edge and an origin can disagree), renamed two existing cases to the names INVARIANTS.md uses so traceability is by name, and - the part that matters - added tests/corpus/tests/invariant_proofs.rs, which parses INVARIANTS.md and fails if any named proof case neither exists nor is deferred with a stage and a substantive reason. Mutation-checked both directions: removing a case names it as missing, and a stale deferral for an existing case fails too. 48 corpus cases.",
+      "tasks_touched": [
+        "S1-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/cases/ranges/",
+        "tests/corpus/invariant-proof-deferrals.yaml",
+        "tests/corpus/tests/invariant_proofs.rs",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S1 gate re-verified and ready to merge. 17/17 tasks, 8/8 criteria, 48 corpus cases, invariant proof lists now mechanically checked."
+    },
+    {
+      "at": "2026-08-04T03:40:00Z",
+      "agent": "human",
+      "stage": "S1",
+      "summary": "GATE B APPROVED by the maintainer, who instructed: merge S1 into develop, delete the branch, and hand off. S1 closes with 17/17 tasks and 8/8 exit criteria, each backed by evidence someone else can re-run, CI green on GitHub Actions across five jobs including windows-latest and the 1 GB transfers. current_stage advances to S2 on that authority - agents propose, humans dispose (HARNESS.md §2).",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2 is now active: 'Range, resume, validators, crash-safe storage', spec docs/04-storage-and-recovery-spec.md, criteria S2-C1..C7, tasks not yet decomposed. docs/12 calls it the highest-risk stage in the project. It inherits B-5, B-6, B-7, B-16 and B-18, plus upgrading S1's restart-from-zero retry into a real resume once If-Range exists."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 0,
-    "corpus_cases_passing": 0,
+    "corpus_cases_total": 48,
+    "corpus_cases_passing": 48,
     "sim_seeds_fixed": 0,
-    "invariants_covered": 0,
+    "invariants_covered": 3,
     "invariants_total": 14,
     "silent_corruption_findings": 0
   }

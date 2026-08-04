@@ -1,0 +1,19 @@
+id: chunked-short-but-well-formed
+category: framing
+description: >
+  A chunked response that is properly terminated but carries fewer bytes than the representation.
+  Nothing in the framing is wrong, so the transport has no complaint and the body simply ends —
+  the shortfall is caught only by comparing what arrived against the length the probe established.
+  This is verify-before-rename doing the work on its own, with no help from the protocol layer,
+  which is exactly why I-4 exists as a separate check rather than a consequence of transport errors.
+references: ["RFC 9112 §7.1", "INVARIANTS.md#i-4"]
+
+server:
+  content: { size: 256KiB, seed: 84 }
+  framing: chunked
+  truncate_body_after: 20KiB
+
+expect:
+  final_state: failed
+  error_kind: incomplete
+  file_renamed: false

@@ -1,0 +1,16 @@
+id: redirect-loop-is-bounded
+category: redirects
+description: >
+  The entry URL redirects to itself, forever. Only a hop limit can stop this, so the case checks
+  that the limit exists rather than that some particular chain length happens to terminate. Nothing
+  may be written.
+references: ["RFC 9110 §15.4", "docs/03-transfer-engine-spec.md §2.1"]
+
+server:
+  content: { size: 64KiB, seed: 41 }
+  redirect_loop: true
+
+expect:
+  final_state: failed
+  error_kind: too_many_redirects
+  file_renamed: false

@@ -1,0 +1,73 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "tests/corpus"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "Apache-2.0"
+repository = "https://gitlab.com/duochou042004/downpour"
+authors = ["Downpour contributors"]
+
+# Versions are pinned from docs/14-tech-radar-2026.md. Do not bump one here without
+# updating that file and saying why — it is the record of what was verified when.
+[workspace.dependencies]
+clap = "4.6.5"
+downpour-corpus = { path = "tests/corpus" }
+downpour-http = { path = "crates/downpour-http" }
+downpour-types = { path = "crates/downpour-types" }
+anyhow = "1.0"
+async-trait = "0.1.91"
+blake3 = "1.8.5"
+# Zero dependencies, and already in our tree via hyper, so using it directly costs nothing
+# transitively. Needed because Retry-After may be an HTTP-date as well as delay-seconds
+# (RFC 9110 §10.2.3), and a parser that only handled integers would silently retry early against
+# a server that had asked for longer.
+httpdate = "1.0.3"
+http-body-util = "0.1.4"
+hyper = "1.11.0"
+hyper-util = "0.1.20"
+mime = "0.3.17"
+percent-encoding = "2.3.2"
+proptest = "1.11.0"
+# default-features is off deliberately: `default` would enable no decompression, but being
+# explicit keeps the absence of gzip/brotli/zstd visible. A transparently decompressed body
+# breaks offset arithmetic, which is I-5. See crates/downpour-http/Cargo.toml.
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "rustls",
+  "http2",
+  "charset",
+  "system-proxy",
+] }
+serde = { version = "1.0.229", features = ["derive"] }
+# serde_yaml is deprecated upstream (its last release is literally 0.9.34+deprecated). This is the
+# maintained fork with the same serde integration, which matters because ADR-0010 requires the
+# corpus runner to fail closed on an unknown key and that is exactly `deny_unknown_fields`.
+serde_norway = "0.9.42"
+thiserror = "2.0.19"
+tokio = "1.53.1"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+# The `serde` feature is enabled per-crate, by whichever crate actually persists a URL.
+# Nothing does yet; persistence arrives with downpour-storage in S2.
+url = "2.5.8"
+
+# Lints that encode .claude/rules/rust.md mechanically, so the rule is enforced by
+# the compiler rather than by whoever is reviewing.
+#
+# `unwrap_used` / `expect_used` / `panic` are NOT here: a Cargo lint table applies to
+# a crate's tests as well, and tests are explicitly allowed to unwrap. They are set
+# per-crate with `cfg_attr(not(test), ...)` instead.
+[workspace.lints.rust]
+missing_docs = "deny"
+unsafe_code = "deny"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# A `u64 -> usize` cast that silently truncates a file offset is a corruption bug
+# that only shows up on the platform nobody tested. Conversions are explicit and
+# checked. See .claude/rules/rust.md, "Style".
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
