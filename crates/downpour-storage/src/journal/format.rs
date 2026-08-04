@@ -32,7 +32,7 @@ pub struct FileHeader {
     transfer_id: [u8; 16],
     total_length: u64,
     block_size: u32,
-    merkle_root: [u8; 32],
+    validator_hash: [u8; 32],
 }
 
 impl FileHeader {
@@ -42,13 +42,13 @@ impl FileHeader {
         transfer_id: [u8; 16],
         total_length: u64,
         block_size: u32,
-        merkle_root: [u8; 32],
+        validator_hash: [u8; 32],
     ) -> Self {
         Self {
             transfer_id,
             total_length,
             block_size,
-            merkle_root,
+            validator_hash,
         }
     }
 
@@ -70,10 +70,10 @@ impl FileHeader {
         self.block_size
     }
 
-    /// Returns the header's initial Merkle-root field.
+    /// Returns the hash that binds this journal to its remote validator.
     #[must_use]
-    pub const fn merkle_root(&self) -> &[u8; 32] {
-        &self.merkle_root
+    pub const fn validator_hash(&self) -> &[u8; 32] {
+        &self.validator_hash
     }
 
     /// Encodes this header into the canonical version-1 representation.
@@ -86,7 +86,7 @@ impl FileHeader {
         encoded[8..24].copy_from_slice(&self.transfer_id);
         encoded[24..32].copy_from_slice(&self.total_length.to_le_bytes());
         encoded[32..36].copy_from_slice(&self.block_size.to_le_bytes());
-        encoded[36..HEADER_CHECKSUM_OFFSET].copy_from_slice(&self.merkle_root);
+        encoded[36..HEADER_CHECKSUM_OFFSET].copy_from_slice(&self.validator_hash);
         let checksum = checksum(&encoded[..HEADER_CHECKSUM_OFFSET]);
         encoded[HEADER_CHECKSUM_OFFSET..HEADER_LEN].copy_from_slice(&checksum.to_le_bytes());
         encoded
@@ -130,7 +130,7 @@ impl FileHeader {
             transfer_id: array_at::<16>(encoded, 8)?,
             total_length: read_u64(encoded, 24)?,
             block_size: read_u32(encoded, 32)?,
-            merkle_root: array_at::<32>(encoded, 36)?,
+            validator_hash: array_at::<32>(encoded, 36)?,
         })
     }
 }

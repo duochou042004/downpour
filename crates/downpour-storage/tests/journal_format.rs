@@ -119,6 +119,16 @@ fn sample_records() -> Vec<FramedRecord> {
 }
 
 #[test]
+fn header_accessors_preserve_validator_identity() {
+    let header = sample_header();
+
+    assert_eq!(header.transfer_id(), &ascending::<16>(0));
+    assert_eq!(header.total_length(), u64::from_le_bytes(ascending::<8>(0)));
+    assert_eq!(header.block_size(), u32::from_le_bytes(ascending::<4>(8)));
+    assert_eq!(header.validator_hash(), &ascending::<32>(0x10));
+}
+
+#[test]
 fn journal_records_round_trip_and_refuse_newer_versions() {
     assert_eq!(HEADER_LEN, 72);
     let header = sample_header();

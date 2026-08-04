@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T09:44:16Z",
+  "updated_at": "2026-08-04T09:54:38Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -682,13 +682,13 @@
           "id": "S2-T2",
           "title": "Define and implement the versioned recovery-journal codec",
           "status": "done",
-          "proof": "crates/downpour-storage/tests/journal_format.rs::{journal_records_round_trip_and_refuse_newer_versions,golden_bytes_pin_the_header_and_every_record_kind,checksums_cover_header_and_record_framing_not_only_payloads,decoder_rejects_unknown_or_structurally_invalid_v1_data,identity_payload_length_is_bounded_before_encoding}; all pass under just gate",
+          "proof": "crates/downpour-storage/tests/journal_format.rs::{header_accessors_preserve_validator_identity,journal_records_round_trip_and_refuse_newer_versions,golden_bytes_pin_the_header_and_every_record_kind,checksums_cover_header_and_record_framing_not_only_payloads,decoder_rejects_unknown_or_structurally_invalid_v1_data,identity_payload_length_is_bounded_before_encoding}; all pass under just gate",
           "files": [
             "docs/adr/0012-*.md",
             "crates/downpour-storage/src/journal/"
           ],
           "blocked_by": "S2-T1",
-          "notes": "ADR-0012 was proposed and committed before code; it remains proposed pending maintainer review. The proof was observed RED against the absent `journal` API, then GREEN after a manual little-endian codec with a 72-byte checksummed v1 header, exact five-kind payload definitions, strict version/flag/kind/length rejection, CRC32C over every preceding frame byte, and a checked u16 payload bound. Every named proof was mutation-checked: accepting v2, changing version byte order, bypassing header or record CRC, accepting unknown flags or kinds, skipping a fixed payload length, and truncating an oversized length each made the exact relevant test red. `just gate`: 176/176 passed, 2 skipped; `just corpus-slow`: 90/90 passed including both 1 GB cases. This covers the codec surface of I-9 and I-11; append/replay/compaction and their proptest remain S2-T3, so S2-C2 and metrics.invariants_covered are deliberately unchanged.",
+          "notes": "ADR-0012 was proposed and committed before code; it remains proposed pending maintainer review. The proof was observed RED against the absent `journal` API, then GREEN after a manual little-endian codec with a 72-byte checksummed v1 header, exact five-kind payload definitions, strict version/flag/kind/length rejection, CRC32C over every preceding frame byte, and a checked u16 payload bound. Every named proof was mutation-checked: accepting v2, changing version byte order, bypassing header or record CRC, accepting unknown flags or kinds, skipping a fixed payload length, truncating an oversized length, and discarding the validator hash each made the exact relevant test red. A pre-merge audit caught that the typed API called bytes 36..68 `merkle_root` despite both ADR-0012 and docs/04 defining `validator_hash`; header_accessors_preserve_validator_identity was added RED before correcting the public name, with the byte format unchanged. After that correction, `just gate`: 177/177 passed, 2 skipped; `just corpus-slow`: 90/90 passed including both 1 GB cases. This covers the codec surface of I-9 and I-11; append/replay/compaction and their proptest remain S2-T3, so S2-C2 and metrics.invariants_covered are deliberately unchanged.",
           "invariants": [
             "I-9",
             "I-11"
@@ -2012,6 +2012,21 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T2 is done on feature/s2-journal-codec. ADR-0012 remains proposed pending maintainer review. Next after this branch is reviewed and merged: S2-T3, beginning with journal_prop.rs RED for prefix-consistent replay under truncation and bit flips; do not count S2-C2 or I-9 fully covered until that proof exists."
+    },
+    {
+      "at": "2026-08-04T09:53:18Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Caught and corrected a typed journal-header semantic mismatch before PR #3 merged: bytes 36..68 are the validator hash in ADR-0012 and docs/04, but the codec exposed them as a Merkle root. Added the public-accessor proof RED first, renamed the field/getter without changing any persisted byte, then mutation-checked that discarding the validator hash makes the exact test red.",
+      "tasks_touched": [
+        "S2-T2"
+      ],
+      "files_touched": [
+        "crates/downpour-storage/src/journal/format.rs",
+        "crates/downpour-storage/tests/journal_format.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T2 remains done on PR #3, which was clean and CI-green before this correction. Rerun just gate and just corpus-slow, commit and push the correction to both remotes, and require the refreshed GitHub Linux/Windows/security checks to pass. S2-T3 remains todo until PR #3 is reviewed and merged."
     }
   ],
   "metrics": {
