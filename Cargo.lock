@@ -377,6 +377,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "downpour-intervals"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "downpour-types"
 version = "0.1.0"
 dependencies = [
