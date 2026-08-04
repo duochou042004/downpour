@@ -114,7 +114,7 @@ SQLite remains the queryable store for everything that is not per-block progress
 ### 3.2 Format
 
 ```
-┌──────────────────────── file header (64 bytes) ────────────────────────┐
+┌──────────────────────── file header (72 bytes) ────────────────────────┐
 │ magic "DPJ1" (4) │ format_version u16 │ flags u16 │ download_id (16)   │
 │ total_length u64 │ block_size u32 │ validator_hash (32) │ crc32c u32   │
 └────────────────────────────────────────────────────────────────────────┘
@@ -122,6 +122,22 @@ SQLite remains the queryable store for everything that is not per-block progress
 │ seq u64 │ kind u8 │ payload_len u16 │ payload […] │ crc32c u32         │
 └────────────────────────────────────────────────────────────────────────┘
 ```
+
+ADR-0012 fixes the v1 byte contract:
+
+- all integers are little-endian;
+- the header CRC32C covers its first 68 bytes, including magic, version and flags;
+- a record CRC32C covers the sequence, kind, payload length and payload — every byte before
+  the checksum, not only the payload;
+- CRC32C means CRC-32/ISCSI (Castagnoli), whose check value for `123456789` is `0xe3069283`;
+- v1 is format version `1` and permits no non-zero flag bit;
+- `payload_len` bounds every record payload to 65,535 bytes before allocation;
+- unknown kinds and unsupported versions are errors. An incompatible change or new record
+  kind increments the file-header version so an older binary refuses the journal under I-11.
+
+The fixed payload sizes are 44 bytes for `BlockComplete`, 16 for `Checkpoint`, 8 for
+`Truncate`, and 32 for `Sealed`. `IdentityUpdate` carries opaque CBOR bytes at this layer;
+S2-T6 owns their schema and semantic validation.
 
 Record kinds:
 

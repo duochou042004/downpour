@@ -30,6 +30,7 @@ here without checking it against §5 and recording it.
 | `interprocess` | 2.4 | UDS + named pipes | One API for both platforms |
 | `governor` | 0.10 | Rate limiting | Token bucket |
 | `proptest` | 1.11 | Property testing | The interval map and journal depend on this |
+| `crc` | 3.4.0 | CRC32C for recovery-journal framing | ADR-0012. `CRC_32_ISCSI` gives the required Castagnoli checksum. Pure safe Rust, Rust 1.83 MSRV, one dependency (`crc-catalog`), and easy to replace behind a private function without changing journal bytes. |
 | `criterion` | 0.8 | Benchmarks | |
 | `insta` | 1.48 | Snapshot tests | Good for `explain` output and manifest parsing |
 | `url` | 2.5 | URL parsing | Not a free choice: `reqwest`'s public API is already in terms of `url::Url`, so the alternative is converting at every boundary. Same project as `percent-encoding`. |
@@ -122,3 +123,4 @@ and gets an ADR.
 | ---- | -- | ------- |
 | 2026-08-02 | Initial research | Baseline established. Versions verified against crates.io. |
 | 2026-08-03 | S1-T1 | Re-verified every §1 pin against crates.io before writing the workspace: `tokio` 1.53.1, `reqwest` 0.13.4, `rustls` 0.23.43, `thiserror` 2.0.19, `serde` 1.0.229, `proptest` 1.11.0, `clap` 4.6.5, `blake3` 1.8.5, `tracing` 0.1.44, `bytes` 1.12.1 — all consistent with the recorded majors, so nothing here was stale. Added `url`, `percent-encoding`, `mime` and `async-trait` to §1; none is a free choice (see the Note column), which is why they are recorded here rather than given ADRs of their own. |
+| 2026-08-04 | S2-T2 | Added `crc` 3.4.0 after re-verifying it against crates.io and its published source: released 2025-11-26, Rust 1.83 MSRV, MIT OR Apache-2.0, 245M downloads, one dependency (`crc-catalog`), and both crates forbid unsafe. Rejected `crc32c` 0.6.8 for this path: its last crate release was 2024-06, it declares no MSRV, and its hardware acceleration uses architecture-specific unsafe. ADR-0012 records the trade-off and reversal trigger. |

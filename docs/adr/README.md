@@ -63,6 +63,7 @@ it is an opinion with a number.
 | [0009](0009-adaptive-not-fixed-concurrency.md) | Adaptive concurrency instead of a fixed connection count | accepted | S0 |
 | [0010](0010-corpus-case-format.md) | Declarative corpus cases over a frozen deterministic content generator | proposed | S1 |
 | [0011](0011-ci-on-github-actions.md) | CI on GitHub Actions; GitLab kept as a mirror with CI disabled | proposed | S1 |
+| [0012](0012-versioned-journal-binary-format.md) | Manually encoded, versioned binary recovery journal | proposed | S2 |
 
 ## Rules
 

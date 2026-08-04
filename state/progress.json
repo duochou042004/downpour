@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T05:06:17Z",
+  "updated_at": "2026-08-04T09:30:02Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -681,14 +681,14 @@
         {
           "id": "S2-T2",
           "title": "Define and implement the versioned recovery-journal codec",
-          "status": "todo",
+          "status": "in_progress",
           "proof": "crates/downpour-storage/tests/journal_format.rs::journal_records_round_trip_and_refuse_newer_versions",
           "files": [
             "docs/adr/0012-*.md",
             "crates/downpour-storage/src/journal/"
           ],
           "blocked_by": "S2-T1",
-          "notes": "Use /adr-new before code for the persistent encoding and storage-path dependencies. ADR-0004 fixes the journal-plus-SQLite split but deliberately leaves the record encoding reversible. Decision-blocking finding from the 2026-08-04 pre-ADR audit: docs/04 labels the file header as 64 bytes, but its listed fields total 72 bytes (4+2+2+16+8+4+32+4). Resolve that contradiction explicitly; do not encode an accidental layout. Evidence favours a manual little-endian 72-byte v1 header and framed records with CRC32C over every preceding header/record byte. `crc` 3.4.0 is the leading checksum dependency: current on crates.io, Rust 1.83 MSRV, MIT/Apache-2.0, one dependency (`crc-catalog`), and both crates forbid unsafe. `crc32c` 0.6.8 is faster but has no declared MSRV and contains hardware-specific unsafe paths. Keep UUID and CBOR out of this codec task by treating the 16-byte id and identity payload as opaque; their semantics belong to S2-T6. Re-verify all of this in ADR-0012 before code.",
+          "notes": "ADR-0012 is proposed before code and fixes the format: manual little-endian encoding, a 72-byte v1 header (correcting docs/04's contradictory 64-byte label), 15-byte record overhead, CRC32C over every preceding header/record byte, zero v1 flags, bounded u16 payloads, and opaque id/identity bytes until S2-T6. `crc` 3.4.0 is selected over `crc32c` 0.6.8 because `crc` plus its one dependency forbids unsafe and declares a compatible MSRV; the ADR records the performance reversal trigger. Next: commit the ADR/spec/radar decision on its own, then write journal_format.rs RED against the absent storage crate before implementation.",
           "invariants": [
             "I-9",
             "I-11"
@@ -1434,6 +1434,13 @@
       "status": "proposed",
       "superseded_by": null,
       "stage": "S1"
+    },
+    {
+      "id": "ADR-0012",
+      "title": "Manually encoded, versioned binary recovery journal",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S2"
     }
   ],
   "risks": [
@@ -1972,6 +1979,23 @@
         "state/progress.json"
       ],
       "left_in_progress": "PR #2 is open, merge-clean and fully green but not merged. Do not stack S2-T2 or merge without maintainer authority. After merge: update develop, create feature/s2-journal-codec from develop, invoke /adr-new for ADR-0012, resolve the 72-byte layout and checksum coverage in the ADR, then write the named format test RED before code."
+    },
+    {
+      "at": "2026-08-04T09:30:02Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "PR #2 merged; fast-forwarded develop and mirrored it to GitLab, then began S2-T2 on feature/s2-journal-codec. Proposed ADR-0012 before codec code: a manually encoded little-endian v1 journal, exact 72-byte header, exact framed record payloads, CRC-32/ISCSI over every preceding field, strict version/flag/kind handling, and crc 3.4.0 as the safe-Rust checksum dependency. Corrected docs/04's 64-byte contradiction and registered the dependency in the tech radar.",
+      "tasks_touched": [
+        "S2-T2"
+      ],
+      "files_touched": [
+        "docs/adr/0012-versioned-journal-binary-format.md",
+        "docs/adr/README.md",
+        "docs/04-storage-and-recovery-spec.md",
+        "docs/14-tech-radar-2026.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T2 is in progress on feature/s2-journal-codec. ADR-0012 is proposed and must remain proposed pending maintainer decision. Next: commit this design-only change, then write crates/downpour-storage/tests/journal_format.rs against the absent crate, observe RED, and only then implement the codec. Replay and compaction remain S2-T3."
     }
   ],
   "metrics": {
