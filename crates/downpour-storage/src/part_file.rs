@@ -148,6 +148,19 @@ impl PartFile {
             source,
         })
     }
+
+    /// Force all previously written part-file data to stable storage.
+    ///
+    /// The durable writer calls this before it appends any `BlockComplete` record. Metadata not
+    /// needed to retrieve the bytes may remain unsynchronised, matching `fdatasync` on Linux and
+    /// `FlushFileBuffers` on Windows.
+    pub fn sync_data(&self) -> Result<(), PartFileError> {
+        self.file.sync_data().map_err(|source| PartFileError::Io {
+            operation: "synchronise part-file data",
+            path: self.path.clone(),
+            source,
+        })
+    }
 }
 
 /// Why a part file could not be created, prepared, inspected, or written.
