@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T00:00:00Z",
+  "updated_at": "2026-08-04T17:48:42Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -2302,7 +2302,7 @@
       "left_in_progress": "PR #7 (https://github.com/duochou042004/downpour/pull/7) awaits maintainer review and merge. ADR-0015 remains proposed pending maintainer decision. Do not begin or stack S2-T7 on this branch; after merge, fast-forward develop, mirror the merge to GitLab, create a fresh feature/s2-recovery-reconciliation branch, and begin with recovery_reconciliation.rs RED."
     },
     {
-      "at": "2026-08-05T00:00:00Z",
+      "at": "2026-08-04T17:48:42Z",
       "agent": "claude-code",
       "stage": "S2",
       "summary": "Audited the merged S2 foundation, then implemented S2-T7. Verified develop at 12e91a0 (PR #7 merged by the maintainer, all four CI jobs green) passes just gate at 230 tests locally, and mutation-checked the two load-bearing S2 claims already merged: reordering the interval swap before the journal fsync makes completion_is_never_observable_before_data_and_journal_are_durable red, and accepting every range in ensure_current_grant makes a_write_outside_the_current_grant_never_reaches_storage red. Mirrored develop to GitLab, which was one merge behind. Then wrote crates/downpour-storage/src/recovery.rs implementing docs/04 section 5 step 2 for one download: part-file presence, extent measured before it is restored, journal replay with durable tail repair, journal-over-SQLite checkpoint arbitration, an interval map rebuilt through the allocator so no InProgress survives, and a terminal state of Paused or Failed with a stable error kind. Added PartFile::open_existing, which only ever grows an extent. Extracted the record fold shared with compaction into journal/state.rs. just gate passes at 245 tests, 2 skipped; just corpus passes 88/88.",
