@@ -19,4 +19,5 @@
 pub mod journal;
 pub mod metadata;
 pub mod part_file;
+pub mod recovery;
 pub mod writer;

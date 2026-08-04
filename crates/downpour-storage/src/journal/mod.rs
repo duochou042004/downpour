@@ -6,6 +6,7 @@
 mod compaction;
 mod format;
 mod replay;
+pub(crate) mod state;
 
 pub use compaction::{CompactionError, compact_journal};
 pub use format::{
