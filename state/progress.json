@@ -2,9 +2,9 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T03:10:00Z",
+  "updated_at": "2026-08-04T03:40:00Z",
   "updated_by": "claude-code",
-  "current_stage": "S1",
+  "current_stage": "S2",
   "stages": [
     {
       "id": "S0",
@@ -261,9 +261,9 @@
     {
       "id": "S1",
       "name": "Robust single-stream HTTP/1.1 + HTTP/2 downloader",
-      "status": "gate-review",
+      "status": "complete",
       "started_at": "2026-08-03T11:44:43Z",
-      "completed_at": null,
+      "completed_at": "2026-08-04T03:40:00Z",
       "spec": "docs/03-transfer-engine-spec.md",
       "exit_criteria": [
         {
@@ -594,8 +594,8 @@
     {
       "id": "S2",
       "name": "Range, resume, validators, crash-safe storage",
-      "status": "planned",
-      "started_at": null,
+      "status": "active",
+      "started_at": "2026-08-04T03:40:00Z",
       "completed_at": null,
       "spec": "docs/04-storage-and-recovery-spec.md",
       "exit_criteria": [
@@ -1056,8 +1056,8 @@
         "id": 1,
         "category": "Correctness - no corrupted files",
         "weight": 25,
-        "score": 0,
-        "evidence": null
+        "score": 35,
+        "evidence": "S1 only. 48 corpus cases with 0 silent-corruption findings, and the detector is proven able to fire (ServerSpec::corrupt_from serves the right length with wrong content; the runner names byte 32768). 1 GB byte-exact over HTTP/1.1 and h2c, verified on CI as well as locally. I-4, I-5 and I-6 fully covered. Deliberately NOT higher: I-1's real proof is crash injection at every write boundary, which is S2, and I-2's disjointness needs the S3 allocator. Correctness under interruption is essentially untested until S2."
       },
       {
         "id": 2,
@@ -1095,8 +1095,8 @@
         "evidence": null
       }
     ],
-    "total_estimate": 0,
-    "assessed_at": "2026-08-02T00:00:00Z",
+    "total_estimate": 8.8,
+    "assessed_at": "2026-08-04T03:40:00Z",
     "blocking_findings": []
   },
   "adr_index": [
@@ -1646,6 +1646,17 @@
         "state/progress.json"
       ],
       "left_in_progress": "S1 gate re-verified and ready to merge. 17/17 tasks, 8/8 criteria, 48 corpus cases, invariant proof lists now mechanically checked."
+    },
+    {
+      "at": "2026-08-04T03:40:00Z",
+      "agent": "human",
+      "stage": "S1",
+      "summary": "GATE B APPROVED by the maintainer, who instructed: merge S1 into develop, delete the branch, and hand off. S1 closes with 17/17 tasks and 8/8 exit criteria, each backed by evidence someone else can re-run, CI green on GitHub Actions across five jobs including windows-latest and the 1 GB transfers. current_stage advances to S2 on that authority - agents propose, humans dispose (HARNESS.md §2).",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2 is now active: 'Range, resume, validators, crash-safe storage', spec docs/04-storage-and-recovery-spec.md, criteria S2-C1..C7, tasks not yet decomposed. docs/12 calls it the highest-risk stage in the project. It inherits B-5, B-6, B-7, B-16 and B-18, plus upgrading S1's restart-from-zero retry into a real resume once If-Range exists."
     }
   ],
   "metrics": {
