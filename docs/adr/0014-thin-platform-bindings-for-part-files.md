@@ -13,6 +13,17 @@ shared seek cursor. These are the platform-specific foundations for I-2 and I-10
 API must also report the truth: a successful logical resize is not evidence that physical
 space was reserved.
 
+The original proposed Windows order marked the empty file sparse before requesting
+`FileAllocationInfo`. Native NTFS on GitHub `windows-latest` disproved that order in
+[CI run 30907036949](https://github.com/duochou042004/downpour/actions/runs/30907036949/job/91984425889):
+the allocation request returned success, but the independent `FileStandardInfo` query remained
+short and the integration proof correctly rejected `space_reserved: true`. Microsoft's
+[`FSCTL_SET_SPARSE` contract](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/6a884fe5-3da1-4abb-84c4-f419d349d878)
+says setting the sparse flag should not deallocate already allocated clusters, while
+[`FILE_ALLOCATION_INFO`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_allocation_info)
+is specifically the requested allocation size. Therefore allocation must precede sparse
+marking, with the allocation query still performed after both operations.
+
 The normative storage specification requires this Linux fallback chain:
 `fallocate(FALLOC_FL_KEEP_SIZE)` then `posix_fallocate` then `ftruncate`, with the final method
 recorded as not reserving space. On Windows it requires `FSCTL_SET_SPARSE` and
@@ -66,14 +77,17 @@ unsupported `posix_fallocate` advances to `File::set_len`, recorded as `SetLengt
 `space_reserved: false`. Every successful reserving path sets the exact logical length before
 returning.
 
-Windows first requests `FSCTL_SET_SPARSE`, then requests the full allocation with
-`SetFileInformationByHandle(FileAllocationInfo)`, sets the logical length, and independently
-queries `FileStandardInfo.AllocationSize`. It records `FileAllocationInfo` and
-`space_reserved: true` only when the queried allocation covers the requested length. An
-unsupported filesystem operation falls back to logical length with `space_reserved: false`;
-`ERROR_DISK_FULL`, I/O errors, and access errors remain failures. The sparse attribute permits
-holes but does not prove or disprove current physical allocation, which is why the allocation
-query and Windows CI test are mandatory. `SetFileValidData` is never called.
+Windows requests the full allocation on the ordinary file with
+`SetFileInformationByHandle(FileAllocationInfo)`, sets the logical EOF while that allocation is
+held, then requests `FSCTL_SET_SPARSE`. It independently queries
+`FileStandardInfo.AllocationSize` after sparse marking. It records `FileAllocationInfo` and
+`space_reserved: true` only when the queried allocation still covers the requested length. If
+allocation is unsupported, Downpour still attempts sparse marking and establishes the logical
+length, recorded as `space_reserved: false`. An unsupported sparse operation is tolerated;
+`ERROR_DISK_FULL`, I/O errors, and access errors from either operation remain failures. The
+sparse attribute permits future holes but does not prove or disprove current physical
+allocation, which is why the post-mark query and Windows CI test are mandatory.
+`SetFileValidData` is never called.
 
 The only production `unsafe` is the one POSIX and three Win32 FFI call sites. They live in
 private platform modules with a module-local `allow(unsafe_code)` and a `// SAFETY:` argument
@@ -92,7 +106,9 @@ adapters.
 
 **Harder:** Downpour owns error classification and a small amount of FFI. Linux and Windows
 need separate behavioral tests, and non-Linux Unix targets are deliberately not implied by a
-project that currently promises Linux and Windows.
+project that currently promises Linux and Windows. Windows' ordering is evidence-driven and
+must keep a post-sparse allocation query because an API success alone was already shown to be
+insufficient.
 
 **Accepted:** a filesystem may support logical sizing but not reservation. In that case the
 part file is usable and explicitly reports `space_reserved: false`; later write-time `ENOSPC`
@@ -105,7 +121,8 @@ the recovery specification already requires orphan reporting and forbids automat
 Replace the private bindings if stable Rust exposes all three required operations with the
 same semantics, or if a maintained Apache-2.0-compatible crate implements the exact Linux
 fallback chain, Windows sparse marking, post-allocation verification, and method reporting
-without `SetFileValidData` or a new async runtime. Revisit the Windows sequence immediately if
-CI on NTFS or ReFS shows that a successful `FileAllocationInfo` request followed by
-`FileStandardInfo` cannot demonstrate full allocation on a sparse file; do not weaken the
+without `SetFileValidData` or a new async runtime. The original sparse-then-allocate trigger
+fired in CI run 30907036949 and produced the revised order above. Revisit again if native NTFS
+or ReFS shows that marking an already allocated file sparse deallocates clusters, or if the
+post-mark `FileStandardInfo` query does not remain at the requested extent; do not weaken the
 test or claim `space_reserved: true` without that evidence.

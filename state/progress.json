@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T11:57:02Z",
+  "updated_at": "2026-08-04T12:02:27Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -723,7 +723,7 @@
             "docs/agent/INVARIANTS.md"
           ],
           "blocked_by": "S2-T2",
-          "notes": "ADR-0014 was proposed before code and remains proposed pending maintainer review. PartFile now creates <target>.dppart exclusively, rejects unrepresentable lengths before creation, reports truthful preallocation metadata, and rejects an entire positional write before I/O when it crosses the declared extent. Linux implements fallocate(KEEP_SIZE) -> posix_fallocate -> logical length and never hides ENOSPC; Windows code compiles and clippy-checks for x86_64-pc-windows-gnu, marks sparse, requests FileAllocationInfo, and independently verifies AllocationSize. The absent public API was observed RED first. All six Linux integration tests and four Linux fallback tests were individually mutation-checked, including both ENOSPC stages. `just gate` passed 195/195 (2 skipped) and `just corpus-slow` passed 90/90. T4 remains in_progress until native GitHub Windows tests pass and each Windows-only proof is mutation-checked there.",
+          "notes": "ADR-0014 was proposed before code and remains proposed pending maintainer review. PartFile now creates <target>.dppart exclusively, rejects unrepresentable lengths before creation, reports truthful preallocation metadata, and rejects an entire positional write before I/O when it crosses the declared extent. Linux implements fallocate(KEEP_SIZE) -> posix_fallocate -> logical length and never hides ENOSPC. All six Linux integration tests and four Linux fallback tests were individually mutation-checked; `just gate` passed 195/195 (2 skipped) and `just corpus-slow` passed 90/90. GitHub CI run 30907036949 proved the original Windows sparse-then-allocate order did not reserve clusters on NTFS: only windows_preallocation_marks_sparse_and_reserves_physical_clusters failed, reporting SetLength. ADR-0014 and docs/04 now require allocate -> set EOF -> mark sparse -> verify AllocationSize, based on Microsoft's guarantee that setting the sparse flag should not deallocate existing clusters. T4 remains in_progress until that revised production order passes native Windows and every Windows-only proof is mutation-checked there.",
           "invariants": [
             "I-2",
             "I-10"
@@ -2113,6 +2113,21 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T4 remains in progress on feature/s2-part-files. Commit and push this implementation to both remotes, open a GitHub PR, require native windows-latest to prove sparse marking plus physical AllocationSize, then run targeted Windows mutation branches so each of the four Windows-only proof paths is observed red. Only after those proofs and refreshed full gates may T4 be marked done; I-2's grant barrier remains T5 and I-10's disk-full recovery remains T13."
+    },
+    {
+      "at": "2026-08-04T12:02:27Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Native Windows CI supplied the evidence ADR-0014 required: the sparse-first order returned API success but left AllocationSize short, so the integration proof failed rather than allowing a false reservation claim. Amended ADR-0014 and the normative storage spec before code to request allocation and set EOF on the ordinary file, then mark sparse, then verify allocation. This follows Microsoft's documented rule that setting the sparse flag should not deallocate already allocated clusters.",
+      "tasks_touched": [
+        "S2-T4"
+      ],
+      "files_touched": [
+        "docs/adr/0014-thin-platform-bindings-for-part-files.md",
+        "docs/04-storage-and-recovery-spec.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T4 remains in progress on PR #5 after GitHub CI run 30907036949 failed only windows_preallocation_marks_sparse_and_reserves_physical_clusters. Commit this ADR/spec amendment before production code, then update Windows preparation policy and unit event expectations, cross-check locally, and require a fresh native Windows green run before starting mutation branches."
     }
   ],
   "metrics": {
