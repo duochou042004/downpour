@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T13:01:24Z",
+  "updated_at": "2026-08-04T13:49:12Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -760,16 +760,21 @@
         {
           "id": "S2-T6",
           "title": "Persist versioned download metadata and checkpoints without deserializing RangeProof",
-          "status": "todo",
-          "proof": "crates/downpour-storage/tests/metadata.rs::schema_round_trips_and_refuses_newer_versions and persisted_range_observation_is_revalidated_before_becoming_proven",
+          "status": "in_progress",
+          "proof": "crates/downpour-storage/tests/metadata.rs::{schema_round_trips_and_refuses_newer_versions,version_one_without_required_constraints_is_refused,persisted_range_observation_is_revalidated_before_becoming_proven,newer_range_observation_is_refused_before_validation,identity_snapshot_range_observation_is_revalidated,proven_range_requires_matching_download_length,checkpoint_bytes_are_canonical_versioned_and_reject_invalid_coverage,checkpoint_total_must_match_the_owning_download,identity_snapshots_are_canonical_versioned_and_secret_free,sqlite_never_contains_url_queries_or_request_secrets,error_kinds_are_typed_and_cannot_carry_server_text,unversioned_nonempty_database_is_refused_without_mutation,unversioned_database_with_only_freelist_pages_is_refused,download_ids_refuse_non_v7_bytes,url_history_preserves_order_when_timestamps_match,native_paths_round_trip_without_loss}; each must pass under just gate and be mutation-checked",
           "files": [
+            "docs/adr/0015-versioned-metadata-and-secret-references.md",
+            "docs/04-storage-and-recovery-spec.md",
+            "docs/14-tech-radar-2026.md",
             "crates/downpour-storage/src/metadata.rs",
+            "crates/downpour-storage/tests/metadata.rs",
             "crates/downpour-types/src/remote.rs"
           ],
           "blocked_by": "S2-T1, S2-T2",
-          "notes": "Closes B-7. Persist raw range observations and rebuild RangeProof through its validating constructor; RangeProof must not derive Deserialize or gain any unchecked constructor.",
+          "notes": "Closes B-7. ADR-0015 was proposed before code and fixes strict SQLite v1 opening, 16-byte validated UUIDv7 ids, lossless schema/snapshot-versioned native-path BLOBs, typed stable error kinds without arbitrary server text, query-free public URLs plus keyring references, normalized redirect hops and ordered URL history, canonical versioned CBOR range/checkpoint/identity arrays, full idempotent journal identity snapshots, checkpoint/download total agreement, and bounded canonical decoding. It selects rusqlite 0.40.1 with only bundled-windows plus ciborium 0.2.2; both were re-verified before implementation. RangeProof remains non-deserializable and can only be rebuilt through its validating constructor. Recovery reconciliation remains T7; sink integration T8; HTTP resume and keyring-backed URL reconstruction remain T9 and S7/S8.",
           "invariants": [
             "I-6",
+            "I-8",
             "I-11",
             "I-14"
           ]
@@ -1465,6 +1470,13 @@
     {
       "id": "ADR-0014",
       "title": "Thin platform bindings for truthful part-file allocation",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S2"
+    },
+    {
+      "id": "ADR-0015",
+      "title": "Strict SQLite metadata, versioned CBOR evidence, and secret references",
       "status": "proposed",
       "superseded_by": null,
       "stage": "S2"
@@ -2213,6 +2225,23 @@
         "state/progress.json"
       ],
       "left_in_progress": "PR #6 (https://github.com/duochou042004/downpour/pull/6) awaits maintainer review and merge. Do not begin or stack S2-T6 on this branch; after merge, fast-forward develop, mirror the merge to GitLab, create a fresh S2-T6 branch, and start the metadata writer proof test-first."
+    },
+    {
+      "at": "2026-08-04T13:49:12Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "PR #6 merged; fast-forwarded develop, mirrored GitHub develop to GitLab, and started S2-T6 on feature/s2-metadata. Proposed ADR-0015 before code to make SQLite, checkpoints, range evidence, identity snapshots, and secret references strict, versioned, canonical, and rebuildable without ever deserializing RangeProof.",
+      "tasks_touched": [
+        "S2-T6"
+      ],
+      "files_touched": [
+        "docs/adr/0015-versioned-metadata-and-secret-references.md",
+        "docs/adr/README.md",
+        "docs/04-storage-and-recovery-spec.md",
+        "docs/14-tech-radar-2026.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T6 is in progress on feature/s2-metadata. Commit the design-only ADR/spec/radar/progress change first. Then write all seven named metadata proofs against the absent API, observe RED, and only afterward add rusqlite/ciborium/serde dependencies and production code. ADR-0015 remains proposed pending maintainer decision."
     }
   ],
   "metrics": {

@@ -160,7 +160,7 @@ Record kinds:
 | ---- | ------- | ------- |
 | `0x01 BlockComplete` | `offset u64, len u32, blake3 [32]` | These bytes are durable |
 | `0x02 Checkpoint` | `covered_bytes u64, wall_clock u64` | Summary; lets replay start late |
-| `0x03 IdentityUpdate` | CBOR `DownloadIdentity` delta | URL refreshed, validator changed |
+| `0x03 IdentityUpdate` | CBOR complete `DownloadIdentity` snapshot | URL refreshed, validator changed |
 | `0x04 Truncate` | `new_length u64` | Server reported a different length; blocks past it invalid |
 | `0x05 Sealed` | `final_blake3 [32]` | Verification passed; file renamed |
 
@@ -240,46 +240,64 @@ WAL mode, `synchronous = NORMAL` (the journal is our durability mechanism, not S
 PRAGMA user_version = 1;   -- schema version (I-11)
 
 CREATE TABLE downloads (
-    id                TEXT PRIMARY KEY,        -- UUIDv7: time-ordered
+    id                BLOB PRIMARY KEY CHECK(length(id) = 16), -- UUIDv7 bytes
     state             TEXT NOT NULL,
     created_at        INTEGER NOT NULL,
     updated_at        INTEGER NOT NULL,
-    target_path       TEXT NOT NULL,
-    part_path         TEXT NOT NULL,
+    target_path       BLOB NOT NULL,           -- canonical versioned native-path encoding
+    part_path         BLOB NOT NULL,
     total_length      INTEGER,
     covered_bytes     INTEGER NOT NULL DEFAULT 0,
     queue_position    INTEGER,
     priority          INTEGER NOT NULL DEFAULT 0,
-    error_kind        TEXT,
-    error_detail      TEXT,
+    error_kind        TEXT,                    -- stable kind only; no raw server text
     space_reserved    INTEGER NOT NULL DEFAULT 0
+                      CHECK(space_reserved IN (0, 1))
 );
 
 CREATE TABLE identities (
-    download_id       TEXT PRIMARY KEY REFERENCES downloads(id) ON DELETE CASCADE,
-    current_url       TEXT NOT NULL,
-    final_url         TEXT,
-    redirect_chain    TEXT,                    -- JSON array
-    page_url          TEXT,
+    download_id       BLOB PRIMARY KEY REFERENCES downloads(id) ON DELETE CASCADE,
+    current_url       TEXT NOT NULL,           -- public, query-free component
+    current_url_ref   TEXT,                    -- keyring reference for the full URL
+    final_url         TEXT,                    -- public, query-free component
+    final_url_ref     TEXT,
+    page_url          TEXT,                    -- public, query-free component
+    page_url_ref      TEXT,
     origin            TEXT NOT NULL,
     validator_kind    TEXT NOT NULL,           -- strong-etag | last-modified | none
     validator_value   TEXT,
     server_digest     TEXT,                    -- RFC 9530, algorithm:base64
     content_type      TEXT,
     suggested_name    TEXT,
-    request_context   TEXT NOT NULL,           -- JSON; secrets are keyring references only
-    probed_at         INTEGER NOT NULL
+    request_context_ref TEXT,                  -- keyring reference, never credentials
+    probed_at         INTEGER NOT NULL,        -- Unix milliseconds
+    protocol          TEXT NOT NULL,
+    range_state       TEXT NOT NULL
+                      CHECK(range_state IN ('proven', 'absent', 'unknown')),
+    range_observation BLOB,
+    CHECK((range_state = 'proven' AND range_observation IS NOT NULL)
+       OR (range_state != 'proven' AND range_observation IS NULL))
+);
+
+CREATE TABLE redirect_chain (
+    download_id       BLOB NOT NULL REFERENCES downloads(id) ON DELETE CASCADE,
+    hop               INTEGER NOT NULL CHECK(hop >= 0),
+    public_url        TEXT NOT NULL,
+    secret_ref        TEXT,
+    PRIMARY KEY (download_id, hop)
 );
 
 CREATE TABLE url_history (
-    download_id       TEXT NOT NULL REFERENCES downloads(id) ON DELETE CASCADE,
-    url               TEXT NOT NULL,
+    download_id       BLOB NOT NULL REFERENCES downloads(id) ON DELETE CASCADE,
+    entry              INTEGER NOT NULL CHECK(entry >= 0),
+    public_url        TEXT NOT NULL,
+    secret_ref        TEXT,
     seen_at           INTEGER NOT NULL,
-    PRIMARY KEY (download_id, seen_at)
+    PRIMARY KEY (download_id, entry)
 );
 
 CREATE TABLE checkpoints (
-    download_id       TEXT PRIMARY KEY REFERENCES downloads(id) ON DELETE CASCADE,
+    download_id       BLOB PRIMARY KEY REFERENCES downloads(id) ON DELETE CASCADE,
     journal_seq       INTEGER NOT NULL,
     covered_bytes     INTEGER NOT NULL,
     interval_map      BLOB NOT NULL,           -- compact encoding of Complete intervals
@@ -301,13 +319,56 @@ CREATE INDEX idx_downloads_queue ON downloads(queue_position) WHERE queue_positi
 
 Notes:
 
-- **UUIDv7** ids: time-ordered, so index locality is good and listing by creation is free.
-- `request_context` never contains secret material. Cookies and auth headers are stored in
-  the OS keyring; this column holds *references* (I-14).
+- **UUIDv7** ids: stored as the exact 16 bytes also carried by the journal. The storage
+  boundary validates the version and RFC variant bits. Binary ordering preserves UUIDv7's
+  time order without parsing text.
+- SQLite integers are signed. File lengths, byte counts, offsets, timestamps, priorities,
+  and sequence numbers that do not fit their declared Rust/SQLite domain are rejected before
+  a transaction; no `u64` is cast through `as i64`.
+- Paths use a schema/snapshot-versioned CBOR pair of encoding tag and byte string. Portable
+  UTF-8 paths use tag `0`; otherwise Unix stores the exact `OsStrExt` bytes with tag `1` and
+  Windows stores exact little-endian UTF-16 code units with tag `2`. A different platform
+  refuses a native-only tag instead of lossily decoding it. Arbitrary error detail is not
+  persisted because server text can contain a signed URL or credential; `error_kind` accepts
+  only a bounded lowercase dotted identifier.
+- A persisted URL contains no username, password, query, or fragment. When the working URL
+  contains secret material, the full URL lives in the OS keyring and the adjacent `*_ref`
+  column names it. `request_context_ref` follows the same rule for cookies, authorization,
+  proxy credentials, and request bodies (I-14).
+- A `proven` range state always carries the raw observation that produced the proof. Loading
+  calls `RangeProof::from_observed_response`; `RangeProof` itself is never deserialized (I-6).
 - `compat_profiles` is the beginning of accumulated compatibility intelligence — what we
   learned about an origin, reused next time. It is a cache and is always safe to delete.
 
-### 3.6 Authority
+ADR-0015 fixes the remaining metadata byte contracts:
+
+- range observations, checkpoint interval sets, and journal `IdentityUpdate` snapshots are
+  definite-length canonical CBOR arrays whose first item is format version `1`;
+- private persistence DTOs may derive Serde traits, but `RangeProof` and `RangeSupport` may
+  not derive `Deserialize` or gain an unchecked constructor;
+- a decoder inspects the version before the version-specific payload, refuses a newer version,
+  enforces collection/string limits before allocation, then re-encodes and compares bytes so
+  non-canonical alternatives and trailing values fail closed;
+- a checkpoint contains only ordered, disjoint, non-empty `Complete` intervals. Their checked
+  union must equal both encoded and SQL `covered_bytes`, and its encoded total must equal the
+  owning download's immutable total; `InProgress` is never checkpointed;
+- a checkpoint is a disposable cache, capped at 64 MiB and one million intervals. If a valid
+  map exceeds that bound, omit the SQLite checkpoint and replay the authoritative journal;
+- each `IdentityUpdate` is a complete, idempotent metadata snapshot rather than a per-field
+  patch. The last valid snapshot wins and remains bounded by the journal's 65,535-byte payload;
+  and
+- v1 is never reinterpreted. Any incompatible schema or CBOR change increments the applicable
+  version, and older binaries refuse it under I-11.
+
+Opening policy is equally strict. Schema creation is transactional. An empty
+`user_version = 0` database may become v1 only when both `sqlite_schema` and the physical page
+set are empty; a file with freelist remnants or another application's header is not empty. A
+non-empty unversioned database is refused without mutation. Version 1 must contain the exact
+tables, constraints, and indexes. A newer version is refused, not downgraded. File-backed
+connections verify WAL mode, `synchronous = NORMAL`, foreign keys, the 5-second busy timeout,
+and `trusted_schema = OFF` before use.
+
+### 4.1 Authority
 
 **If SQLite and the journal disagree, the journal wins.** SQLite can be rebuilt by scanning
 `journals/`. A `dp repair` command does exactly that. This is why a corrupt database is an
