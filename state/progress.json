@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T03:40:00Z",
+  "updated_at": "2026-08-04T03:55:00Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1359,7 +1359,7 @@
     },
     {
       "id": "B-17",
-      "text": "The nightly slow-corpus schedule in .github/workflows/ci.yml is NOT live yet. GitHub only fires `schedule` triggers from a repository's DEFAULT branch, and develop - which is the default - does not carry the workflow until this PR merges. Until then the 1 GB cases run only on demand via `gh workflow run CI`. Verify the nightly actually fires after the merge rather than assuming it; a schedule that silently never runs is the same class of problem as a corpus case that silently asserts nothing.",
+      "text": "RESOLVED 2026-08-04: develop now carries .github/workflows/ci.yml after the S1 merge, so the nightly schedule (cron 0 3 * * *) can fire - GitHub only runs `schedule` from the default branch. Still worth confirming the first nightly actually ran rather than assuming: `gh run list --workflow=ci.yml --event=schedule`. A scheduled job nobody checks is indistinguishable from one that does not exist.",
       "found_in_stage": "S1",
       "target_stage": "S2",
       "rationale": "A scheduled job nobody checks is indistinguishable from one that does not exist"
