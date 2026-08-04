@@ -49,6 +49,17 @@ folder does not silently destroy recovery information for an active transfer.
 4. Record which preallocation method succeeded. If none reserved space, set
    `space_reserved: false` and warn: `ENOSPC` becomes likely rather than impossible.
 
+ADR-0014 fixes the platform policy behind those steps:
+
+- advance to a weaker method only when the preceding operation is unsupported; `ENOSPC`,
+  `EFBIG`, access errors, and I/O errors fail preparation rather than being hidden by a
+  logical-length fallback;
+- after `FileAllocationInfo`, query `FileStandardInfo.AllocationSize` and report
+  `space_reserved: true` only when the allocation covers the requested length. The sparse
+  attribute permits holes but is not itself evidence about current physical allocation;
+- a zero-length object records `NotNeeded` and `space_reserved: true`; and
+- a logical-length-only fallback records `SetLength` and `space_reserved: false`.
+
 Preallocating up front converts "disk full at 97%" from a data-integrity event into a
 start-time error, which is the whole point.
 

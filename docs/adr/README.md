@@ -65,6 +65,7 @@ it is an opinion with a number.
 | [0011](0011-ci-on-github-actions.md) | CI on GitHub Actions; GitLab kept as a mirror with CI disabled | proposed | S1 |
 | [0012](0012-versioned-journal-binary-format.md) | Manually encoded, versioned binary recovery journal | proposed | S2 |
 | [0013](0013-prefix-replay-and-verified-journal-compaction.md) | Fatal headers, prefix replay, and verified journal compaction | proposed | S2 |
+| [0014](0014-thin-platform-bindings-for-part-files.md) | Thin platform bindings for truthful part-file allocation | proposed | S2 |
 
 ## Rules
 

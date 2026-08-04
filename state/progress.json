@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T10:34:50Z",
+  "updated_at": "2026-08-04T11:37:57Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -716,14 +716,14 @@
         {
           "id": "S2-T4",
           "title": "Create sparse preallocated part files and expose positional writes on Linux and Windows",
-          "status": "todo",
+          "status": "in_progress",
           "proof": "crates/downpour-storage/tests/part_file.rs::creation_is_exclusive_and_positional_writes_preserve_other_offsets, with platform preallocation tests on GitHub windows-latest and Linux",
           "files": [
             "crates/downpour-storage/src/part_file.rs",
             "docs/agent/INVARIANTS.md"
           ],
           "blocked_by": "S2-T2",
-          "notes": "Before implementation, reconcile I-10's stale SetFileValidData wording with docs/04 section 2.1, which explicitly forbids SetFileValidData because it can expose uninitialised disk contents. The normative storage spec wins; do not use SetFileValidData.",
+          "notes": "ADR-0014 was proposed before code and remains proposed pending maintainer review. It selects standard positional I/O plus thin target-specific rustix/libc/windows-sys bindings, with four isolated FFI calls and no new resolved package. I-10 now matches docs/04: SetFileValidData is forbidden; Linux falls back fallocate -> posix_fallocate -> logical length, while Windows marks sparse, requests FileAllocationInfo, and independently verifies AllocationSize before reporting space_reserved true. Implementation and RED proofs remain in progress.",
           "invariants": [
             "I-2",
             "I-10"
@@ -1448,6 +1448,13 @@
     {
       "id": "ADR-0013",
       "title": "Fatal headers, prefix replay, and verified journal compaction",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S2"
+    },
+    {
+      "id": "ADR-0014",
+      "title": "Thin platform bindings for truthful part-file allocation",
       "status": "proposed",
       "superseded_by": null,
       "stage": "S2"
