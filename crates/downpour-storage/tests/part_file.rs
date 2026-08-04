@@ -161,13 +161,15 @@ fn windows_preallocation_marks_sparse_and_reserves_physical_clusters() {
     let target = directory.path().join("reserved.bin");
     let part = PartFile::create(&target, LENGTH).unwrap();
     let metadata = fs::metadata(part.path()).unwrap();
+    let allocated_size = part.allocated_size().unwrap();
 
     assert_eq!(
         part.preallocation_method(),
-        PreallocationMethod::FileAllocationInfo
+        PreallocationMethod::FileAllocationInfo,
+        "post-sparse allocation was only {allocated_size} bytes"
     );
     assert!(part.space_reserved());
     assert_eq!(metadata.file_size(), LENGTH);
     assert_ne!(metadata.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE, 0);
-    assert!(part.allocated_size().unwrap() >= LENGTH);
+    assert!(allocated_size >= LENGTH);
 }

@@ -537,15 +537,14 @@ mod platform {
         operations: &impl AllocationOperations,
         length: u64,
     ) -> io::Result<PreallocationMethod> {
-        if let Err(error) = operations.mark_sparse()
-            && !is_unsupported(&error)
-        {
-            return Err(error);
-        }
-
         match operations.request_allocation() {
             Ok(()) => {
                 operations.set_len()?;
+                if let Err(error) = operations.mark_sparse()
+                    && !is_unsupported(&error)
+                {
+                    return Err(error);
+                }
                 if operations.allocated_size()? >= length {
                     Ok(PreallocationMethod::FileAllocationInfo)
                 } else {
@@ -553,6 +552,11 @@ mod platform {
                 }
             }
             Err(error) if is_unsupported(&error) => {
+                if let Err(error) = operations.mark_sparse()
+                    && !is_unsupported(&error)
+                {
+                    return Err(error);
+                }
                 operations.set_len()?;
                 Ok(PreallocationMethod::SetLength)
             }
@@ -713,9 +717,9 @@ mod platform {
             assert_eq!(
                 *operations.events.borrow(),
                 [
-                    Event::Sparse,
                     Event::Allocate,
                     Event::SetLength,
+                    Event::Sparse,
                     Event::Query
                 ]
             );
@@ -736,7 +740,7 @@ mod platform {
             assert!(!method.space_reserved());
             assert_eq!(
                 *operations.events.borrow(),
-                [Event::Sparse, Event::Allocate, Event::SetLength]
+                [Event::Allocate, Event::Sparse, Event::SetLength]
             );
         }
 
@@ -747,17 +751,17 @@ mod platform {
             let error = prepare_with(&sparse, 4096).unwrap_err();
 
             assert_eq!(error.raw_os_error(), Some(code(ERROR_DISK_FULL)));
-            assert_eq!(*sparse.events.borrow(), [Event::Sparse]);
+            assert_eq!(
+                *sparse.events.borrow(),
+                [Event::Allocate, Event::SetLength, Event::Sparse]
+            );
 
             let allocation = fake(None, Some(ERROR_DISK_FULL), 0);
 
             let error = prepare_with(&allocation, 4096).unwrap_err();
 
             assert_eq!(error.raw_os_error(), Some(code(ERROR_DISK_FULL)));
-            assert_eq!(
-                *allocation.events.borrow(),
-                [Event::Sparse, Event::Allocate]
-            );
+            assert_eq!(*allocation.events.borrow(), [Event::Allocate]);
         }
     }
 }
