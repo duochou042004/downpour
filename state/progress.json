@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T10:30:39Z",
+  "updated_at": "2026-08-04T10:34:50Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -2074,6 +2074,19 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T3 is done on feature/s2-journal-replay. ADR-0013 remains proposed pending maintainer review. Before opening the PR, commit the implementation/proofs, push to both remotes, and require GitHub Linux, Windows, security-audit, and harness checks. After review and merge, begin S2-T4 from updated develop; do not stack it on this branch."
+    },
+    {
+      "at": "2026-08-04T10:34:50Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Committed S2-T3 as ADR-first plus implementation/proof commits, pushed feature/s2-journal-replay to both github and origin, and opened GitHub PR #4 against develop. The PR is mergeable. Both GitHub event runs completed green for Linux fmt/clippy/tests/doctests, Windows clippy/tests, security deny/audit, and the harness; the PR-only slow job was intentionally skipped, while just corpus-slow had already passed locally 90/90 including both 1 GB transfers.",
+      "tasks_touched": [
+        "S2-T3"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "PR #4 (https://github.com/duochou042004/downpour/pull/4) awaits maintainer review and merge. ADR-0013 remains proposed pending maintainer decision. Do not begin or stack S2-T4 on this branch; after PR #4 merges, fast-forward develop, mirror it to GitLab, and create feature/s2-part-files from the merged develop tip."
     }
   ],
   "metrics": {
