@@ -160,8 +160,8 @@ records before it.
 **Why:** a power cut during a journal write must degrade to "we lost the last few seconds of
 progress", never to "the journal is unreadable and the download is lost".
 
-**Mechanism:** fixed-header records with CRC32C over the payload; replay stops at the first
-record whose checksum does not verify.
+**Mechanism:** fixed-header records with CRC32C over the framing and payload; replay stops at
+the first record whose checksum does not verify.
 
 **Proof:** `proptest` over truncated and bit-flipped journals — replay must always yield a
 prefix-consistent state and never a panic.

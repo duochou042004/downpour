@@ -163,6 +163,16 @@ for each record:
 truncate journal to the last valid record
 ```
 
+ADR-0013 separates fatal identity damage from a recoverable record suffix:
+
+- a truncated or invalid header, unsupported version, or unsupported flags is fatal and does
+  not modify the journal;
+- after a valid v1 header, a truncated frame, bad record CRC, unknown or malformed v1 record,
+  or sequence gap stops before that frame;
+- clean EOF is distinct from recovery at a damaged suffix;
+- file recovery truncates only a recoverable suffix and synchronises the truncation before
+  returning.
+
 Guarantees (I-9):
 
 - Replay always yields a **prefix-consistent** state. Never a partially applied record.
@@ -188,8 +198,21 @@ recording a hash per block is not a bottleneck, so we get verification for free 
 
 Journals grow linearly with the file. When a journal exceeds `JOURNAL_COMPACT_BYTES`
 (default 4 MiB), write a new journal containing a header, one `Checkpoint`, and the merged
-interval set, then atomically replace. Compaction is crash-safe: build `D.dpj.new`, fsync,
-rename over `D.dpj`.
+interval set, then atomically replace.
+
+Compaction is an integrity operation, not just a rewrite. Before it emits a merged
+`BlockComplete`, it verifies every surviving original block digest against the part file. A
+short read or mismatch leaves `D.dpj` unchanged; recomputing hashes from unverified part bytes
+would silently bless corruption. Zero-length, overflowing, out-of-bounds, overlapping, or
+otherwise semantically invalid records also fail without replacement. A truncate invalidates
+every block that crosses or lies beyond its new end rather than cropping one into trusted data.
+
+The compacted v1 journal preserves the header, opaque identity updates in order, the final
+effective truncate if present, one checkpoint, merged verified blocks split at the v1 `u32`
+length limit, and a final sealed record if present. Sequences restart at zero. Compaction is
+crash-safe: build `D.dpj.new`, fsync it, rename over `D.dpj`, then sync the parent directory
+where supported. At every boundary the authoritative name denotes either the complete old
+journal or a complete semantically equivalent new journal; `.new` is never authoritative.
 
 ---
 

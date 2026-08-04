@@ -64,7 +64,9 @@ impl FileHeader {
         self.total_length
     }
 
-    /// Returns the block size used by `BlockComplete` records.
+    /// Returns the transfer's initial block granularity.
+    ///
+    /// Compaction may merge adjacent completed ranges into larger v1 records.
     #[must_use]
     pub const fn block_size(&self) -> u32 {
         self.block_size
