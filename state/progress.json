@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T09:54:38Z",
+  "updated_at": "2026-08-04T10:14:38Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -697,14 +697,17 @@
         {
           "id": "S2-T3",
           "title": "Replay and compact journals with prefix-consistent torn-tail recovery",
-          "status": "todo",
-          "proof": "crates/downpour-storage/tests/journal_prop.rs::replay_never_panics_and_yields_a_prefix under truncation and bit-flip, plus compaction_survives_each_replace_boundary",
+          "status": "in_progress",
+          "proof": "crates/downpour-storage/tests/journal_prop.rs::replay_never_panics_and_yields_a_prefix (10000 truncation and bit-flip cases); journal_replay.rs::{invalid_header_is_fatal_and_unchanged,valid_crc_sequence_gap_stops_before_gap}; journal_compaction.rs::{compaction_preserves_replayed_state,compaction_refuses_to_bless_corrupt_part_bytes,compaction_survives_each_replace_boundary}",
           "files": [
+            "docs/adr/0013-*.md",
             "crates/downpour-storage/src/journal/",
-            "crates/downpour-storage/tests/journal_prop.rs"
+            "crates/downpour-storage/tests/journal_prop.rs",
+            "crates/downpour-storage/tests/journal_replay.rs",
+            "crates/downpour-storage/tests/journal_compaction.rs"
           ],
           "blocked_by": "S2-T2",
-          "notes": null,
+          "notes": "ADR-0013 was proposed before code and remains pending maintainer review. It makes header damage fatal, recovers only an exact sequential record prefix after a valid header, and requires compaction to verify every surviving original block hash before emitting merged v1 evidence. Opaque identity updates are preserved in order; semantic invalidity or part-byte mismatch leaves the authoritative journal unchanged. Next: commit this design-only change, then write and observe the named replay and compaction proofs RED before implementation.",
           "invariants": [
             "I-9",
             "I-11"
@@ -1441,6 +1444,13 @@
       "status": "proposed",
       "superseded_by": null,
       "stage": "S2"
+    },
+    {
+      "id": "ADR-0013",
+      "title": "Fatal headers, prefix replay, and verified journal compaction",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S2"
     }
   ],
   "risks": [
@@ -2027,6 +2037,22 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T2 remains done on PR #3, which was clean and CI-green before this correction. Rerun just gate and just corpus-slow, commit and push the correction to both remotes, and require the refreshed GitHub Linux/Windows/security checks to pass. S2-T3 remains todo until PR #3 is reviewed and merged."
+    },
+    {
+      "at": "2026-08-04T10:14:38Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "PR #3 merged; fast-forwarded develop, mirrored the merge to GitLab, and began S2-T3 on feature/s2-journal-replay. Proposed ADR-0013 before code: invalid headers are fatal and unchanged, record damage yields only the exact sequential prefix, and compaction must verify every surviving original block digest before it may merge and rehash part bytes. The compacted v1 journal preserves opaque identity deltas, effective truncation, verified coverage, and sealing semantics, with sync-new, rename, then parent-directory sync replacement.",
+      "tasks_touched": [
+        "S2-T3"
+      ],
+      "files_touched": [
+        "docs/adr/0013-prefix-replay-and-verified-journal-compaction.md",
+        "docs/adr/README.md",
+        "docs/04-storage-and-recovery-spec.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T3 is in progress. ADR-0013 remains proposed pending maintainer review. Commit the design-only change, then write the named replay property, fatal-header, valid-CRC sequence-gap, semantic-equivalence, corrupt-part rejection, and replacement-boundary tests against absent APIs; observe RED before implementing replay or compaction."
     }
   ],
   "metrics": {
