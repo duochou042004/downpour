@@ -36,6 +36,6 @@ pub mod remote;
 
 pub use content_range::{ByteRangeSpec, ContentRange, ContentRangeError, RangeMismatch};
 pub use remote::{
-    ContentDigest, DigestAlgorithm, NegotiatedProtocol, RangeProof, RangeProofError, RangeSupport,
-    RemoteObject, Validator,
+    ContentDigest, DigestAlgorithm, NegotiatedProtocol, RangeObservation, RangeProof,
+    RangeProofError, RangeSupport, RemoteObject, Validator,
 };

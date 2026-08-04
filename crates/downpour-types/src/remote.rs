@@ -31,6 +31,72 @@ pub struct RangeProof {
     total_length: u64,
     observed: ContentRange,
     requested: ByteRangeSpec,
+    observation: RangeObservation,
+}
+
+/// The raw HTTP facts from which range support may be proven.
+///
+/// This type is deliberately harmless to construct: it is only an observation, not a
+/// capability. Persisting these fields allows storage to call
+/// [`RangeProof::from_observed_response`] again after restart instead of deserializing a proof
+/// or trusting a previously computed boolean (I-6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangeObservation {
+    requested: ByteRangeSpec,
+    status: u16,
+    content_range: Option<String>,
+    content_encoding: Option<String>,
+    body_len: u64,
+}
+
+impl RangeObservation {
+    /// Records one ranged response without claiming that it is valid evidence.
+    #[must_use]
+    pub const fn new(
+        requested: ByteRangeSpec,
+        status: u16,
+        content_range: Option<String>,
+        content_encoding: Option<String>,
+        body_len: u64,
+    ) -> Self {
+        Self {
+            requested,
+            status,
+            content_range,
+            content_encoding,
+            body_len,
+        }
+    }
+
+    /// Returns the exact range sent in the request.
+    #[must_use]
+    pub const fn requested_range(&self) -> ByteRangeSpec {
+        self.requested
+    }
+
+    /// Returns the observed HTTP status.
+    #[must_use]
+    pub const fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// Returns the observed `Content-Range` value, when present.
+    #[must_use]
+    pub fn content_range(&self) -> Option<&str> {
+        self.content_range.as_deref()
+    }
+
+    /// Returns the observed `Content-Encoding` value, when present.
+    #[must_use]
+    pub fn content_encoding(&self) -> Option<&str> {
+        self.content_encoding.as_deref()
+    }
+
+    /// Returns the number of body bytes that accompanied the response.
+    #[must_use]
+    pub const fn body_len(&self) -> u64 {
+        self.body_len
+    }
 }
 
 impl RangeProof {
@@ -70,6 +136,13 @@ impl RangeProof {
         content_encoding: Option<&str>,
         body_len: u64,
     ) -> Result<Self, RangeProofError> {
+        let observation = RangeObservation::new(
+            requested,
+            status,
+            content_range.map(str::to_owned),
+            content_encoding.map(str::to_owned),
+            body_len,
+        );
         if status != 206 {
             return Err(RangeProofError::StatusNot206 { status });
         }
@@ -105,6 +178,7 @@ impl RangeProof {
             total_length,
             observed,
             requested,
+            observation,
         })
     }
 
@@ -124,6 +198,15 @@ impl RangeProof {
     #[must_use]
     pub fn requested_range(&self) -> ByteRangeSpec {
         self.requested
+    }
+
+    /// Returns the raw response facts that produced this proof.
+    ///
+    /// Storage persists this observation and replays the validating constructor on load;
+    /// it never serializes `RangeProof` itself.
+    #[must_use]
+    pub const fn observation(&self) -> &RangeObservation {
+        &self.observation
     }
 }
 
