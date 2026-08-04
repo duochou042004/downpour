@@ -16,6 +16,7 @@ authors = ["Downpour contributors"]
 clap = "4.6.5"
 downpour-corpus = { path = "tests/corpus" }
 downpour-http = { path = "crates/downpour-http" }
+downpour-intervals = { path = "crates/downpour-intervals" }
 downpour-types = { path = "crates/downpour-types" }
 anyhow = "1.0"
 async-trait = "0.1.91"

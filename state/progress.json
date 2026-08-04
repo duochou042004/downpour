@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T12:18:00Z",
+  "updated_at": "2026-08-04T12:56:13Z",
   "updated_by": "codex",
   "current_stage": "S2",
   "stages": [
@@ -737,14 +737,19 @@
         {
           "id": "S2-T5",
           "title": "Commit durable blocks in write-sync-journal-sync-complete order with bounded batching",
-          "status": "todo",
-          "proof": "crates/downpour-storage/tests/durable_writer.rs::completion_is_never_observable_before_data_and_journal_are_durable at every injected boundary",
+          "status": "done",
+          "proof": "crates/downpour-storage/tests/durable_writer.rs::{completion_is_never_observable_before_data_and_journal_are_durable,batches_flush_at_the_exact_byte_and_time_bounds,a_write_outside_the_current_grant_never_reaches_storage,overlapping_staged_writes_are_rejected_before_the_second_write,a_changed_grant_prevents_any_durability_commit_and_poisons_the_writer,real_part_and_journal_replay_exactly_the_durable_batch,separate_batches_keep_journal_sequences_contiguous,journal_creation_is_exclusive_and_never_rewrites_an_existing_header,empty_blocks_are_refused_before_io,mismatched_storage_identities_are_refused,mismatched_interval_identity_is_refused_before_io}; all pass under just gate and every test was mutation-checked",
           "files": [
+            "Cargo.toml",
+            "Cargo.lock",
+            "crates/downpour-storage/Cargo.toml",
+            "crates/downpour-storage/src/lib.rs",
+            "crates/downpour-storage/src/part_file.rs",
             "crates/downpour-storage/src/writer.rs",
             "crates/downpour-storage/tests/durable_writer.rs"
           ],
           "blocked_by": "S2-T1, S2-T3, S2-T4",
-          "notes": "The order is fixed by I-1: positional write -> data sync -> journal append -> journal sync -> mark Complete. Batching may delay completion but may never reorder it.",
+          "notes": "The named proof was first observed RED against the absent writer module. DurableWriter now accepts only non-empty ranges currently owned by the reporting worker, rejects overlap with an already staged range before a second write, batches until exactly 2 seconds or 8 MiB, and prevalidates a cloned complete interval map before any sync. It then performs data sync -> append checksummed BlockComplete frames -> journal sync and swaps the prevalidated map only afterward, so no fallible allocator mutation remains beyond the commit point. Any ambiguous I/O or changed-grant failure poisons the writer and requires replay before reuse. JournalFile creates and durably establishes an exclusive versioned header and exposes only append semantics; a real PartFile/JournalFile proof replays the exact durable record and digest. Thirteen targeted mutations made their owning tests red: both I-1 reorderings, both exact threshold comparisons, disabled grant and staged-overlap barriers, ignored changed-grant validation, disconnected real append wiring, reused sequences, non-exclusive journal creation, empty-block acceptance, and both storage-identity checks. Invariant check: I-1's local ordering surface, I-2, I-9 and I-10's affected write surface are covered; full crash/restart byte comparison remains S2-T12 and Paused(DiskFull) remains S2-T13. I-3..I-8 and I-12..I-14 are not affected. No ADR was required because the implementation follows the existing architecture and ADR-0012 journal bytes without adding a persistent format or external dependency. `just gate`: 206/206 passed, 2 skipped. `just corpus-slow`: 90/90 passed including both 1 GB cases. Windows GNU cross-check and strict storage clippy pass; native Windows CI remains required on the PR.",
           "invariants": [
             "I-1",
             "I-2",
@@ -1611,7 +1616,7 @@
     },
     {
       "id": "B-12",
-      "text": "Invariant coverage accounting, corrected 2026-08-03 from an over-generous 5 to 3. FULLY covered by S1 tests: I-4 (verify before rename, asserted on every corpus case), I-5 (four layers, mutation-checked), I-6 (one of eight server behaviours proves range support). PARTIALLY covered, and must not be counted until their real proof exists: I-1 (the sync is plumbed and tested, but I-1's proof is crash injection at every write boundary - S2), I-2 (the sink is append-only and refuses writes past its grant, but disjointness needs the allocator - S3), I-3 (weak-ETag classification is tested, but refusing resume on a changed validator is S2), I-8 (the redirect chain is captured and tested, but the URL-refresh flow is S8). Not affected in S1: I-7, I-9 to I-14.",
+      "text": "Invariant coverage accounting, corrected 2026-08-03 from an over-generous 5 to 3. FULLY covered by S1 tests: I-4 (verify before rename, asserted on every corpus case), I-5 (four layers, mutation-checked), I-6 (one of eight server behaviours proves range support). S2 UPDATE 2026-08-04: I-2 is now fully covered by S2-T1's 10000-sequence canonical interval-map property plus S2-T5's mutation-checked debug grant and staged-overlap barriers; I-9 is now fully covered end to end by S2-T2's checksummed versioned codec, S2-T3's 10000-case prefix replay/compaction proofs, and S2-T5's exclusive append path with real replay. metrics.invariants_covered is therefore 5. PARTIALLY covered and still not counted: I-1 (local boundary ordering is proven, but the required crash/restart full-file simulation is S2-T12), I-3 (resume refusal is S2-T9), I-8 (URL-refresh flow is S8), I-10 (disk-full recovery is S2-T13), and I-11 (SQLite and IPC version proofs remain).",
       "found_in_stage": "S1",
       "target_stage": null,
       "rationale": "invariants_covered gets quoted as release evidence, so an inflated count is worse than a low one"
@@ -2175,13 +2180,33 @@
         "state/progress.json"
       ],
       "left_in_progress": "PR #5 (https://github.com/duochou042004/downpour/pull/5) awaits maintainer review and merge. ADR-0014 remains proposed pending maintainer decision. Do not begin or stack S2-T5 on this branch; after PR #5 merges, fast-forward develop, mirror the merge to GitLab, create a fresh feature/s2-durable-writer branch, and begin with the named crash-boundary proof RED."
+    },
+    {
+      "at": "2026-08-04T12:56:13Z",
+      "agent": "codex",
+      "stage": "S2",
+      "summary": "Completed S2-T5 test-first: the durable writer now enforces allocator grants and non-overlap before positional I/O, batches at the exact 2-second/8-MiB bounds, prevalidates atomic map completion, then exposes Complete only after part sync, checksummed append, and journal sync. Real files replay the exact durable batch, and ambiguous failures poison the writer for recovery.",
+      "tasks_touched": [
+        "S2-T5"
+      ],
+      "files_touched": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/downpour-storage/Cargo.toml",
+        "crates/downpour-storage/src/lib.rs",
+        "crates/downpour-storage/src/part_file.rs",
+        "crates/downpour-storage/src/writer.rs",
+        "crates/downpour-storage/tests/durable_writer.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T5 is done locally on feature/s2-durable-writer. Commit the implementation and proof, push to github and origin, open a GitHub PR against develop, and require native Windows plus Linux/security/harness checks. Do not begin or stack S2-T6 until this branch is reviewed and merged."
     }
   ],
   "metrics": {
     "corpus_cases_total": 48,
     "corpus_cases_passing": 48,
     "sim_seeds_fixed": 0,
-    "invariants_covered": 3,
+    "invariants_covered": 5,
     "invariants_total": 14,
     "silent_corruption_findings": 0
   }
