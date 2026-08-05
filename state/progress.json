@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T10:51:35Z",
+  "updated_at": "2026-08-05T10:56:37Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -319,7 +319,7 @@
           "id": "S1-C7",
           "text": "A transient transport failure mid-body is retried and the download still completes byte-correctly; Retry-After is honoured exactly; back-off is per-origin",
           "met": true,
-          "evidence": "Three corpus cases plus 15 unit tests. framing/transient-reset-is-retried: the first body request is truncated mid-transfer and the connection closed, and the download recovers to a byte-exact file - with expect.min_requests: 3 asserting a retry actually happened, without which the case would pass just as well if nothing had broken. framing/repeated-resets-exhaust-the-budget: every body fails, and the engine gives up after MAX_RETRIES instead of looping, leaving no final name (I-4). connections/retry-after-is-honoured: a 503 with Retry-After: 1 is waited out rather than replaced by our own back-off. crates/downpour-http/tests/retry_policy.rs pins the rest without a network: exact honouring of both delay-seconds and HTTP-date forms, malformed values falling back to computed back-off, absurd values clamped, the full status table including 408 as a timeout, and per-origin rather than per-worker accounting. All mutation-checked.",
+          "evidence": "Three corpus cases plus 15 unit tests. connections/transient-reset-is-retried: the first body request is truncated mid-transfer and the connection closed, and the download recovers to a byte-exact file - with expect.min_requests: 3 asserting a retry actually happened, without which the case would pass just as well if nothing had broken. connections/repeated-resets-exhaust-the-budget: every body fails, and the engine gives up after MAX_RETRIES instead of looping, leaving no final name (I-4). connections/retry-after-is-honoured: a 503 with Retry-After: 1 is waited out rather than replaced by our own back-off. crates/downpour-http/tests/retry_policy.rs pins the rest without a network: exact honouring of both delay-seconds and HTTP-date forms, malformed values falling back to computed back-off, absurd values clamped, the full status table including 408 as a timeout, and per-origin rather than per-worker accounting. All mutation-checked.",
           "invariants": [
             "I-1"
           ]
@@ -549,7 +549,7 @@
           "id": "S1-T15",
           "title": "Retry and back-off: the 'robust' half of the stage title is not implemented",
           "status": "done",
-          "proof": "crates/downpour-http/tests/retry_policy.rs (15 unit tests on the pure policy) plus three corpus cases that prove recovery end to end: framing/transient-reset-is-retried, framing/repeated-resets-exhaust-the-budget, connections/retry-after-is-honoured. The success case would have been VACUOUS on its own - it expects , which also happens when the injected failure does nothing - so expect.min_requests was added to the case format and the runner now asserts the server saw at least 3 requests (probe + failed body + retried body). Mutation-checked three ways: disabling the retry loop makes both retry cases fail WITH the min_requests message naming that no retry occurred; making the server never inject the failure makes the exhaustion case fail AND trips min_requests on the success case; and neutralising the magic-byte sniff makes the lying-content-type case fail. The corpus runner uses RetryPolicy::fast_for_tests because truncation cases now legitimately retry five times first, which at the spec's real delays cost 72 s for the case set - it is 6.6 s now, and the real values stay pinned by the unit tests. max_server_delay is deliberately NOT shortened, so retry-after-is-honoured still waits the full second the server asked for.",
+          "proof": "crates/downpour-http/tests/retry_policy.rs (15 unit tests on the pure policy) plus three corpus cases that prove recovery end to end: connections/transient-reset-is-retried, connections/repeated-resets-exhaust-the-budget, connections/retry-after-is-honoured. The success case would have been VACUOUS on its own - it expects , which also happens when the injected failure does nothing - so expect.min_requests was added to the case format and the runner now asserts the server saw at least 3 requests (probe + failed body + retried body). Mutation-checked three ways: disabling the retry loop makes both retry cases fail WITH the min_requests message naming that no retry occurred; making the server never inject the failure makes the exhaustion case fail AND trips min_requests on the success case; and neutralising the magic-byte sniff makes the lying-content-type case fail. The corpus runner uses RetryPolicy::fast_for_tests because truncation cases now legitimately retry five times first, which at the spec's real delays cost 72 s for the case set - it is 6.6 s now, and the real values stay pinned by the unit tests. max_server_delay is deliberately NOT shortened, so retry-after-is-honoured still waits the full second the server asked for.",
           "files": [
             "crates/downpour-http/src/retry.rs",
             "crates/downpour-http/src/download.rs",
@@ -2914,6 +2914,17 @@
         "state/progress.json"
       ],
       "left_in_progress": "Corpus categories now reflect docs/09's own taxonomy. S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018."
+    },
+    {
+      "at": "2026-08-05T10:56:37Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Repaired stale case paths left by the recategorisation, in the fields where a stale path actually costs something. The stage-gate procedure says evidence is 'something another person can re-run', and two S1 entries cited framing/transient-reset-is-retried and framing/repeated-resets-exhaust-the-budget — paths that stopped existing one commit earlier. An evidence field pointing at a file that is not there is not weaker evidence, it is no evidence, and the reader finds that out only when they go looking. Fixed: S1-C7 evidence, S1-T15 proof. Deliberately did NOT touch session_log, even where entries name the old paths: HARNESS.md section 3 says it is append-only and must not be rewritten to look tidier, and those entries were true when written. This is the audit the previous change made necessary — moving a file is never just moving a file.",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018."
     }
   ],
   "metrics": {
