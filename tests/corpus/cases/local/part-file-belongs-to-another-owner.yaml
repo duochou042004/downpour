@@ -1,0 +1,23 @@
+id: part-file-belongs-to-another-owner
+category: local
+description: >
+  A `.dppart` for this target already exists, which means another process holds this download.
+  Both durable artifacts are created exclusively precisely so that collision is loud: proceeding
+  would interleave two writers into one file, and neither would notice until the result was
+  garbage of exactly the right length.
+
+  Note this is the *other* side of B-29. There, a journal outliving its own verified download
+  blocked the next one and had to be deleted; here, an artifact belonging to someone else must
+  block us, and does.
+references: ["docs/04-storage-and-recovery-spec.md §2.1", "INVARIANTS.md#i-2"]
+
+local:
+  existing_part: "another process is writing here"
+
+server:
+  content: { size: 32KiB, seed: 41 }
+
+expect:
+  final_state: failed
+  error_kind: sink
+  file_renamed: false

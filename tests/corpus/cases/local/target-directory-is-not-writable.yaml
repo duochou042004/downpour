@@ -1,0 +1,22 @@
+id: target-directory-is-not-writable
+category: local
+description: >
+  The target directory cannot be written to — a read-only mount, a directory owned by someone
+  else, a policy-managed folder. The engine must fail cleanly and leave nothing behind, rather
+  than half-creating artifacts it cannot finish or reporting success for a file that does not
+  exist.
+
+  The runner refuses to report a pass for this case when the process bypasses permission checks,
+  because a green result for a check that never ran is worse than an honestly absent test.
+references: ["docs/09-testing-strategy.md §3.2", "INVARIANTS.md#i-4"]
+
+local:
+  read_only_target_dir: true
+
+server:
+  content: { size: 16KiB, seed: 42 }
+
+expect:
+  final_state: failed
+  error_kind: sink
+  file_renamed: false

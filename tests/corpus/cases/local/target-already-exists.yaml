@@ -1,0 +1,20 @@
+id: target-already-exists
+category: local
+description: >
+  The user already has a file at the final name. Overwriting it is unrecoverable — the old
+  contents are simply gone — so the engine refuses rather than replacing it, and refuses before
+  creating anything, so the directory is left exactly as it was found. Choosing a "(1)" suffix
+  instead is a policy decision, and silently making it on the user's behalf is how a download
+  manager destroys something it was never asked to touch.
+references: ["docs/04-storage-and-recovery-spec.md §7", "INVARIANTS.md#i-4"]
+
+local:
+  existing_target: "the user's own file, which must survive"
+
+server:
+  content: { size: 32KiB, seed: 40 }
+
+expect:
+  final_state: failed
+  error_kind: target_exists
+  file_renamed: true
