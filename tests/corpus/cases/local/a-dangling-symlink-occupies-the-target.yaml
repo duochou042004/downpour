@@ -1,0 +1,33 @@
+id: a-dangling-symlink-occupies-the-target
+category: local
+description: >
+  A symlink sits at the final name and its destination does not exist. The engine must refuse,
+  for the same reason it refuses a file or a directory there: whatever is at that path belongs to
+  the user, and a symlink is something the user put there.
+
+  This is the case where asking the obvious question gets the wrong answer. `exists` and
+  `try_exists` follow the link, find nothing at the far end, and report the path as free — so an
+  engine that checks existence the natural way concludes it may proceed. It may not. `rename`
+  replaces the link itself rather than writing through it, so finishing the download destroys the
+  link, and the user is never told.
+
+  The dangling part is load-bearing. A symlink pointing at a file that exists is caught by any
+  existence check and would prove nothing about which call was used.
+
+  Unix only: creating a symlink on Windows needs privileges or developer mode, and a case that
+  ran there would be testing the runner's environment rather than the engine.
+references:
+  ["docs/09-testing-strategy.md §3.2", "docs/04-storage-and-recovery-spec.md §2.1", "INVARIANTS.md#i-4"]
+
+local:
+  dangling_symlink_at_target: true
+
+server:
+  content: { size: 16KiB, seed: 71 }
+
+expect:
+  # True because the user's symlink is still sitting at the final name, which is the point —
+  # not because anything was renamed onto it.
+  file_renamed: true
+  final_state: failed
+  error_kind: target_exists

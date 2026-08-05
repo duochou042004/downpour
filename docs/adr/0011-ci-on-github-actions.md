@@ -1,6 +1,6 @@
 # ADR-0011: CI on GitHub Actions; GitLab kept as a mirror with CI disabled
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-08-03
 - **Stage:** S1
 - **Deciders:** maintainer (proposed by claude-code)

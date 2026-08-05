@@ -1,6 +1,6 @@
 # ADR-0016: Host the storage-backed sink in `downpour-http` until `downpour-engine` lands
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-08-05
 - **Stage:** S2
 - **Deciders:** maintainer (proposed by Claude Code)

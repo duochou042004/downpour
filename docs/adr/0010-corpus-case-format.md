@@ -1,6 +1,6 @@
 # ADR-0010: Declarative corpus cases over a frozen deterministic content generator
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-08-03
 - **Stage:** S1
 - **Deciders:** maintainer (proposed by claude-code)

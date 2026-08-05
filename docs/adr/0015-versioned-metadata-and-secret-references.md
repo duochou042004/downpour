@@ -1,6 +1,6 @@
 # ADR-0015: Use strict SQLite metadata with versioned CBOR evidence and secret references
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-08-04
 - **Stage:** S2
 - **Deciders:** maintainer (proposed by Codex)

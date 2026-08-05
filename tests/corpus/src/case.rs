@@ -242,6 +242,32 @@ pub struct LocalCase {
     /// result for a check that cannot fail is worse than an honestly absent one.
     #[serde(default)]
     pub read_only_target_dir: bool,
+    /// Create a *dangling* symlink at the final name — one whose destination does not exist.
+    ///
+    /// This is the case where asking "is anything there?" gets the wrong answer. `exists` and
+    /// `try_exists` both follow the link, find nothing at the far end, and report that the path
+    /// is free. It is not free: the user has a symlink there, and the rename at the end of a
+    /// download replaces the link itself rather than following it, so proceeding destroys
+    /// something the engine promised to leave alone.
+    ///
+    /// Dangling specifically, because a symlink pointing at a file that *does* exist is caught by
+    /// any existence check and proves nothing about which call was used.
+    ///
+    /// Unix only: creating a symlink on Windows needs privileges or developer mode, so a case
+    /// that ran there would be testing the runner's environment rather than the engine.
+    #[serde(default)]
+    pub dangling_symlink_at_target: bool,
+    /// Create a file holding these bytes, then a symlink at the `.dppart` path pointing at it.
+    ///
+    /// The part file is where every byte of a transfer lands, so a symlink there is the version
+    /// of this hazard that actually costs data: following it writes the whole download through
+    /// the link and over whatever the destination was. The bytes are asserted byte-identical
+    /// afterwards, which is what makes "the engine refused" distinguishable from "the engine
+    /// wrote somewhere else and said nothing".
+    ///
+    /// Unix only, for the same reason as [`Self::dangling_symlink_at_target`].
+    #[serde(default)]
+    pub symlink_at_part: Option<String>,
 }
 
 /// How a case's server treats `If-Range`.

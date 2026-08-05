@@ -220,8 +220,25 @@ impl<B: TransferProtocol> SingleStream<B> {
         // was. Refusing rather than picking a "(1)" suffix is deliberate for S1: silently
         // replacing a file the user already has is unrecoverable, and choosing a new name is a
         // policy decision that belongs with the rest of the local-collision handling in S2.
-        if tokio::fs::try_exists(&final_path).await.unwrap_or(false) {
-            return Err(DownloadError::TargetExists { path: final_path });
+        //
+        // `symlink_metadata` does not follow links, and that is the whole reason it is used here.
+        // `try_exists` and `exists` both follow: for a symlink whose destination does not exist
+        // they report the path as free, and it is not free — the rename at the end of a download
+        // replaces the link itself, so proceeding destroys something the user put there without
+        // ever saying so. Anything at this path at all, file or directory or link, broken or not,
+        // belongs to the user. Found by local/a-dangling-symlink-occupies-the-target.
+        match tokio::fs::symlink_metadata(&final_path).await {
+            Ok(_) => return Err(DownloadError::TargetExists { path: final_path }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            // A check that could not answer must never be read as "nothing is there". Permission
+            // denied on a parent, a symlink loop, or a name too long all arrive here, and the
+            // previous `unwrap_or(false)` turned every one of them into permission to proceed.
+            Err(source) => {
+                return Err(DownloadError::Io {
+                    path: final_path,
+                    source,
+                });
+            }
         }
 
         // Creating the durable artifacts is blocking work — preallocation, an exclusive create,

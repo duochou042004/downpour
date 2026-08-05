@@ -280,6 +280,45 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         }
     }
 
+    // Symlink preconditions. Both live outside the scratch directory on purpose: a link pointing
+    // *out* of the download folder is the shape the hazard actually has, and it keeps the victim
+    // clear of the content scan below, which would otherwise read a file the case placed itself.
+    let mut symlink_victim = None;
+    if case.local.dangling_symlink_at_target || case.local.symlink_at_part.is_some() {
+        if !cfg!(unix) {
+            // Creating a symlink on Windows needs privileges or developer mode. Reported as
+            // skipped rather than passed: a case that silently did not run is the failure mode
+            // docs/09 §7 exists to prevent.
+            return CaseReport {
+                id: case.id.clone(),
+                failures: Vec::new(),
+                bytes_on_disk: 0,
+                silent_corruption: false,
+                skipped: Some("symlinks cannot be created without privileges on this platform"),
+            };
+        }
+        if case.local.dangling_symlink_at_target {
+            // Deliberately never created, so the link dangles and every existence check that
+            // follows it reports the path as free.
+            let destination = beside(scratch, "-symlink-destination-that-does-not-exist");
+            if let Err(error) = make_symlink(&destination, &scratch.join("content")) {
+                return fail(format!(
+                    "could not create the dangling target symlink: {error}"
+                ));
+            }
+        }
+        if let Some(bytes) = &case.local.symlink_at_part {
+            let victim = beside(scratch, "-symlink-victim");
+            if let Err(error) = std::fs::write(&victim, bytes) {
+                return fail(format!("could not create the symlink victim: {error}"));
+            }
+            if let Err(error) = make_symlink(&victim, &scratch.join("content.dppart")) {
+                return fail(format!("could not create the part-file symlink: {error}"));
+            }
+            symlink_victim = Some((victim, bytes.clone()));
+        }
+    }
+
     // Journals live beside the data directory, never inside it: see `run_case`.
     let journal_dir = match journal_dir_beside(scratch) {
         Ok(path) => path,
@@ -382,6 +421,45 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
                 expected.len()
             )),
             Err(error) => failures.push(format!("the pre-existing target was destroyed: {error}")),
+        }
+    }
+
+    // ---- unconditional: a symlink the user had must still be a symlink.
+    //
+    // Read with `symlink_metadata`, which does not follow, because every call that does follow
+    // reports a dangling link as absent — and that confusion is the whole point of the case.
+    if case.local.dangling_symlink_at_target {
+        match std::fs::symlink_metadata(scratch.join("content")) {
+            Ok(metadata) if metadata.is_symlink() => {}
+            Ok(_) => failures.push(
+                "the dangling symlink at the final name was replaced by a real file: the engine \
+                 treated 'the destination does not exist' as 'the path is free', and the rename \
+                 destroyed a link the user put there"
+                    .to_owned(),
+            ),
+            Err(error) => failures.push(format!(
+                "the symlink at the final name is gone entirely: {error}"
+            )),
+        }
+    }
+
+    // ---- unconditional: nothing may be written through a symlink at the part path.
+    //
+    // The part file takes every byte of the transfer, so following the link would overwrite the
+    // destination with the download. Comparing the bytes is what separates "refused" from "wrote
+    // somewhere else and reported nothing".
+    if let Some((victim, expected)) = &symlink_victim {
+        match std::fs::read(victim) {
+            Ok(found) if found == expected.as_bytes() => {}
+            Ok(found) => failures.push(format!(
+                "the download was written through the symlink at the part path: the destination \
+                 holds {} bytes where {} were placed",
+                found.len(),
+                expected.len()
+            )),
+            Err(error) => failures.push(format!(
+                "the symlink destination was destroyed by the transfer: {error}"
+            )),
         }
     }
 
@@ -598,6 +676,32 @@ fn durable_ranges(journal_dir: &Path) -> Option<Vec<(u64, u64)>> {
 ///
 /// A sibling rather than a child, so nothing the runner counts or byte-compares can ever be a
 /// journal.
+/// A path beside `scratch` rather than inside it, sharing its uniqueness.
+///
+/// Used for symlink destinations, which must stay clear of the target directory so the content
+/// scan never reads a file the case placed itself.
+fn beside(scratch: &Path, suffix: &str) -> PathBuf {
+    let mut name = scratch.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Create a symlink at `link` pointing at `destination`.
+///
+/// Only ever reached on Unix — the caller reports the case as skipped elsewhere — but it has to
+/// compile everywhere, so the non-Unix arm is an honest error rather than a silent success.
+#[cfg(unix)]
+fn make_symlink(destination: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(destination, link)
+}
+
+#[cfg(not(unix))]
+fn make_symlink(_destination: &Path, _link: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "symlinks are not created on this platform",
+    ))
+}
+
 fn journal_dir_beside(scratch: &Path) -> std::io::Result<PathBuf> {
     let mut name = scratch.as_os_str().to_os_string();
     name.push("-journals");

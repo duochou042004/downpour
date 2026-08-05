@@ -1,6 +1,6 @@
 # ADR-0017: Verify RFC 9530 digests with `sha2` and `base64`
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-08-05
 - **Stage:** S2
 - **Deciders:** maintainer (proposed by Claude Code)

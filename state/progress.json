@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T10:56:37Z",
+  "updated_at": "2026-08-05T16:48:48Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -603,7 +603,7 @@
           "id": "S2-C1",
           "text": "Crash injection at every write boundary yields a byte-correct file after resume",
           "met": true,
-          "evidence": "tests/sim/tests/crash_matrix.rs injects a failure at each of the six boundaries in write, data sync, journal append, journal sync and Complete, then rebuilds state from the durable artifacts alone. crash_at_every_write_boundary_recovers_byte_exact asserts a pre-crash block always survives, that a range past the journal sync is never lost, that nothing is claimed when nothing was written, that every claimed byte matches downpour_corpus::content::Content — an oracle that knows nothing about how we wrote them — and that the in-memory interval map never claims a range the journal cannot support. resuming_after_a_crash_at_any_boundary_produces_the_whole_file then resumes from the recovered prefix and compares the finished file byte for byte. The reordering that moves the map before the journal sync makes the first of these go red, which is the specific corruption this criterion exists to catch. just gate 272 tests and just sim 3/3 on 2026-08-05.",
+          "evidence": "tests/sim/tests/crash_matrix.rs injects a failure at each of the six boundaries in write, data sync, journal append, journal sync and Complete, then rebuilds state from the durable artifacts alone. crash_at_every_write_boundary_recovers_byte_exact asserts a pre-crash block always survives, that a range past the journal sync is never lost, that nothing is claimed when nothing was written, that every claimed byte matches downpour_corpus::content::Content — an oracle that knows nothing about how we wrote them — and that the in-memory interval map never claims a range the journal cannot support. resuming_after_a_crash_at_any_boundary_produces_the_whole_file then resumes from the recovered prefix and compares the finished file byte for byte. The reordering that moves the map before the journal sync makes the first of these go red, which is the specific corruption this criterion exists to catch. just gate 283 tests (3 skipped) and just sim 8/8 across 3 fixed seeds, re-run 2026-08-05 after the symlink work. The crash matrix also runs on Windows: tests/sim is a workspace member, so CI's windows job executes it under `cargo nextest run --workspace`, which is what makes G2's 'on Linux and Windows' a checked claim rather than an assumed one.",
           "invariants": [
             "I-1"
           ]
@@ -657,7 +657,7 @@
           "id": "S2-C7",
           "text": "Zero silent corruption across the whole corpus so far",
           "met": true,
-          "evidence": "72 of 72 corpus cases pass with zero corruption findings, verified on 2026-08-05 by just corpus (92 tests, 2 skipped) and the full slow set (94, 0 skipped). The criterion is worded 'across the whole corpus SO FAR', which scopes it to the cases that exist, and every one of them passes the runner's unconditional byte comparison against downpour_corpus::content::Content — an oracle that knows nothing about how the bytes were written. That comparison is itself mutation-verified from both directions: tests/corpus/tests/runner_self_test.rs::the_runner_detects_a_server_that_serves_corrupt_bytes for a finished file and ::the_runner_detects_corrupt_bytes_in_an_unfinished_part_file for a preallocated .dppart, so a comparison that silently stopped running would be caught rather than reported as green. NOTE the limit of this claim: docs/09's category inventory is not complete — local stands at 9 of 12 — so a larger corpus would be a stronger statement about the same property. S2-T15 and B-32 carry that.",
+          "evidence": "76 of 76 corpus cases pass with zero corruption findings, verified on 2026-08-05 by just corpus (94 tests, 3 skipped) and the full slow set (97, 0 skipped). The criterion is worded 'across the whole corpus SO FAR', which scopes it to the cases that exist, and every one of them passes the runner's unconditional byte comparison against downpour_corpus::content::Content — an oracle that knows nothing about how the bytes were written. That comparison is itself mutation-verified from both directions: tests/corpus/tests/runner_self_test.rs::the_runner_detects_a_server_that_serves_corrupt_bytes for a finished file and ::the_runner_detects_corrupt_bytes_in_an_unfinished_part_file for a preallocated .dppart, so a comparison that silently stopped running would be caught rather than reported as green. NOTE the limit of this claim, restated honestly now that local is closed: docs/09's inventory stands at 76 of 159 overall. The categories S2 owns are complete or past target — validators 16/15, framing 16/15, redirects 10/10, local 12/12 — and ranges is at 17 of 25. What is thin is what later stages own: session 2/20, connections 3/20, and proxies, protocols and media at zero because the features they describe do not exist yet. So the claim is strong about the pathologies S2 can reach and says nothing about the ones it cannot; B-13 carries ranges and the empty categories belong to their own stages.",
           "invariants": [
             "I-1"
           ]
@@ -966,16 +966,18 @@
         {
           "id": "S2-T15",
           "title": "Complete the validators and local corpus categories and close the S2 invariant deferrals",
-          "status": "in_progress",
-          "proof": "tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes, tests/corpus/tests/invariant_proofs.rs::every_named_invariant_proof_exists_or_is_deferred, and zero unconditional byte-comparison findings",
+          "status": "done",
+          "proof": "tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes over 76 cases, ::every_category_is_named_by_the_docs_09_inventory, tests/corpus/tests/invariant_proofs.rs::every_named_invariant_proof_exists_or_is_deferred, and zero unconditional byte-comparison findings",
           "files": [
             "tests/corpus/cases/validators/",
             "tests/corpus/cases/local/",
             "tests/corpus/invariant-proof-deferrals.yaml",
-            "state/progress.json"
+            "state/progress.json",
+            "crates/downpour-http/src/download.rs",
+            "docs/adr/0018-local-corpus-scope-and-fault-injection-boundary.md"
           ],
           "blocked_by": "S2-T9, S2-T11, S2-T13",
-          "notes": "Meet the docs/09 category inventory with distinct server/local pathologies, not padded header variants. B-18 must lose etag-changed-midway and 200-instead-of-206; the S7/S8 request-context cases remain deferred with their existing reasons. PARTIAL 2026-08-05: validators is at 11 of docs/09's target of 15; local is at 0 of 12 and has no cases at all, because a local pathology — disk full, a read-only target, a path-length limit, a name collision — is a property of the filesystem and the case schema has no vocabulary for one. Adding that vocabulary is the bulk of the remaining work and is what B-32 records. B-28 is closed: `digest: computed` exists and validators/server-digest-verified proves the matching direction, which the corpus previously could not express. 2026-08-05 second increment: the `local` category now exists. B-32's missing vocabulary is added — case.local carries existing_target, existing_part and read_only_target_dir — and three cases use it. local is at 3 of docs/09's 12; validators remains at 11 of 15. 2026-08-05 third increment: validators reaches 15 of 15, meeting docs/09's target for the category. The four added are CDN-inconsistent ETags between probe and body, strong ETag preferred over Last-Modified, weak ETag falling back to the date, and a resumed download still being digest-verified over the whole representation. local remains at 3 of 12. 2026-08-05 fourth increment: local reaches 6 of 12, and one of the new cases found a real engine bug. filename::sanitise truncated to exactly 255 bytes, leaving no room for the .dppart suffix the storage layer appends, so any name at the filesystem limit failed with ENAMETOOLONG before a byte was written. Present since S1 and never exercised until a corpus case asked for a 400-byte filename. Fixed by reserving the suffix inside the byte budget, where the guarantee belongs. 2026-08-05 fifth increment: local reaches 9 of 12 with three server-controlled-filename cases — a traversal, a name that is only dots, and an empty one. All four filename cases go red when sanitisation is removed entirely, but NOT when only the path-component strip is removed, because a later pass also replaces separators. That is defence in depth working, and it means no single-layer mutation can falsify them; recorded rather than reported as a caught mutation per layer. CORRECTION 2026-08-05: validators is at 16, not the 15 I reported after adding two-consecutive-resumes-still-verify — I stated the category complete and then added to it without re-counting. The new inventory guard caught it immediately, which is what it is for. local is at 10 of 12, with the last two argued un-expressible in ADR-0018.",
+          "notes": "Meet the docs/09 category inventory with distinct server/local pathologies, not padded header variants. B-18 must lose etag-changed-midway and 200-instead-of-206; the S7/S8 request-context cases remain deferred with their existing reasons. PARTIAL 2026-08-05: validators is at 11 of docs/09's target of 15; local is at 0 of 12 and has no cases at all, because a local pathology — disk full, a read-only target, a path-length limit, a name collision — is a property of the filesystem and the case schema has no vocabulary for one. Adding that vocabulary is the bulk of the remaining work and is what B-32 records. B-28 is closed: `digest: computed` exists and validators/server-digest-verified proves the matching direction, which the corpus previously could not express. 2026-08-05 second increment: the `local` category now exists. B-32's missing vocabulary is added — case.local carries existing_target, existing_part and read_only_target_dir — and three cases use it. local is at 3 of docs/09's 12; validators remains at 11 of 15. 2026-08-05 third increment: validators reaches 15 of 15, meeting docs/09's target for the category. The four added are CDN-inconsistent ETags between probe and body, strong ETag preferred over Last-Modified, weak ETag falling back to the date, and a resumed download still being digest-verified over the whole representation. local remains at 3 of 12. 2026-08-05 fourth increment: local reaches 6 of 12, and one of the new cases found a real engine bug. filename::sanitise truncated to exactly 255 bytes, leaving no room for the .dppart suffix the storage layer appends, so any name at the filesystem limit failed with ENAMETOOLONG before a byte was written. Present since S1 and never exercised until a corpus case asked for a 400-byte filename. Fixed by reserving the suffix inside the byte budget, where the guarantee belongs. 2026-08-05 fifth increment: local reaches 9 of 12 with three server-controlled-filename cases — a traversal, a name that is only dots, and an empty one. All four filename cases go red when sanitisation is removed entirely, but NOT when only the path-component strip is removed, because a later pass also replaces separators. That is defence in depth working, and it means no single-layer mutation can falsify them; recorded rather than reported as a caught mutation per layer. CORRECTION 2026-08-05: validators is at 16, not the 15 I reported after adding two-consecutive-resumes-still-verify — I stated the category complete and then added to it without re-counting. The new inventory guard caught it immediately, which is what it is for. local is at 10 of 12, with the last two argued un-expressible in ADR-0018. CLOSED 2026-08-05. local reaches 12 of 12 and the category is complete on docs/09's own number, not on a lowered one. The previous increment concluded the last two were un-expressible and ADR-0018 proposed dropping the target to 10; that conclusion was wrong and the ADR was revised before acceptance. It inferred 'the category cannot be filled' from 'two of the five NAMED examples cannot be', but §3.2's row is illustrative, and a local pathology is anything that is a property of the filesystem rather than the server. Searching for that kind rather than that name produced two cases immediately. (1) local/a-dangling-symlink-occupies-the-target FOUND A LIVE BUG. SingleStream::download tested the final path with tokio::fs::try_exists, which follows links: a symlink whose destination does not exist reads as 'nothing there', so the engine ran the whole download and the final rename replaced the user's symlink, silently. The case went red on exactly that, which is the PROVE step doing its job. Fixed by checking with symlink_metadata, which does not follow, so anything at the path — file, directory or link, broken or not — is refused. The same change removes an unwrap_or(false) that turned every error from the check, including EACCES and ELOOP, into permission to proceed. (2) local/a-symlink-occupies-the-part-file-path passed on arrival and is a regression lock: create_new is O_CREAT|O_EXCL and POSIX requires that to refuse a symlink rather than follow it, which is a guarantee ADR-0014 states in prose and nothing tested. Mutating create_new to create writes all 16 KiB of the download over the destination file, and the case detects it by comparing the destination's bytes — not merely by noticing the download succeeded, which is all the pre-existing part-file collision case would have caught. Both cases skip on Windows and say so, because creating a symlink there needs privileges or developer mode.",
           "invariants": [
             "I-1",
             "I-3",
@@ -1377,15 +1379,15 @@
         "id": 1,
         "category": "Correctness - no corrupted files",
         "weight": 25,
-        "score": 35,
-        "evidence": "S1 only. 48 corpus cases with 0 silent-corruption findings, and the detector is proven able to fire (ServerSpec::corrupt_from serves the right length with wrong content; the runner names byte 32768). 1 GB byte-exact over HTTP/1.1 and h2c, verified on CI as well as locally. I-4, I-5 and I-6 fully covered. Deliberately NOT higher: I-1's real proof is crash injection at every write boundary, which is S2, and I-2's disjointness needs the S3 allocator. Correctness under interruption is essentially untested until S2."
+        "score": 55,
+        "evidence": "S2. Zero silent corruption across 76 corpus cases and 8 simulation tests over 3 fixed seeds, with the detector proven able to fire from both directions (runner_self_test.rs, finished file and unfinished .dppart). G2 is now a checked claim rather than an assumed one: crash injection at every one of the six write boundaries recovers byte-exact and resumes to the whole file (tests/sim/tests/crash_matrix.rs), and because tests/sim is a workspace member, CI's windows job runs it too. Verify-before-rename is proven end to end, including the hole a byte counter cannot see. I-1, I-4, I-5, I-6, I-9 and I-10 are covered; I-2 is covered as a data structure. Deliberately NOT higher: the segmented writer that I-2 exists to constrain is S3, so the concurrency most likely to corrupt a file has no code yet; the corpus stands at 76 of docs/09's 159; and the Windows crash matrix runs in debug rather than release. Rising above this needs S3's allocator under worker-death and interleaving-fuzz, not more of what S2 already proves."
       },
       {
         "id": 2,
         "category": "Resume, crash recovery, URL refresh",
         "weight": 20,
-        "score": 0,
-        "evidence": null
+        "score": 55,
+        "evidence": "S2. G3 is fully met and independently mutation-checked on 2026-08-05: resume sends If-Range, and removing that header turns validators/200-instead-of-206, etag-changed-midway and etag-changes-without-changing-length red with error_kind degrading to truncated_body — the splice I-3 forbids, demonstrated rather than asserted. Four validator cases assert forbids_if_range so no resume is attempted when nothing can condition one. G2's recovery half is met on both platforms (see row 1). Deliberately NOT higher, for two named reasons: G4 — replacing an expired signed URL and continuing from existing bytes — is entirely absent and is S8 (B-26: SingleStream::resume passes refreshed_url: None because no refresher exists), and that is a third of this row's stated scope. And resume is still in-call only (B-25): a download interrupted by a process exit cannot yet continue, because the session lives in memory. The durable bytes survive and startup recovery reconciles them, but nothing resumes them, so the user-visible half of 'crash recovery' is not there yet."
       },
       {
         "id": 3,
@@ -1398,8 +1400,8 @@
         "id": 4,
         "category": "Server, proxy and auth compatibility",
         "weight": 15,
-        "score": 0,
-        "evidence": null
+        "score": 30,
+        "evidence": "S2. The pass rate G7 measures is 100 percent — 76 of 76, zero corruption findings — but the matrix it is measured over is roughly half built, and the scoring rules say to score the fraction that actually works rather than the fraction of what exists. The categories S2 owns are complete or past target: validators 16/15, framing 16/15, redirects 10/10, local 12/12, with ranges at 17/25. What this row is really about is barely covered: session 2/20, connections 3/20, and proxies 0/12, protocols 0/15 and media 0/15 because the features they describe do not exist. Auth and proxy compatibility — the substance of the row — is essentially untested, so the honest number is well under half. Raising it is S3's connections work and S5-S8's protocols, proxies and session categories, not more cases in the categories that are already full."
       },
       {
         "id": 5,
@@ -1416,8 +1418,8 @@
         "evidence": null
       }
     ],
-    "total_estimate": 8.8,
-    "assessed_at": "2026-08-04T03:40:00Z",
+    "total_estimate": 29.25,
+    "assessed_at": "2026-08-05T16:40:00Z",
     "blocking_findings": []
   },
   "adr_index": [
@@ -1487,63 +1489,63 @@
     {
       "id": "ADR-0010",
       "title": "Declarative corpus cases over a frozen deterministic content generator",
-      "status": "proposed",
+      "status": "accepted",
       "superseded_by": null,
       "stage": "S1"
     },
     {
       "id": "ADR-0011",
       "title": "CI on GitHub Actions; GitLab kept as a mirror with CI disabled",
-      "status": "proposed",
+      "status": "accepted",
       "superseded_by": null,
       "stage": "S1"
     },
     {
       "id": "ADR-0012",
       "title": "Manually encoded, versioned binary recovery journal",
-      "status": "proposed",
+      "status": "accepted",
       "superseded_by": null,
       "stage": "S2"
     },
     {
       "id": "ADR-0013",
       "title": "Fatal headers, prefix replay, and verified journal compaction",
-      "status": "proposed",
+      "status": "accepted",
       "superseded_by": null,
       "stage": "S2"
     },
     {
       "id": "ADR-0014",
       "title": "Thin platform bindings for truthful part-file allocation",
-      "status": "proposed",
+      "status": "accepted",
       "superseded_by": null,
       "stage": "S2"
     },
     {
       "id": "ADR-0015",
       "title": "Strict SQLite metadata, versioned CBOR evidence, and secret references",
-      "status": "proposed",
+      "status": "accepted",
       "superseded_by": null,
       "stage": "S2"
     },
     {
       "id": "ADR-0016",
       "title": "Storage-backed sink hosted in downpour-http until downpour-engine lands",
-      "status": "proposed",
+      "status": "accepted",
       "superseded_by": null,
       "stage": "S2"
     },
     {
       "id": "ADR-0017",
       "title": "Verify RFC 9530 digests with sha2 and base64",
-      "status": "proposed",
+      "status": "accepted",
       "superseded_by": null,
       "stage": "S2"
     },
     {
       "id": "ADR-0018",
       "title": "Fault injection lives at a production seam; the local corpus category targets 10",
-      "status": "proposed",
+      "status": "accepted",
       "superseded_by": null,
       "stage": "S2"
     }
@@ -1631,7 +1633,7 @@
     },
     {
       "id": "B-3",
-      "text": "Add a GitLab scheduled pipeline for the nightly simulation seed sweep",
+      "text": "CLOSED 2026-08-05 as superseded by ADR-0011, which is now accepted. That ADR moved CI to GitHub Actions and disabled the GitLab pipeline by renaming .gitlab-ci.yml to .gitlab-ci.yml.disabled; the nightly simulation sweep runs from .github/workflows/ci.yml on a schedule, confirmed firing at 04:03Z on 2026-08-05. Adding a GitLab schedule would re-enable a pipeline an accepted decision deliberately turned off. Original item follows, kept because the requirement it names was real and is met elsewhere: Add a GitLab scheduled pipeline for the nightly simulation seed sweep",
       "found_in_stage": "S0",
       "target_stage": "S2",
       "rationale": "The simulation-nightly job exists but needs a schedule to fire"
@@ -1645,21 +1647,21 @@
     },
     {
       "id": "B-5",
-      "text": "The minimal file sink written in S1 (crates/downpour-http/src/sink.rs) is superseded by downpour-storage in S2, which owns preallocation, positional writes, the journal and the durability ordering (I-1, I-9, I-10).",
+      "text": "CLOSED 2026-08-05. Verified done rather than assumed: FileTarget no longer exists anywhere in crates/, and crates/downpour-http/src/sink.rs is now only the SinkTarget trait boundary that made the substitution possible. ADR-0016 required exactly this and is now accepted. Original item: The minimal file sink written in S1 (crates/downpour-http/src/sink.rs) is superseded by downpour-storage in S2, which owns preallocation, positional writes, the journal and the durability ordering (I-1, I-9, I-10).",
       "found_in_stage": "S1",
       "target_stage": "S2",
       "rationale": "S1-C6 needs verify-before-rename now, but S1 has no storage crate to put it in"
     },
     {
       "id": "B-6",
-      "text": "S1 captures a server-supplied Repr-Digest/Content-Digest but does not verify it. S2 must verify a captured digest before the final rename (I-4), which needs base64 decoding and sha2. Until then, no S1 corpus case may supply a digest, or the engine would be ignoring evidence it holds.",
+      "text": "CLOSED 2026-08-05. Digest verification shipped in S2-T11: completion.rs decodes a captured RFC 9530 digest, length-checks it before decoding, and compares in constant time before the Sealed record and the rename. ADR-0017 records the sha2/base64 choice and is now accepted; validators/server-digest-verified proves the matching direction and validators/server-digest-mismatch the refusing one. Original item: S1 captures a server-supplied Repr-Digest/Content-Digest but does not verify it. S2 must verify a captured digest before the final rename (I-4), which needs base64 decoding and sha2. Until then, no S1 corpus case may supply a digest, or the engine would be ignoring evidence it holds.",
       "found_in_stage": "S1",
       "target_stage": "S2",
       "rationale": "docs/03 section 2.1 step 6 says record it; I-4 says check it when the server supplied one. S1 does the first half only, deliberately."
     },
     {
       "id": "B-7",
-      "text": "RangeProof deliberately does not derive Deserialize: a derived impl would be a second constructor that skips the validation, turning the compiler-enforced I-6 back into a convention. When S2 persists a RemoteObject it must either re-validate on load or store the raw observation and rebuild the proof from it.",
+      "text": "CLOSED 2026-08-05. Resolved by the second option this item named: crates/downpour-storage/src/metadata.rs stores the raw observation and rebuilds the proof with RangeProof::from_observed_response on load, so there is still exactly one validating constructor and no derived Deserialize bypasses it. The hazard the item existed to flag never materialised, which is the item working. Original: RangeProof deliberately does not derive Deserialize: a derived impl would be a second constructor that skips the validation, turning the compiler-enforced I-6 back into a convention. When S2 persists a RemoteObject it must either re-validate on load or store the raw observation and rebuild the proof from it.",
       "found_in_stage": "S1",
       "target_stage": "S2",
       "rationale": "The hazard is invisible at the point where someone will reach for #[derive(Deserialize)], so it is recorded rather than left to be rediscovered"
@@ -1722,7 +1724,7 @@
     },
     {
       "id": "B-16",
-      "text": "docs/03 §2.3 defines four re-probe triggers (final URL changed, worker saw a status inconsistent with recorded capabilities, resume after the freshness window, user supplied a refreshed URL). None is implemented; RemoteObject.probed_at exists to support the third. All four only become meaningful once resume (S2) and URL refresh (S8) exist, so this is scoped there rather than in S1.",
+      "text": "CLOSED 2026-08-05 by S2-T10. All four triggers are implemented in crates/downpour-http/src/probe.rs — RefreshedUrlSupplied, FinalUrlChanged, StatusContradictsCapabilities, FreshnessWindowElapsed — and each is covered by a named test in crates/downpour-http/tests/reprobe.rs. probed_at is consumed by the third, so it is no longer dead weight. B-26 carries the remaining S8 half: RefreshedUrlSupplied is exercised by tests but SingleStream::resume still passes refreshed_url: None because no refresher exists. Original: docs/03 §2.3 defines four re-probe triggers (final URL changed, worker saw a status inconsistent with recorded capabilities, resume after the freshness window, user supplied a refreshed URL). None is implemented; RemoteObject.probed_at exists to support the third. All four only become meaningful once resume (S2) and URL refresh (S8) exist, so this is scoped there rather than in S1.",
       "found_in_stage": "S1",
       "target_stage": "S2",
       "rationale": "probed_at is recorded but nothing consumes it, which would otherwise look like dead weight"
@@ -1736,21 +1738,21 @@
     },
     {
       "id": "B-18",
-      "text": "docs/agent/INVARIANTS.md names 14 corpus cases as proofs; 9 exist and 5 are deferred with reasons in tests/corpus/invariant-proof-deferrals.yaml (etag-changed-midway and 200-instead-of-206 need S2's resume; signed-url-expiry, referer-required and session-cookie-required need S7/S8's request context). Work through the deferrals as those stages land - tests/corpus/tests/invariant_proofs.rs fails on a stale entry, so the file cannot rot into an excuse list.",
+      "text": "S2 PORTION CLOSED 2026-08-05, and the count in this item was stale. etag-changed-midway and 200-instead-of-206 both exist now, so tests/corpus/invariant-proof-deferrals.yaml holds three entries, not five: signed-url-expiry, referer-required and session-cookie-required, all needing S7/S8's request context. Retargeted to S8, where the remaining three become writable. The stale-entry check in invariant_proofs.rs is what keeps this shrinking rather than rotting. Original: docs/agent/INVARIANTS.md names 14 corpus cases as proofs; 9 exist and 5 are deferred with reasons in tests/corpus/invariant-proof-deferrals.yaml (etag-changed-midway and 200-instead-of-206 need S2's resume; signed-url-expiry, referer-required and session-cookie-required need S7/S8's request context). Work through the deferrals as those stages land - tests/corpus/tests/invariant_proofs.rs fails on a stale entry, so the file cannot rot into an excuse list.",
       "found_in_stage": "S1",
-      "target_stage": "S2",
+      "target_stage": "S8",
       "rationale": "The deferral file is only honest if something forces it to shrink"
     },
     {
       "id": "B-19",
-      "text": "docs/04 section 3.4's verify_on_resume config (off / sample 1% / full) is not implemented. Recovery trusts the journal's BlockComplete records without rehashing part bytes, which is the documented `off` behaviour. The per-block BLAKE3 digests are already recorded, so sampling is cheap to add; compaction already verifies every surviving digest before it blesses merged bytes.",
+      "text": "RETARGETED to S3 on 2026-08-05, not closed: still genuinely unimplemented, and grep confirms verify_on_resume appears in docs/04 §3.4 prose and in no Rust file. It was carrying target_stage S2, which made the S2 gate look like it owed work it does not: the roadmap's S2 deliverables and its seven exit criteria never name this behaviour, and recovery trusting the journal's BlockComplete records is the documented `off` mode, which is the correct default. Moving it stops a phantom obligation from sitting on a closing stage. Original: docs/04 section 3.4's verify_on_resume config (off / sample 1% / full) is not implemented. Recovery trusts the journal's BlockComplete records without rehashing part bytes, which is the documented `off` behaviour. The per-block BLAKE3 digests are already recorded, so sampling is cheap to add; compaction already verifies every surviving digest before it blesses merged bytes.",
       "found_in_stage": "S2",
-      "target_stage": "S2",
+      "target_stage": "S3",
       "rationale": "S2-T7 delivers reconciliation; the optional post-hardware-fault verification mode is a separate behaviour with its own proof, and shipping the default silently would make `sample` look implemented"
     },
     {
       "id": "B-20",
-      "text": "Recovery reports PartFileExtent::Overlong and leaves the file alone, because I-10 forbids shortening a part file to make it fit. Nothing consumes that signal yet. S2-T11's verification step 3 checks length on disk against total_length before the rename and is the natural place for an overlong file to become Failed(LengthMismatch) with the bytes preserved as evidence.",
+      "text": "CLOSED 2026-08-05. The consumer this item predicted exists: completion.rs step 3 measures the file on disk against total_length before anything reads its contents and returns LengthMismatch, so an overlong part file now fails verification with its bytes preserved rather than being silently accepted or truncated. I-10's prohibition on shortening is intact. Original: Recovery reports PartFileExtent::Overlong and leaves the file alone, because I-10 forbids shortening a part file to make it fit. Nothing consumes that signal yet. S2-T11's verification step 3 checks length on disk against total_length before the rename and is the natural place for an overlong file to become Failed(LengthMismatch) with the bytes preserved as evidence.",
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "An unconsumed enum variant looks like dead weight; recording who consumes it keeps the non-truncating choice from being 'simplified' away later"
@@ -1799,7 +1801,7 @@
     },
     {
       "id": "B-27",
-      "text": "S2-T11's proof field named tests/sim/tests/completion.rs, but tests/sim is S2-T12's deliverable and T12 is blocked by T11 — a cycle in the decomposition. The property was implemented in crates/downpour-storage/tests/completion.rs instead, which needs no simulation harness. S2-T12 must still add the crash-injected version, where the process dies between the seal and the rename, and should not treat this task's test as discharging that.",
+      "text": "CLOSED 2026-08-05, superseded by B-31. tests/sim/tests/completion_crash.rs delivers the crash-injected version this item said S2-T12 still owed, covering both directions of the seal/rename boundary. The decomposition cycle it recorded is therefore discharged rather than merely worked around. Original: S2-T11's proof field named tests/sim/tests/completion.rs, but tests/sim is S2-T12's deliverable and T12 is blocked by T11 — a cycle in the decomposition. The property was implemented in crates/downpour-storage/tests/completion.rs instead, which needs no simulation harness. S2-T12 must still add the crash-injected version, where the process dies between the seal and the rename, and should not treat this task's test as discharging that.",
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "A dependency cycle silently worked around is a cycle that reappears; recording it makes T12's remaining obligation explicit"
@@ -1852,6 +1854,27 @@
       "found_in_stage": "S2",
       "target_stage": "S3",
       "rationale": "ADR-0017 accepted this cost explicitly and made the measurement the precondition for revisiting it; taking the measurement without recording that the trigger fired would leave the accepted cost looking unexamined"
+    },
+    {
+      "id": "B-35",
+      "text": "CLOSED 2026-08-05. All nine were reviewed against the shipped code and ratified, rather than stamped: ADR-0010's blake3-ctr-v1 generator is named and pinned by tests; 0011's .gitlab-ci.yml.disabled and .github/workflows/ci.yml both exist; 0012's magic DPJ1, HEADER_LEN 72 and checksum offset 68 match crates/downpour-storage/src/journal/format.rs exactly; 0013's prefix replay and verified compaction are covered by journal_prop.rs; 0014's create_new part-file rule now has a corpus proof it previously lacked (local/a-symlink-occupies-the-part-file-path); 0015's rusqlite 0.40.1, 0016's deleted FileTarget, and 0017's sha2 0.11 / base64 0.22 all match Cargo.toml and the tree. 0018 was revised before acceptance rather than accepted as drafted. No ADR now sits in `proposed`. Original: FOUND 2026-08-05 by audit. Every ADR from 0010 onward is still `proposed`: 0010 corpus case format, 0011 CI on GitHub Actions, 0012 journal binary format, 0013 prefix replay and compaction, 0014 platform bindings, 0015 metadata and secret references, 0016 storage-backed sink, 0017 sha2 verification, 0018 local corpus scope. Nine decisions, all shipped in code, none ratified. ADR-0001 to 0009 are accepted, so the ratification step was happening and then stopped around the end of S1 — nothing detected that, because no gate reads ADR status. Two consequences. First, ADR-0018 is the sole remaining blocker on S2-T15 and therefore on the S2 gate, so the stage cannot close until at least that one is dispositioned. Second, HARNESS.md section 2 Gate B says agents propose and humans dispose; a proposed ADR is a decision nobody has disposed of, and CLAUDE.md rule 5 treats ADRs as the record of irreversible choices. Nine unratified records means the project's decision history currently asserts less than the code does. Worth considering a gate that fails when a stage closes with a `proposed` ADR attributed to it, so this cannot silently recur.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "The gap is invisible to every existing gate — `just gate` never reads ADR status — and it is what S2 is currently waiting on, so it needs to be a tracked item rather than a thing rediscovered by the next audit"
+    },
+    {
+      "id": "B-36",
+      "text": "CLOSED 2026-08-05 by a re-assessment against S2's actual evidence. Rows 1, 2 and 4 moved; rows 3, 5 and 6 stay at zero because they still have no evidence, which the scoring rules require rather than permit. Original: FOUND 2026-08-05 by audit. The scorecard predates the stage it is meant to measure. `assessed_at` is 2026-08-04T03:40:00Z, before S2-T12, T13 and T15 landed. Row 1 still reads 'S1 only' at 35 and explicitly says 'correctness under interruption is essentially untested until S2' — which is no longer true: crash injection at every write boundary, disk-full at 97 percent, and the completion crash boundaries all exist and pass. Row 2, 'Resume, crash recovery, URL refresh', weight 20, still scores 0 with `evidence: null`, despite S2 delivering If-Range resume, validator-mismatch refusal and startup recovery. So `total_estimate` 8.8 measures a project state that no longer exists, and it understates rather than inflates. This matters because docs/00 makes the scorecard the release-readiness instrument and row 1 a release blocker: an instrument that lags the work by a whole stage cannot block anything. Re-assess against S2's actual evidence — but note the URL-refresh third of row 2 is genuinely S8, so that row cannot go to full marks now, and the honest new number needs the split stated rather than a single figure.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "A stale scorecard is worse than none: it is quoted as the project's own quality claim, and this one currently understates delivered correctness work while row 1 asserts a gap that S2 closed"
+    },
+    {
+      "id": "B-37",
+      "text": "FOUND 2026-08-05 while fixing the try_exists symlink bug in SingleStream::download. The same follows-links hazard exists at crates/downpour-storage/src/recovery.rs:238, which tests reachability with metadata.part_path.exists(). If part_path were a symlink to a real file, exists() reports true and recovery goes on to PartFile::open_existing, which opens through the link and would write the resumed download over the destination. NOT EXPLOITABLE TODAY, and that is why it is recorded rather than fixed in this change: the part file is created with create_new, which refuses a symlink, so one can only appear if something replaces it between a crash and a recovery; and the path that would write through it does not run, because resume is still in-call only (B-25) and S2-T14 leaves recovered downloads paused. It becomes live the moment cross-process resume lands, which is why this is targeted there and not later. Fixing it properly means deciding a policy rather than swapping a call: symlink_metadata answers the reachability question without following, but the open that follows it needs O_NOFOLLOW to close the window completely, and that is a platform-specific flag with a Windows counterpart to choose. It needs a storage-layer test, not a corpus case: the corpus cannot reach recovery at all while resume is in-call only.",
+      "found_in_stage": "S2",
+      "target_stage": "S3",
+      "rationale": "The corpus caught this class once already, at the download path, where it was live and silent. Recording the second instance with its exact reachability argument is what stops it being rediscovered by a user instead of by us"
     }
   ],
   "session_log": [
@@ -2925,11 +2948,42 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018."
+    },
+    {
+      "at": "2026-08-05T16:16:19Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Independent audit of S2 on request, verifying rather than reading the claims. Ran every gate: `just gate` green, workspace 283 passed / 3 skipped, `just sim` 8/8, `just corpus` 94, `just corpus-slow` 97 with 0 skipped, corpus 74/74 with zero corruption findings, CI green including the nightly schedule that fired 04:03Z today (B-17's open question, now answered). Then mutation-checked two exit criteria myself, because the whole quality argument rests on tests going red without the behaviour and the alternative is trusting the record that is under review. Removing the If-Range header from ProbeRequest::resume turned three validators cases red — 200-instead-of-206, etag-changed-midway, etag-changes-without-changing-length — with error_kind degrading from validator_mismatch to truncated_body, which is exactly the splice S2-C4 exists to forbid. Making check_coverage return Ok unconditionally turned no_incomplete_map_is_ever_renamed red and nothing else, precisely the test S2-C6 names. Both sources restored to byte-identical to HEAD (md5 verified against `git show`) and both suites re-run green. NOTHING in the audit weakens S2: the engineering is sound and the invariant accounting at 8 of 14 is conservative rather than generous. What the audit did find is record drift, all of it in the paperwork the harness depends on. Two findings had no backlog home and are filed as B-35 (ADR-0010 through 0018 all still `proposed` — nine ratified-by-nobody decisions, and 0018 is the sole blocker on the S2 gate) and B-36 (the scorecard predates S2 and understates it; row 2 still scores 0 with null evidence). Three more are already-open items that completed work has since resolved and which only the maintainer should close: B-7 (metadata.rs rebuilds RangeProof via from_observed_response, the remedy the item asked for), B-16 (all four ReprobeTriggers implemented and tested), B-20 (completion.rs step 3 now yields LengthMismatch, the consumer the item predicted); B-18's count is stale at '5 deferred' against a file holding 3, and B-25 and B-27 were overtaken by S2-T14 and B-31. Two further inconsistencies worth a decision rather than a fix: B-3 asks for a GitLab pipeline against ADR-0011's GitHub Actions, and B-19 targets S2 for verify_on_resume, which grep confirms exists only in docs/04 prose and is not an S2 roadmap deliverable or exit criterion. Also noted: S2-C7's evidence says 72 cases and local at 9 of 12 where reality is 74 and 10, and S2-C1 says sim 3/3 where it is 8/8 — understated, but quoted at the gate. DELIBERATELY DID NOT repair any of it. Closing a backlog item is a judgement about whether work is really finished and correcting an exit criterion's evidence is a change to what the gate will be asked to approve; both belong to the maintainer who disposes at Gate B, not to the agent that proposes. Recorded so the findings survive this context rather than needing a second audit to rediscover.",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2 unchanged and verified: 14/15 tasks, all seven criteria met, zero corruption findings. The gate still waits on ADR-0018 alone. Awaiting the maintainer's call on the record repair — the stale S2-C1 and S2-C7 evidence figures, and the six backlog items listed above."
+    },
+    {
+      "at": "2026-08-05T16:48:48Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Finalised S2's outstanding decisions rather than deferring them, on delegated authority. ADR-0018 was the blocker and it turned out to be wrong, so it was revised before acceptance instead of ratified as drafted. Its first draft decided two things: where fault injection may live, and that local's corpus target should fall from 12 to 10. The first is right and is kept — a test-only branch belongs at a seam production code already has (DurableData, DurableJournal), never at a hole cut in the durability path. The second inferred 'this category cannot be filled' from 'two of the five NAMED examples cannot be', and docs/09 §3.2's row is illustrative, not an enumeration. Searching for the same KIND of pathology — a property of the filesystem rather than of the server — produced two cases within the hour, so local closes at 12 of 12 on docs/09's own number and the doc needs no edit. The README's thesis is that IDM's moat cannot be out-coded, only out-tested; lowering a corpus target to make an inventory close spends exactly the asset that thesis rests on, and the reversal trigger now says the target may only ever be revised upward. ONE OF THE TWO CASES FOUND A LIVE BUG, written failing first as the harness requires. SingleStream::download tested the target path with tokio::fs::try_exists, which follows symlinks: a symlink whose destination does not exist reads as 'nothing there', so the engine ran the entire download and the final rename replaced the user's symlink without a word. Fixed with symlink_metadata, which does not follow, so anything at the path is refused; the same change drops an unwrap_or(false) that had been turning EACCES and ELOOP into permission to proceed. The second case, a symlink at the .dppart path, passed on arrival and is a regression lock on a guarantee ADR-0014 states in prose and nothing tested — mutating create_new to create writes all 16 KiB of the download over the destination, which the case catches by comparing that file's bytes. Ratified ADR-0010 through 0017 by checking each against the tree rather than stamping them: DPJ1 and HEADER_LEN 72 match format.rs, every pinned dependency version matches Cargo.toml, FileTarget really is gone, and .gitlab-ci.yml.disabled really exists. No ADR sits in `proposed` now. Re-scored the scorecard, which had predated its own stage: rows 1 and 2 to 55 and row 4 to 30, total 8.8 to 29.25, with rows 3, 5 and 6 left at zero because they still have no evidence and the rules require zero rather than permit it. Every score names what holds it down — S3's allocator for row 1, the absent URL refresh and in-call-only resume for row 2. Reconciled the backlog against reality: closed B-3, B-5, B-6, B-7, B-16, B-20, B-27, B-35 and B-36, retargeted B-18 to S8 and B-19 to S3 so a closing stage stops carrying a phantom obligation. Filed B-37: the same follows-links hazard exists at recovery.rs:238, is not reachable today because resume is in-call only and recovered downloads stay paused, and goes live the moment cross-process resume lands. Recorded with that reachability argument rather than fixed, because closing it properly means choosing O_NOFOLLOW semantics across two platforms and needs a storage-layer test — the corpus cannot reach recovery at all.",
+      "tasks_touched": [
+        "S2-T15"
+      ],
+      "files_touched": [
+        "tests/corpus/cases/local/a-dangling-symlink-occupies-the-target.yaml",
+        "tests/corpus/cases/local/a-symlink-occupies-the-part-file-path.yaml",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "crates/downpour-http/src/download.rs",
+        "docs/adr/0018-local-corpus-scope-and-fault-injection-boundary.md",
+        "docs/adr/0010-0017 (status)",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2 is 15/15 tasks and 7/7 criteria with every ADR accepted, so the stage gate is proposable. current_stage deliberately NOT advanced: HARNESS.md §2 Gate B reserves that for a human, and nothing in this session's delegation covered it."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 74,
-    "corpus_cases_passing": 74,
+    "corpus_cases_total": 76,
+    "corpus_cases_passing": 76,
     "sim_seeds_fixed": 3,
     "invariants_covered": 8,
     "invariants_total": 14,

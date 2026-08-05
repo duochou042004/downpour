@@ -1,0 +1,33 @@
+id: a-symlink-occupies-the-part-file-path
+category: local
+description: >
+  A symlink sits where the `.dppart` file will go, pointing at a file outside the download
+  directory. The part file is where every byte of a transfer lands, so this is the version of the
+  hazard that costs data: an engine that opens the part file without `O_EXCL` follows the link
+  and writes the entire download over the destination.
+
+  The guarantee holds today, and it holds for a reason worth pinning down: the part file is
+  created with `create_new`, which is `O_CREAT | O_EXCL`, and POSIX requires that combination to
+  refuse a symlink — dangling or not — rather than follow it. That is one call away from being
+  wrong. `create` in place of `create_new` compiles, passes every other case in this corpus, and
+  silently destroys a file the user never connected to the download.
+
+  The destination is checked byte for byte afterwards. "The download failed" is not the claim;
+  the claim is that it failed without writing somewhere it was never asked to write.
+
+  Unix only, for the same reason as `a-dangling-symlink-occupies-the-target`.
+references:
+  ["docs/09-testing-strategy.md §3.2", "docs/04-storage-and-recovery-spec.md §2.1", "INVARIANTS.md#i-4"]
+
+local:
+  symlink_at_part: "a file the user cares about, which this download must never touch"
+
+server:
+  content: { size: 16KiB, seed: 72 }
+
+expect:
+  # The symlink at the part path is not a finished file, but it does not end in .dppart either
+  # from the runner's point of view — it is exactly the name the engine would have created.
+  file_renamed: false
+  final_state: failed
+  error_kind: sink
