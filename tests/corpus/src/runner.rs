@@ -240,6 +240,13 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
     {
         return fail(format!("could not create the existing part file: {error}"));
     }
+    if case.local.existing_target_directory
+        && let Err(error) = std::fs::create_dir(scratch.join("content"))
+    {
+        return fail(format!(
+            "could not create the existing target directory: {error}"
+        ));
+    }
     if case.local.read_only_target_dir {
         if !cfg!(unix) {
             // Not a pass and not a failure: the precondition cannot be expressed here at all.

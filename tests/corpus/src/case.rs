@@ -223,6 +223,14 @@ pub struct LocalCase {
     /// of two writers into one file.
     #[serde(default)]
     pub existing_part: Option<String>,
+    /// Create a *directory* at the final name before the download starts.
+    ///
+    /// Distinct from `existing_target`: the filesystem calls behave differently — the exclusive
+    /// create fails with `EISDIR` rather than `EEXIST`, and a rename onto a non-empty directory
+    /// fails at the end rather than the start — while the requirement is identical, because
+    /// whatever is there belongs to the user either way.
+    #[serde(default)]
+    pub existing_target_directory: bool,
     /// Make the target directory unwritable before the download starts.
     ///
     /// Unix only, and deliberately so rather than by accident: Windows' read-only attribute on a
