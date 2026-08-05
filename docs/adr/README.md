@@ -69,6 +69,7 @@ it is an opinion with a number.
 | [0015](0015-versioned-metadata-and-secret-references.md) | Strict SQLite metadata, versioned CBOR evidence, and secret references | proposed | S2 |
 | [0016](0016-storage-backed-sink-in-http-until-the-engine-lands.md) | Storage-backed sink hosted in `downpour-http` until `downpour-engine` lands | proposed | S2 |
 | [0017](0017-sha2-and-base64-for-rfc-9530-verification.md) | Verify RFC 9530 digests with `sha2` and `base64` | proposed | S2 |
+| [0018](0018-local-corpus-scope-and-fault-injection-boundary.md) | Fault injection lives at a production seam; `local` targets 10 | proposed | S2 |
 
 ## Rules
 
