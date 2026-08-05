@@ -6,7 +6,7 @@
 
 *Open source. Apache-2.0. Built from scratch, in stages, in Rust.*
 
-[![Stage](https://img.shields.io/badge/stage-S1%20single--stream%20downloader-blue?style=flat-square)](docs/12-roadmap-stages.md)
+[![Stage](https://img.shields.io/badge/stage-S2%20range%20%C2%B7%20resume%20%C2%B7%20crash%20safety-blue?style=flat-square)](docs/12-roadmap-stages.md)
 [![Status](https://img.shields.io/badge/status-engine%20in%20progress-orange?style=flat-square)](state/progress.json)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.97%2B-000000?style=flat-square&logo=rust&logoColor=white)](rust-toolchain.toml)
@@ -14,8 +14,8 @@
 
 [![CI](https://github.com/duochou042004/downpour/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/duochou042004/downpour/actions/workflows/ci.yml)
 [![Invariants](https://img.shields.io/badge/invariants-14-critical?style=flat-square)](docs/agent/INVARIANTS.md)
-[![ADRs](https://img.shields.io/badge/ADRs-11-purple?style=flat-square)](docs/adr/README.md)
-[![Corpus](https://img.shields.io/badge/corpus-42%20%2F%20159%20planned-lightgrey?style=flat-square)](docs/09-testing-strategy.md)
+[![ADRs](https://img.shields.io/badge/ADRs-18-purple?style=flat-square)](docs/adr/README.md)
+[![Corpus](https://img.shields.io/badge/corpus-73%20%2F%20159%20planned-lightgrey?style=flat-square)](docs/09-testing-strategy.md)
 [![Silent corruption](https://img.shields.io/badge/silent%20corruption-0-brightgreen?style=flat-square)](docs/00-vision-and-scorecard.md)
 
 [![Agents](https://img.shields.io/badge/built%20with-Claude%20Code%20%2B%20Codex-8A2BE2?style=flat-square)](docs/agent/HARNESS.md)
@@ -25,10 +25,11 @@
 
 ---
 
-> **Status: Stage 0 — Foundations.** There is no production code yet, and that is deliberate.
-> This repository currently holds the specification, the decision record, and the operating
-> harness that the engineering work will be built against.
-> [`state/progress.json`](state/progress.json) is the authoritative status of every stage.
+> **Status: Stage 2 — range, resume, validators, crash-safe storage.** S0 and S1 are complete
+> and merged. S2 has all seven of its exit criteria met and one task open; the gate itself is
+> not open, because a stage advances only when a human says so.
+> [`state/progress.json`](state/progress.json) is the authoritative status of every stage, and
+> it is what these badges are read from — if they ever disagree, believe the file.
 
 ---
 
@@ -248,7 +249,15 @@ intact.
 
 ## Getting started
 
-Nothing to install yet — Stage 1 is the first runnable binary. To work on the project:
+`dp` builds and downloads today. It is not packaged, and the daemon that is supposed to own the
+transfer does not exist yet — `dp add` performs it in-process, which
+[backlog B-4](state/progress.json) records as a stage-1 shape rather than the intended one.
+
+```bash
+cargo run -p downpour-cli -- add https://example.com/file.iso -o ~/Downloads
+```
+
+To work on the project:
 
 ```bash
 git clone https://gitlab.com/duochou042004/downpour.git
@@ -272,7 +281,10 @@ itself.
 | [`plugins/`](plugins/README.md) | Dual-agent plugin marketplace (Claude Code + Codex). |
 | `.claude/` · `.codex/` · `.agents/` | Per-agent configuration. |
 | `.githooks/` | Agent-agnostic enforcement at the commit boundary. |
-| `crates/` · `extensions/` · `tests/corpus/` | *(Stage 1+)* |
+| [`crates/`](crates/) | `downpour-types`, `-intervals`, `-storage`, `-http`, `-daemon`, `-cli` |
+| [`tests/corpus/`](tests/corpus/) | The compatibility corpus: declarative cases and the pathology server |
+| [`tests/sim/`](tests/sim/) | Deterministic crash and disk-full simulation |
+| `extensions/` | *(Stage 7)* |
 
 ## Built by AI agents, on purpose
 

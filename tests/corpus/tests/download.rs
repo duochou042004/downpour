@@ -598,3 +598,49 @@ async fn the_same_url_can_be_downloaded_twice() {
     assert_eq!(Content::new(42, SIZE).first_mismatch(0, &bytes), None);
     assert_eq!(scratch.journal_bytes(), None);
 }
+
+/// A failed download does not poison its URL. Regression test for B-30.
+///
+/// The mirror of `the_same_url_can_be_downloaded_twice`, which covered B-29. There a
+/// *successful* download's journal blocked the next attempt; here a *failed* one does, and the
+/// user-facing fault is the same and worse — the download the user most wants to retry is the
+/// one that failed.
+///
+/// A failed download keeps its journal deliberately: it is evidence, and a resume depends on it.
+/// What must not happen is that evidence blocking a fresh attempt. The part file is created
+/// exclusively, so getting past it proves no other owner holds this target — which makes any
+/// journal still sitting there orphaned, and safe to replace.
+#[tokio::test]
+async fn a_failed_download_does_not_block_a_later_attempt_at_the_same_url() {
+    // ONE server, so both attempts resolve to the same final URL and therefore the same journal
+    // path — which is the whole point. Two servers would sit on different ports, produce
+    // different URLs, and never collide, so the test would pass without exercising anything.
+    //
+    // The budget is larger than MAX_RETRIES, so the first download exhausts its retries and
+    // fails; by the second the budget is spent and the transfer succeeds.
+    let server = PathologyServer::start(ServerSpec {
+        transient_body_failures: 8,
+        ..spec()
+    })
+    .await
+    .expect("server starts");
+    let scratch = Scratch::new("retry-after-failure");
+
+    let _ = run(&server, &scratch, TransportMode::Http1Only)
+        .await
+        .expect_err("the retry budget is exhausted");
+    assert!(
+        scratch.journal_bytes().is_some(),
+        "a failed download keeps its journal as evidence"
+    );
+
+    // The user clears the partial file and tries the same URL again. The journal from the failed
+    // attempt is still sitting at the same path, and must not stop them.
+    std::fs::remove_file(scratch.path().join("content.dppart")).expect("remove the partial");
+    let path = run(&server, &scratch, TransportMode::Http1Only)
+        .await
+        .expect("the retry must not be blocked by the failed attempt's journal");
+
+    let bytes = std::fs::read(&path).expect("read");
+    assert_eq!(Content::new(42, SIZE).first_mismatch(0, &bytes), None);
+}

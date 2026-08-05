@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T09:48:44Z",
+  "updated_at": "2026-08-05T10:01:43Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1820,7 +1820,7 @@
     },
     {
       "id": "B-30",
-      "text": "A download that FAILS still leaves its journal in the shared state directory, correctly — it is evidence and a resume depends on it. Nothing ever removes those. Eight full-workspace runs left eight journals behind, so a real user accumulates one file per failed download forever. docs/04 section 8 defines cleanup and retention and is unimplemented; it needs an age or count bound, and a `dp` command to list and discard abandoned downloads. Distinct from B-29, which was about journals surviving SUCCESSFUL downloads and blocking the next one.",
+      "text": "PROMOTED AND FIXED 2026-08-05. Filed as an S3 tidiness item about unbounded journal growth; it was actually the same user-facing fault as B-29 reached from the other side. A FAILED download keeps its journal deliberately, because it is evidence a resume depends on — but that journal then collided with the next attempt's exclusive create, so one failure poisoned its URL forever and the download the user most wants to retry is exactly the one they could not. It resurfaced as the same intermittent dp_add failure B-29 produced, because leaked journals accumulate and recycled ephemeral ports reproduce a final URL. Fixed in StorageSink::create: the part file is created exclusively first, so getting past it proves no other owner holds this target, which makes any journal still at that path orphaned — it has no part file to protect and nothing can be resumed from it — and safe to replace. Regression test tests/corpus/tests/download.rs::a_failed_download_does_not_block_a_later_attempt_at_the_same_url, which uses ONE server so both attempts resolve to the same URL; a first version used two and passed without exercising anything. Verified with four full-workspace runs under 16-core saturation at 48 test threads. The retention policy of docs/04 section 8 remains unimplemented and is now the only part of this entry left, targeted at S3.",
       "found_in_stage": "S2",
       "target_stage": "S3",
       "rationale": "Found while verifying the B-29 fix. Unbounded growth in a user's home directory is a real defect even though each individual retention is correct"
@@ -2807,6 +2807,20 @@
         "state/progress.json"
       ],
       "left_in_progress": "B-31 and B-27 are both closed. S2 remains at 14/15 tasks with all seven criteria met; the gate waits only on ADR-0018 being accepted or rejected, which decides how S2-T15 closes. Nothing else in S2 is blocked on anything."
+    },
+    {
+      "at": "2026-08-05T10:01:43Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Refreshed the README, which still claimed 'Stage 0 — Foundations. There is no production code yet' next to five crates and 282 tests, and while doing it the gate went red on the same dp_add test B-29 produced. The cause was B-30, which I had filed as S3 tidiness about unbounded journal growth and which was actually the same user-facing fault reached from the other side: a FAILED download keeps its journal as evidence, that journal collides with the next attempt's exclusive create, and so one failure poisons its URL forever — the download a user most wants to retry being exactly the one they cannot. Fixed in StorageSink::create by treating a journal whose part file no longer exists as orphaned and replacing it; the part file is created exclusively first, so getting past it already proves no other owner holds the target. The regression test needed fixing too: the first version used two pathology servers, which sit on different ports and therefore produce different URLs and different journal names, so it passed without exercising the collision at all. One server reproduces it. Verified with four full-workspace runs under 16-core saturation at 48 test threads, and by reverting the fix, which makes the test red. Deliberately did not touch invariants_covered in the metrics: raising it without the audit B-12 demands is the inflation B-12 exists to prevent.",
+      "tasks_touched": [],
+      "files_touched": [
+        "crates/downpour-http/src/storage_sink.rs",
+        "tests/corpus/tests/download.rs",
+        "README.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "B-30's collision half is fixed; its retention half — docs/04 section 8, an age or count bound on journals from failed downloads — remains open and targeted at S3. S2 is at 14/15 tasks with all seven criteria met, and the gate still waits only on ADR-0018 deciding how S2-T15 closes."
     }
   ],
   "metrics": {
