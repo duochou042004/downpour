@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T10:32:52Z",
+  "updated_at": "2026-08-05T10:46:10Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -975,7 +975,7 @@
             "state/progress.json"
           ],
           "blocked_by": "S2-T9, S2-T11, S2-T13",
-          "notes": "Meet the docs/09 category inventory with distinct server/local pathologies, not padded header variants. B-18 must lose etag-changed-midway and 200-instead-of-206; the S7/S8 request-context cases remain deferred with their existing reasons. PARTIAL 2026-08-05: validators is at 11 of docs/09's target of 15; local is at 0 of 12 and has no cases at all, because a local pathology — disk full, a read-only target, a path-length limit, a name collision — is a property of the filesystem and the case schema has no vocabulary for one. Adding that vocabulary is the bulk of the remaining work and is what B-32 records. B-28 is closed: `digest: computed` exists and validators/server-digest-verified proves the matching direction, which the corpus previously could not express. 2026-08-05 second increment: the `local` category now exists. B-32's missing vocabulary is added — case.local carries existing_target, existing_part and read_only_target_dir — and three cases use it. local is at 3 of docs/09's 12; validators remains at 11 of 15. 2026-08-05 third increment: validators reaches 15 of 15, meeting docs/09's target for the category. The four added are CDN-inconsistent ETags between probe and body, strong ETag preferred over Last-Modified, weak ETag falling back to the date, and a resumed download still being digest-verified over the whole representation. local remains at 3 of 12. 2026-08-05 fourth increment: local reaches 6 of 12, and one of the new cases found a real engine bug. filename::sanitise truncated to exactly 255 bytes, leaving no room for the .dppart suffix the storage layer appends, so any name at the filesystem limit failed with ENAMETOOLONG before a byte was written. Present since S1 and never exercised until a corpus case asked for a 400-byte filename. Fixed by reserving the suffix inside the byte budget, where the guarantee belongs. 2026-08-05 fifth increment: local reaches 9 of 12 with three server-controlled-filename cases — a traversal, a name that is only dots, and an empty one. All four filename cases go red when sanitisation is removed entirely, but NOT when only the path-component strip is removed, because a later pass also replaces separators. That is defence in depth working, and it means no single-layer mutation can falsify them; recorded rather than reported as a caught mutation per layer.",
+          "notes": "Meet the docs/09 category inventory with distinct server/local pathologies, not padded header variants. B-18 must lose etag-changed-midway and 200-instead-of-206; the S7/S8 request-context cases remain deferred with their existing reasons. PARTIAL 2026-08-05: validators is at 11 of docs/09's target of 15; local is at 0 of 12 and has no cases at all, because a local pathology — disk full, a read-only target, a path-length limit, a name collision — is a property of the filesystem and the case schema has no vocabulary for one. Adding that vocabulary is the bulk of the remaining work and is what B-32 records. B-28 is closed: `digest: computed` exists and validators/server-digest-verified proves the matching direction, which the corpus previously could not express. 2026-08-05 second increment: the `local` category now exists. B-32's missing vocabulary is added — case.local carries existing_target, existing_part and read_only_target_dir — and three cases use it. local is at 3 of docs/09's 12; validators remains at 11 of 15. 2026-08-05 third increment: validators reaches 15 of 15, meeting docs/09's target for the category. The four added are CDN-inconsistent ETags between probe and body, strong ETag preferred over Last-Modified, weak ETag falling back to the date, and a resumed download still being digest-verified over the whole representation. local remains at 3 of 12. 2026-08-05 fourth increment: local reaches 6 of 12, and one of the new cases found a real engine bug. filename::sanitise truncated to exactly 255 bytes, leaving no room for the .dppart suffix the storage layer appends, so any name at the filesystem limit failed with ENAMETOOLONG before a byte was written. Present since S1 and never exercised until a corpus case asked for a 400-byte filename. Fixed by reserving the suffix inside the byte budget, where the guarantee belongs. 2026-08-05 fifth increment: local reaches 9 of 12 with three server-controlled-filename cases — a traversal, a name that is only dots, and an empty one. All four filename cases go red when sanitisation is removed entirely, but NOT when only the path-component strip is removed, because a later pass also replaces separators. That is defence in depth working, and it means no single-layer mutation can falsify them; recorded rather than reported as a caught mutation per layer. CORRECTION 2026-08-05: validators is at 16, not the 15 I reported after adding two-consecutive-resumes-still-verify — I stated the category complete and then added to it without re-counting. The new inventory guard caught it immediately, which is what it is for. local is at 10 of 12, with the last two argued un-expressible in ADR-0018.",
           "invariants": [
             "I-1",
             "I-3",
@@ -2886,6 +2886,20 @@
         "state/progress.json"
       ],
       "left_in_progress": "B-34 now carries both the measurement and the reason the obvious fix is a trap. S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018."
+    },
+    {
+      "at": "2026-08-05T10:46:10Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Added an inventory guard that checks every corpus category directory against docs/09 section 3.2's table and prints the per-category standing every run. Until now those targets lived only in prose, so a category could sit at a third of its number indefinitely and the only way to notice was counting directories by hand — the same silent rot the invariant-proof deferrals guard prevents, one level up. It caught two things immediately. First, my own bookkeeping: validators is at 16, not the 15 I reported, because I declared the category complete and then added two-consecutive-resumes-still-verify without re-counting. Second, my own test: the first version asserted an upper bound and failed on framing at 19 and validators at 16, but docs/09's column is headed 'initial target', so a category growing past its initial number is the corpus doing its job rather than drift. The guard now fails on exactly one thing — a category directory docs/09 does not name, which catches a misspelling or a case filed under a category that does not exist — and reports everything else. Standing is 74 of 159 planned: ranges 17/25, validators 16/15, framing 19/15, session 1/20, connections 1/20, redirects 10/10, proxies 0/12, protocols 0/15, local 10/12, media 0/15.",
+      "tasks_touched": [
+        "S2-T15"
+      ],
+      "files_touched": [
+        "tests/corpus/tests/corpus_cases.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "The corpus inventory is now machine-visible rather than prose. S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018. The empty categories — proxies, protocols, media — are all gated on features that do not exist yet (S5 through S9), which the printed table now makes obvious at a glance."
     }
   ],
   "metrics": {

@@ -144,3 +144,82 @@ fn the_recorded_case_count_matches_reality() {
         cases.len()
     );
 }
+
+/// Every category's case count is checked against `docs/09-testing-strategy.md`'s inventory.
+///
+/// The totals in that table are the corpus's plan, and until now nothing compared them to what
+/// exists — so a category could sit at a third of its target indefinitely and the only way to
+/// notice was to count directories by hand. That is the same silent rot the invariant-proof
+/// deferrals guard exists to prevent, one level up: a number nobody checks stops being a number
+/// anyone can act on.
+///
+/// It fails on exactly one thing: a category directory docs/09 does not name. That catches a
+/// misspelled directory and a case filed under a category that does not exist, both of which
+/// otherwise sit there being counted in the total while belonging to nothing.
+///
+/// It deliberately does NOT fail on a shortfall, nor on an overshoot. docs/09's column is headed
+/// "initial target": categories fill stage by stage — `proxies` and `media` cannot have cases
+/// before the features they describe exist — and a category that grows past its initial number
+/// is the corpus doing its job, not drift. The first version of this test asserted an upper
+/// bound and immediately failed on `framing` at 19 and `validators` at 16, which is the test
+/// being wrong rather than the corpus.
+#[test]
+fn every_category_is_named_by_the_docs_09_inventory() {
+    // docs/09-testing-strategy.md §3.2's table, transcribed. If that table changes, this changes
+    // with it — which is the point: the transcription is what makes the drift visible.
+    let inventory: [(&str, usize); 10] = [
+        ("ranges", 25),
+        ("validators", 15),
+        ("framing", 15),
+        ("session", 20),
+        ("connections", 20),
+        ("redirects", 10),
+        ("proxies", 12),
+        ("protocols", 15),
+        ("local", 12),
+        ("media", 15),
+    ];
+
+    let cases_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("cases");
+    let mut on_disk: Vec<(String, usize)> = std::fs::read_dir(&cases_dir)
+        .expect("the cases directory is readable")
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| {
+            let count = std::fs::read_dir(entry.path())
+                .expect("a category directory is readable")
+                .filter_map(std::result::Result::ok)
+                .filter(|f| f.path().extension().and_then(|e| e.to_str()) == Some("yaml"))
+                .count();
+            (entry.file_name().to_string_lossy().into_owned(), count)
+        })
+        .collect();
+    on_disk.sort();
+
+    let mut problems: Vec<String> = Vec::new();
+    for (name, count) in &on_disk {
+        let Some((_, target)) = inventory.iter().find(|(n, _)| n == name) else {
+            problems.push(format!(
+                "category {name:?} has {count} case(s) but docs/09 §3.2 does not name it — \
+                 either the directory is misspelled or the inventory needs updating"
+            ));
+            continue;
+        };
+        let _ = target;
+    }
+
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+
+    // Printed every run so the shortfalls are visible rather than something to go and count.
+    let filled: usize = on_disk.iter().map(|(_, c)| c).sum();
+    let planned: usize = inventory.iter().map(|(_, t)| t).sum();
+    println!("corpus inventory: {filled} of {planned} planned");
+    for (name, target) in inventory {
+        let have = on_disk
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(0, |(_, c)| *c);
+        let mark = if have >= target { "met" } else { "   " };
+        println!("  {mark} {name:<12} {have:>3} / {target}");
+    }
+}
