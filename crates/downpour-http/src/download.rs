@@ -20,11 +20,13 @@ use thiserror::Error;
 use url::Url;
 
 use crate::error::{ProbeError, TransferError};
+use crate::probe::{ReprobePolicy, ResumePlan};
 use crate::protocol::{ProbeRequest, RangeRequest, TransferProtocol};
 use crate::retry::{RetryDecision, RetryPolicy, RetryState, TransientKind};
 use crate::sink::{RangeSink, SinkError};
 use crate::storage_sink::{Artifacts, StorageSink};
-use downpour_types::ByteRangeSpec;
+use downpour_types::{ByteRangeSpec, RemoteObject};
+use std::time::SystemTime;
 
 /// Extension for a download in progress. Never the final name (I-4).
 pub const PART_EXTENSION: &str = "dppart";
@@ -70,6 +72,7 @@ impl StorageLayout {
 pub struct SingleStream<B> {
     backend: B,
     policy: RetryPolicy,
+    reprobe: ReprobePolicy,
 }
 
 impl<B: TransferProtocol> SingleStream<B> {
@@ -78,7 +81,15 @@ impl<B: TransferProtocol> SingleStream<B> {
         Self {
             backend,
             policy: RetryPolicy::default(),
+            reprobe: ReprobePolicy::default(),
         }
+    }
+
+    /// Override the capability freshness policy. Tests use this to force a re-probe.
+    #[must_use]
+    pub fn with_reprobe_policy(mut self, reprobe: ReprobePolicy) -> Self {
+        self.reprobe = reprobe;
+        self
     }
 
     /// Override the retry policy. Tests use this to shrink the delays.
@@ -252,6 +263,8 @@ impl<B: TransferProtocol> SingleStream<B> {
             total_length: remote.total_length,
             final_path,
             artifacts,
+            recorded: remote,
+            last_observed_status: None,
         };
         let request = RangeRequest::whole(held.final_url.clone());
         self.run(held, request, session).await
@@ -263,6 +276,30 @@ impl<B: TransferProtocol> SingleStream<B> {
         mut held: Session,
         session: &mut Option<Session>,
     ) -> Result<PathBuf, DownloadError> {
+        // §2.3, at the moment resumed work is planned rather than after it has been sent.
+        // A re-probe refreshes *capabilities* — which URL, whether ranges still work, how long
+        // the representation is. It never refreshes the validator: one fetched now would match
+        // whatever the server is serving now and prove nothing, which is the I-3 check S2-T9
+        // exists to make. `held.validator` stays the one the existing bytes were fetched under.
+        let plan = ResumePlan {
+            recorded: &held.recorded,
+            now: SystemTime::now(),
+            planned_url: &held.final_url,
+            // The workflow that obtains a refreshed URL is S8; S2 only guarantees that one
+            // supplied here invalidates the cached evidence.
+            refreshed_url: None,
+            last_observed_status: held.last_observed_status,
+        };
+        let triggers = self.reprobe.triggers(&plan);
+        if !triggers.is_empty() {
+            tracing::info!(
+                url = %held.final_url,
+                ?triggers,
+                "capability evidence is stale; re-probing before planning the resume"
+            );
+            held = self.refresh_capabilities(held).await?;
+        }
+
         let from = held.durable_prefix_end();
         let Some(validator) = held.validator.if_range_value().map(str::to_owned) else {
             // download() only resumes when a usable validator exists, so reaching here would be
@@ -287,6 +324,41 @@ impl<B: TransferProtocol> SingleStream<B> {
             validator,
         );
         self.run(held, request, session).await
+    }
+
+    /// Re-establish capability evidence for a session whose cached evidence went stale (§2.3).
+    ///
+    /// What a re-probe may change is deliberately narrow. The final URL and the range evidence
+    /// are refreshed, because those are what the resume plans against. The **validator is not**:
+    /// it belongs to the bytes already on disk, and replacing it would make `If-Range` compare
+    /// the server against itself. If the fresh probe shows a different validator or a different
+    /// length, the representation changed while we were away — that is I-3, caught one request
+    /// earlier than `If-Range` would have caught it, and it is a hard stop either way.
+    async fn refresh_capabilities(&self, mut held: Session) -> Result<Session, DownloadError> {
+        let fresh = self
+            .backend
+            .probe(ProbeRequest::new(held.final_url.clone()))
+            .await?;
+
+        let changed = fresh.validator != held.validator
+            || (fresh.total_length.is_some() && fresh.total_length != held.total_length);
+        if changed {
+            return Err(DownloadError::Transfer(TransferError::ValidatorMismatch {
+                url: fresh.final_url,
+                resume_offset: held.durable_prefix_end(),
+                status: 200,
+                validator: held
+                    .validator
+                    .if_range_value()
+                    .unwrap_or("<none recorded>")
+                    .to_owned(),
+            }));
+        }
+
+        held.final_url = fresh.final_url.clone();
+        held.recorded = fresh;
+        held.last_observed_status = None;
+        Ok(held)
     }
 
     /// Fetch into a session, make it durable, verify, and rename.
@@ -314,6 +386,7 @@ impl<B: TransferProtocol> SingleStream<B> {
         let outcome = match fetched {
             Ok(outcome) => outcome,
             Err(error) => {
+                held.last_observed_status = observed_status_of(&error);
                 *session = Some(held);
                 return Err(error.into());
             }
@@ -362,11 +435,17 @@ impl<B: TransferProtocol> SingleStream<B> {
 /// server is serving now and prove nothing (I-3).
 struct Session {
     sink: RangeSink,
+    /// The validator recorded when the existing bytes were fetched. Never refreshed (I-3).
     validator: Validator,
+    /// The capability evidence a resume plans against. A re-probe replaces this; the validator
+    /// above deliberately survives it.
+    recorded: RemoteObject,
     final_url: Url,
     total_length: Option<u64>,
     final_path: PathBuf,
     artifacts: Artifacts,
+    /// The status the last attempt observed, when one reached a response at all.
+    last_observed_status: Option<u16>,
 }
 
 impl Session {
@@ -533,5 +612,18 @@ async fn remove_artifacts(artifacts: &Artifacts) {
             %error,
             "could not remove the previous attempt's recovery journal"
         );
+    }
+}
+
+/// The status a failed transfer observed, when it reached a response at all.
+///
+/// Feeds §2.3's "a worker received a status inconsistent with the recorded capabilities"
+/// trigger. A transport failure or a timeout observed no status, and reporting one would invent
+/// evidence.
+fn observed_status_of(error: &TransferError) -> Option<u16> {
+    match error {
+        TransferError::UnexpectedStatus { status, .. }
+        | TransferError::ValidatorMismatch { status, .. } => Some(*status),
+        _ => None,
     }
 }

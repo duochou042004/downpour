@@ -416,7 +416,15 @@ Defaults live here; all are configurable. Changing a default requires a benchmar
 | `MAX_RETRIES` | 5 | Per range, per attempt cycle |
 | `EWMA_ALPHA` | 0.3 | Throughput smoothing |
 | `PROBE_TIMEOUT` | 15 s | Capability probe |
+| `CAPABILITY_FRESHNESS` | 15 min | How long §2.3's evidence stays usable without re-probing |
 | `JOURNAL_FLUSH_INTERVAL` | 2 s or 8 MiB | Whichever comes first (`04-storage-and-recovery-spec.md`) |
+
+`CAPABILITY_FRESHNESS` is bounded from both directions. Retry back-off caps at 30 s over at most
+`MAX_RETRIES` attempts (§7), so a full in-call retry cycle is a couple of minutes — comfortably
+inside the window, which is what stops an ordinary retry from re-probing and thereby replacing the
+recorded validator with one fetched now. A download resumed after a genuine pause is outside it,
+which is the case §2.3's third trigger exists for: signed URLs expire, CDN edges rotate, and files
+get replaced while nobody is watching.
 
 `MAX_WORKERS` defaulting to 16 rather than IDM's 32 is intentional: with HTTP/2 and HTTP/3,
 capacity is added as streams, and a high connection ceiling mostly serves to get users
