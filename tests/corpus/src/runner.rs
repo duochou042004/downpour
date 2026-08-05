@@ -33,13 +33,29 @@ pub struct CaseReport {
     pub bytes_on_disk: u64,
     /// Whether a corruption finding was made. Any non-zero count is a release blocker.
     pub silent_corruption: bool,
+    /// Why this case could not run here, when it could not.
+    ///
+    /// Neither a pass nor a failure. A precondition some platforms cannot express — an
+    /// unwritable directory on Windows — must not be reported as green, because a case counted
+    /// as passing on a platform where it never ran is exactly the false confidence the corpus
+    /// exists to avoid. Skips are surfaced and counted separately.
+    pub skipped: Option<&'static str>,
 }
 
 impl CaseReport {
     /// Whether the case passed.
     #[must_use]
     pub fn passed(&self) -> bool {
-        self.failures.is_empty()
+        self.failures.is_empty() && self.skipped.is_none()
+    }
+
+    /// Whether this case could not run here, and why.
+    ///
+    /// Distinct from passing. A case counted as green on a platform where it never ran is the
+    /// false confidence the corpus exists to avoid, so a skip is neither a pass nor a failure.
+    #[must_use]
+    pub const fn skipped(&self) -> Option<&'static str> {
+        self.skipped
     }
 
     /// A multi-line report suitable for a test failure message.
@@ -76,6 +92,7 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         failures: vec![reason],
         bytes_on_disk: 0,
         silent_corruption: false,
+        skipped: None,
     };
 
     // A cross-origin case needs two servers: one server serves one origin, so a chain that leaves
@@ -125,6 +142,7 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
                 failures: vec![format!("the backend did not build: {error}")],
                 bytes_on_disk: 0,
                 silent_corruption: false,
+                skipped: None,
             };
         }
     };
@@ -137,6 +155,7 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
                 failures: vec![format!("the server URL did not parse: {error}")],
                 bytes_on_disk: 0,
                 silent_corruption: false,
+                skipped: None,
             };
         }
     };
@@ -222,6 +241,19 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         return fail(format!("could not create the existing part file: {error}"));
     }
     if case.local.read_only_target_dir {
+        if !cfg!(unix) {
+            // Not a pass and not a failure: the precondition cannot be expressed here at all.
+            // Reported as skipped so the count stays honest on every platform.
+            return CaseReport {
+                id: case.id.clone(),
+                failures: Vec::new(),
+                bytes_on_disk: 0,
+                silent_corruption: false,
+                skipped: Some(
+                    "directory permissions cannot express an unwritable target on this platform",
+                ),
+            };
+        }
         match make_read_only(scratch) {
             Ok(Some(original)) => restore_permissions = Some(original),
             // Running as a user who bypasses permission checks. Reporting a pass here would be a
@@ -229,13 +261,12 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             Ok(None) => {
                 return CaseReport {
                     id: case.id.clone(),
-                    failures: vec![
-                        "this case needs a directory the process cannot write to, and this user \
-                         bypasses permission checks; run it as an unprivileged user"
-                            .to_owned(),
-                    ],
+                    failures: Vec::new(),
                     bytes_on_disk: 0,
                     silent_corruption: false,
+                    skipped: Some(
+                        "this user bypasses permission checks, so the restriction cannot bite",
+                    ),
                 };
             }
             Err(error) => return fail(format!("could not make the target read-only: {error}")),
@@ -455,6 +486,7 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         failures,
         bytes_on_disk,
         silent_corruption,
+        skipped: None,
     }
 }
 

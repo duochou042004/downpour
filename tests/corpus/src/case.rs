@@ -225,8 +225,13 @@ pub struct LocalCase {
     pub existing_part: Option<String>,
     /// Make the target directory unwritable before the download starts.
     ///
-    /// Skipped when running as a user who bypasses permission checks, because a test that
-    /// silently passes for root is worse than one that is honestly absent.
+    /// Unix only, and deliberately so rather than by accident: Windows' read-only attribute on a
+    /// *directory* does not stop files being created inside it, so there is no way to express
+    /// this precondition there. The case is excluded on other platforms and says so, rather than
+    /// being written to pass everywhere by asserting less.
+    ///
+    /// It is also excluded for a user who bypasses permission checks — root — because a green
+    /// result for a check that cannot fail is worse than an honestly absent one.
     #[serde(default)]
     pub read_only_target_dir: bool,
 }

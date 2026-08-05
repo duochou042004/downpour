@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T08:53:42Z",
+  "updated_at": "2026-08-05T09:00:33Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -2687,6 +2687,22 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T15 remains IN PROGRESS and S2-C7 is still not claimed. local is at 3 of 12, validators at 11 of 15. The remaining nine local cases need further vocabulary — path-length limits, network filesystems, a disk filling mid-transfer through the whole engine — and are recorded in B-32 rather than padded in. S2 is at 14/15 tasks and 6/7 criteria."
+    },
+    {
+      "at": "2026-08-05T09:00:33Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Fixed the Windows CI failure the local category introduced, and the fix is a better answer than the original. target-directory-is-not-writable failed on native Windows because the read-only attribute on a DIRECTORY does not stop files being created inside it, so the precondition cannot be expressed there at all. The runner's probe correctly detected that the restriction did not bite and correctly refused to report a pass — but reporting it as a failure was wrong, because the case did not fail, it could not run. CaseReport now carries a skipped reason, passed() excludes a skip rather than counting it green, and every_corpus_case_passes counts and prints skips apart from passes. A case counted as green on a platform where it never ran is exactly the false confidence the corpus exists to prevent, so this distinction is worth the plumbing.",
+      "tasks_touched": [
+        "S2-T15"
+      ],
+      "files_touched": [
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/tests/corpus_cases.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T15 remains IN PROGRESS; S2-C7 still not claimed. local is at 3 of 12 with one of the three skipping on Windows by design, validators at 11 of 15."
     }
   ],
   "metrics": {

@@ -38,6 +38,7 @@ async fn every_corpus_case_passes() {
     let cases = load_all();
     let mut failures = Vec::new();
     let mut ran = 0_usize;
+    let mut skipped: Vec<String> = Vec::new();
 
     for (path, case) in &cases {
         if case.slow {
@@ -45,6 +46,13 @@ async fn every_corpus_case_passes() {
         }
         let scratch = CaseScratch::new(&case.id).expect("scratch directory");
         let report = run_case(case, scratch.path()).await;
+        // A skip is neither a pass nor a failure. Counting one as green would report coverage
+        // on a platform where the case never ran, which is the false confidence the corpus
+        // exists to prevent — so skips are named, counted apart, and printed every run.
+        if let Some(reason) = report.skipped() {
+            skipped.push(format!("{}: {reason}", case.id));
+            continue;
+        }
         ran += 1;
         if !report.passed() {
             failures.push(format!("{}\n{}", path.display(), report.describe()));
@@ -59,6 +67,13 @@ async fn every_corpus_case_passes() {
         failures.join("\n\n")
     );
     println!("{ran} corpus cases passed");
+    if !skipped.is_empty() {
+        println!(
+            "{} case(s) could not run here:\n  {}",
+            skipped.len(),
+            skipped.join("\n  ")
+        );
+    }
 }
 
 #[test]
