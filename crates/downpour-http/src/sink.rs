@@ -10,6 +10,8 @@
 //! adds preallocation, positional writes and the durability ordering that I-1 requires. The
 //! [`SinkTarget`] boundary is what makes that a substitution rather than a rewrite.
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use thiserror::Error;
 
@@ -21,6 +23,18 @@ pub trait SinkTarget: Send {
     /// Positional rather than sequential because S3 has many workers writing one file
     /// concurrently, and a shared seek cursor would make them contend.
     async fn write_at(&mut self, offset: u64, bytes: &[u8]) -> Result<(), SinkError>;
+
+    /// Verify this download and give it its final name, or refuse without renaming (I-4).
+    ///
+    /// On the trait rather than on the concrete sink because `RangeSink` owns a boxed target.
+    /// The default refuses: a target that cannot verify must not be able to rename either, so
+    /// the safe answer for a test double is "no".
+    async fn verify_and_rename(&mut self, _final_path: PathBuf) -> Result<(), SinkError> {
+        Err(SinkError::Io {
+            offset: 0,
+            source: std::io::Error::other("this sink target cannot verify a completed download"),
+        })
+    }
 
     /// End of the contiguous durable prefix: where a resume may safely continue from.
     ///
@@ -125,6 +139,11 @@ impl RangeSink {
         self.base_offset = base_offset;
         self.written = 0;
         self.limit = limit;
+    }
+
+    /// Verify and rename through the underlying target.
+    pub async fn verify_and_rename(&mut self, final_path: PathBuf) -> Result<(), SinkError> {
+        self.target.verify_and_rename(final_path).await
     }
 
     /// End of the contiguous durable prefix of the underlying target.

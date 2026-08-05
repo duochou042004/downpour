@@ -31,6 +31,8 @@ here without checking it against §5 and recording it.
 | `interprocess` | 2.4 | UDS + named pipes | One API for both platforms |
 | `governor` | 0.10 | Rate limiting | Token bucket |
 | `proptest` | 1.11 | Property testing | The interval map and journal depend on this |
+| `sha2` | 0.11 | RFC 9530 digest verification | ADR-0017. The server states SHA-2, so verifying its evidence means computing SHA-2; `blake3` is ours, for per-block journal records, and cannot substitute. |
+| `base64` | 0.22 | RFC 9530 digest payloads | ADR-0017. Already in the resolved graph transitively, so making it direct adds no package. |
 | `crc` | 3.4.0 | CRC32C for recovery-journal framing | ADR-0012. `CRC_32_ISCSI` gives the required Castagnoli checksum. Pure safe Rust, Rust 1.83 MSRV, one dependency (`crc-catalog`), and easy to replace behind a private function without changing journal bytes. |
 | `rustix` | 1.1.4 | Safe Linux `fallocate` binding | ADR-0014. Target-specific to the part-file allocator; Rust 1.63 MSRV; already resolved through `tempfile`, so the direct edge adds no package. |
 | `libc` | 0.2.189 | Linux `posix_fallocate` fallback binding | ADR-0014. One private FFI call with a `SAFETY` argument; Rust 1.65 MSRV; already in the workspace graph. The 1.0 line is alpha, so the current stable 0.2 line is pinned. |

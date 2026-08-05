@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T04:20:04Z",
+  "updated_at": "2026-08-05T06:33:05Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -647,8 +647,8 @@
         {
           "id": "S2-C6",
           "text": "The final rename happens only after full verification",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "crates/downpour-storage/src/completion.rs runs docs/04 section 6 steps 3, 4, 5, 7 and 9 in that order, and the rename is unreachable except through all of them. no_incomplete_map_is_ever_renamed proves a file of exactly the right length with exactly the right bytes is still refused when the journal's coverage is short — the hole a byte counter cannot see. a_server_digest_mismatch_keeps_the_part_file_and_the_journal proves the end-to-end case no local check could find. a_verified_download_is_sealed_before_it_is_named proves the seal is durable before the rename. Corpus case validators/server-digest-mismatch covers the same path end to end through the real engine. Seven mutations were checked and each was caught, including renaming without verifying at all, which the corpus case caught. just gate 268 tests and slow corpus 93/93 on 2026-08-05.",
           "invariants": [
             "I-4"
           ]
@@ -884,14 +884,21 @@
         {
           "id": "S2-T11",
           "title": "Verify length, gap-free coverage, and server digest before sealing and atomic rename",
-          "status": "todo",
-          "proof": "tests/corpus/tests/download.rs::a_server_digest_mismatch_keeps_part_and_journal and tests/sim/tests/completion.rs::no_incomplete_map_is_ever_renamed",
+          "status": "done",
+          "proof": "crates/downpour-storage/tests/completion.rs::no_incomplete_map_is_ever_renamed (the task named tests/sim/tests/completion.rs, but tests/sim is S2-T12's deliverable and T12 is blocked BY T11 — a cycle; the property needs no simulation harness and is checked directly, while the crash-injected version stays T12's), plus a_server_digest_mismatch_keeps_the_part_file_and_the_journal, a_verified_download_is_sealed_before_it_is_named, a_part_file_of_the_wrong_length_is_refused_before_its_bytes_are_read, an_overlong_part_file_is_refused_rather_than_shortened, an_undecodable_digest_is_reported_as_unusable_and_does_not_fail_the_download, an_absent_digest_verifies_on_length_and_coverage_alone; and corpus case validators/server-digest-mismatch via every_corpus_case_passes (53 cases). Seven mutations, all caught: skipping coverage, accepting a mismatch, skipping length, renaming before sealing, failing on an undecodable digest, counting non-complete intervals as covered, and — at the wiring — renaming without verifying at all. just gate 268 tests / 2 skipped; slow corpus 93/93.",
           "files": [
             "crates/downpour-storage/src/completion.rs",
-            "tests/corpus/cases/validators/"
+            "crates/downpour-storage/tests/completion.rs",
+            "crates/downpour-storage/src/writer.rs",
+            "crates/downpour-http/src/storage_sink.rs",
+            "crates/downpour-http/src/sink.rs",
+            "crates/downpour-http/src/download.rs",
+            "tests/corpus/cases/validators/server-digest-mismatch.yaml",
+            "docs/adr/0017-sha2-and-base64-for-rfc-9530-verification.md",
+            "docs/14-tech-radar-2026.md"
           ],
           "blocked_by": "S2-T7, S2-T8",
-          "notes": "Closes B-6. Verify RFC 9530 digest evidence before appending Sealed and before the final rename; on mismatch preserve the part file and journal.",
+          "notes": "Closes B-6 and B-20. ADR-0017 records sha2 0.11 and base64 0.22: the server states a SHA-2 digest under RFC 9530, so verifying its evidence means computing SHA-2, and blake3 — which is ours, for per-block journal records — cannot substitute. Both digests are computed in one pass so a 1 GB file is streamed once. An absent digest is not a failure and an undecodable one is reported as Unusable rather than equated with either success or failure, because a header we cannot read is no worse than one never sent. B-20 closes: an overlong part file is now a LengthMismatch that preserves its bytes, which is what recovery's non-truncating choice was waiting for. The decomposition named a proof in tests/sim, which T12 owns and which is blocked by this task; recorded as B-27 so the cycle is fixed rather than worked around silently.",
           "invariants": [
             "I-1",
             "I-4",
@@ -1518,6 +1525,13 @@
       "status": "proposed",
       "superseded_by": null,
       "stage": "S2"
+    },
+    {
+      "id": "ADR-0017",
+      "title": "Verify RFC 9530 digests with sha2 and base64",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S2"
     }
   ],
   "risks": [
@@ -1768,6 +1782,20 @@
       "found_in_stage": "S2",
       "target_stage": "S8",
       "rationale": "One of the four triggers having no caller is exactly the shape B-16 recorded about probed_at, so it is written down rather than left to be rediscovered as dead weight"
+    },
+    {
+      "id": "B-27",
+      "text": "S2-T11's proof field named tests/sim/tests/completion.rs, but tests/sim is S2-T12's deliverable and T12 is blocked by T11 — a cycle in the decomposition. The property was implemented in crates/downpour-storage/tests/completion.rs instead, which needs no simulation harness. S2-T12 must still add the crash-injected version, where the process dies between the seal and the rename, and should not treat this task's test as discharging that.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "A dependency cycle silently worked around is a cycle that reappears; recording it makes T12's remaining obligation explicit"
+    },
+    {
+      "id": "B-28",
+      "text": "The corpus proves the digest-mismatch direction but not the matching direction: a case would need the pathology server to compute the SHA-256 of its own generated content, since a literal base64 digest in YAML for a given seed and size is unmaintainable by hand. Add a `digest: computed` server option in S2-T15 so a verified download is covered end to end as well as a refused one.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "Only proving the failure direction leaves the success path untested through the real engine, which is where a check that always fails would hide"
     }
   ],
   "session_log": [
@@ -2481,11 +2509,36 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T10 is complete. No exit criterion changed: S2-C1, C5, C6 and C7 remain unmet, and T10 touches none of them directly. S2-T11 (verify length, coverage and digest before sealing and rename) is the next unblocked task and is what S2-C6 waits on. New backlog B-26: the refreshed-URL trigger has no S2 caller because the refresh workflow is S8."
+    },
+    {
+      "at": "2026-08-05T06:33:05Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Implemented S2-T11, meeting S2-C6 and closing B-6 and B-20. crates/downpour-storage/src/completion.rs runs docs/04 section 6: length on disk, gap-free coverage from the interval map, the server's RFC 9530 digest when one was offered, then the Sealed record, then the rename — and the rename is unreachable except through all of them. ADR-0017 records sha2 0.11 and base64 0.22 with the reasoning that blake3 cannot substitute, since the server states SHA-2 and verifying its evidence means computing the same algorithm; both digests are computed in one pass so a large file is streamed once. An absent digest is not a failure and an undecodable one is reported as Unusable rather than equated with success or failure. Wired through StorageSink so the download path cannot rename any other way. Found and recorded a cycle in the decomposition: the task's proof named tests/sim, which S2-T12 owns and which is blocked by this task. just gate 268 tests, 2 skipped; slow corpus 93/93; seven mutations checked, all caught.",
+      "tasks_touched": [
+        "S2-T11"
+      ],
+      "files_touched": [
+        "crates/downpour-storage/src/completion.rs",
+        "crates/downpour-storage/tests/completion.rs",
+        "crates/downpour-storage/src/writer.rs",
+        "crates/downpour-storage/src/lib.rs",
+        "crates/downpour-http/src/storage_sink.rs",
+        "crates/downpour-http/src/sink.rs",
+        "crates/downpour-http/src/download.rs",
+        "tests/corpus/cases/validators/server-digest-mismatch.yaml",
+        "docs/adr/0017-sha2-and-base64-for-rfc-9530-verification.md",
+        "docs/adr/README.md",
+        "docs/14-tech-radar-2026.md",
+        "Cargo.toml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-C6 is met with named evidence; S2 now stands at 11/15 tasks and 4/7 criteria. S2-C1, C5 and C7 remain unmet. New backlog B-27 (S2-T12 still owes the crash-injected completion scenario; this task's test does not discharge it) and B-28 (the corpus proves the digest-mismatch direction but not the matching one, which needs a `digest: computed` server option in S2-T15). B-22 is now actionable: with real verification in place, the journal may be deleted after a successful download, which S2-T14 or a follow-up should do."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 52,
-    "corpus_cases_passing": 52,
+    "corpus_cases_total": 53,
+    "corpus_cases_passing": 53,
     "sim_seeds_fixed": 0,
     "invariants_covered": 5,
     "invariants_total": 14,

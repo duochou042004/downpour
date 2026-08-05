@@ -24,6 +24,7 @@ downpour-storage = { path = "crates/downpour-storage" }
 downpour-types = { path = "crates/downpour-types" }
 anyhow = "1.0"
 async-trait = "0.1.91"
+base64 = "0.22.1"
 blake3 = "1.8.5"
 ciborium = "0.2.2"
 # CRC-32C protects the journal header and every framed record. The polynomial and exact byte
@@ -52,6 +53,9 @@ reqwest = { version = "0.13.4", default-features = false, features = [
 ] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled-windows"] }
 serde = { version = "1.0.229", features = ["derive"] }
+# ADR-0017. The server states a SHA-2 digest under RFC 9530, so verifying it means computing that
+# same algorithm; blake3 is ours, for per-block journal evidence, and cannot stand in for it.
+sha2 = "0.11.0"
 # serde_yaml is deprecated upstream (its last release is literally 0.9.34+deprecated). This is the
 # maintained fork with the same serde integration, which matters because ADR-0010 requires the
 # corpus runner to fail closed on an unknown key and that is exactly `deny_unknown_fields`.
