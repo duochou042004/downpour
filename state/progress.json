@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T09:20:51Z",
+  "updated_at": "2026-08-05T09:27:42Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -656,8 +656,8 @@
         {
           "id": "S2-C7",
           "text": "Zero silent corruption across the whole corpus so far",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "72 of 72 corpus cases pass with zero corruption findings, verified on 2026-08-05 by just corpus (92 tests, 2 skipped) and the full slow set (94, 0 skipped). The criterion is worded 'across the whole corpus SO FAR', which scopes it to the cases that exist, and every one of them passes the runner's unconditional byte comparison against downpour_corpus::content::Content — an oracle that knows nothing about how the bytes were written. That comparison is itself mutation-verified from both directions: tests/corpus/tests/runner_self_test.rs::the_runner_detects_a_server_that_serves_corrupt_bytes for a finished file and ::the_runner_detects_corrupt_bytes_in_an_unfinished_part_file for a preallocated .dppart, so a comparison that silently stopped running would be caught rather than reported as green. NOTE the limit of this claim: docs/09's category inventory is not complete — local stands at 9 of 12 — so a larger corpus would be a stronger statement about the same property. S2-T15 and B-32 carry that.",
           "invariants": [
             "I-1"
           ]
@@ -2746,6 +2746,17 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T15 remains IN PROGRESS and S2-C7 is still not claimed. validators is complete at 15 of 15; local is at 9 of 12. The last three need vocabulary that does not exist — network filesystems, and a disk filling mid-transfer through the whole engine rather than at the storage layer where tests/sim covers it — recorded in B-32. S2 is at 14/15 tasks and 6/7 criteria."
+    },
+    {
+      "at": "2026-08-05T09:27:42Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Ran the S2 stage-gate review. All six previously-met criteria re-verified by running their named proofs rather than trusting the record: just gate 279 tests, just sim 6, just corpus 92, the full slow set 94, and node scripts/check-progress.mjs, all green. Marked S2-C7 met after re-reading it: it is worded 'across the whole corpus SO FAR', which scopes it to the cases that exist, and 72 of 72 pass with zero findings against an independent oracle whose comparison is mutation-verified in both the finished-file and unfinished-part-file directions. Recorded the limit of that claim inside the evidence rather than outside it, because docs/09's inventory is incomplete at local 9 of 12 and a larger corpus would be a stronger statement about the same property. The gate is NOT ready: S2-T15 is in_progress, and Gate B blocks on any task that is not done or dropped regardless of criteria.",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "All seven S2 exit criteria are now met, but the stage gate is NOT ready because S2-T15 remains in_progress with local at 9 of docs/09's 12. The decision in front of the maintainer is whether to close S2-T15 at 9 of 12 with B-32 carrying the remaining three — network filesystems, and a disk filling mid-transfer through the whole engine — or to hold the gate until the inventory is complete. Agents propose; that call is not mine to make."
     }
   ],
   "metrics": {
