@@ -1,0 +1,19 @@
+[package]
+name = "downpour-sim"
+description = "Deterministic simulation of crash and failure boundaries. Test-only; never compiled into a release binary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+downpour-corpus = { workspace = true }
+downpour-intervals = { workspace = true }
+downpour-storage = { workspace = true }
+downpour-types = { workspace = true }
+
+[lints]
+workspace = true
