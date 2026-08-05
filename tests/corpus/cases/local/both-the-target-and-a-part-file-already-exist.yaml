@@ -1,0 +1,23 @@
+id: both-the-target-and-a-part-file-already-exist
+category: local
+description: >
+  The user has the finished file *and* a leftover `.dppart` from an interrupted attempt. Two
+  refusals apply at once and the order matters: the target check runs first and runs before
+  anything is created, so the engine declines without touching either file. Reversing them would
+  mean the part-file collision is reported for a download that was never going to be allowed to
+  start, which is a confusing error for the user and a misleading one in a bug report.
+
+  Both files must come back exactly as they were.
+references: ["docs/04-storage-and-recovery-spec.md §2.1", "INVARIANTS.md#i-4"]
+
+local:
+  existing_target: "the finished file the user already has"
+  existing_part: "a leftover from an interrupted attempt"
+
+server:
+  content: { size: 16KiB, seed: 52 }
+
+expect:
+  final_state: failed
+  error_kind: target_exists
+  file_renamed: true

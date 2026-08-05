@@ -1,0 +1,20 @@
+id: suggested-filename-is-a-reserved-device-name
+category: local
+description: >
+  `Content-Disposition` names `CON`, which Windows reserves as a device. Creating it does not
+  produce a file — it opens the console — so a download "succeeding" would write the user's bytes
+  into nothing and report a path that holds no data. The name must be rejected or rewritten
+  before anything is created.
+
+  Checked on every platform rather than gated to Windows: a Linux daemon may write to a mounted
+  share a Windows client reads, and the corpus should not need a Windows runner to notice a name
+  that is unusable on half the machines we target.
+references: ["docs/04-storage-and-recovery-spec.md §7", "docs/09-testing-strategy.md §3.2"]
+
+server:
+  content: { size: 8KiB, seed: 51 }
+  content_disposition: 'attachment; filename="CON"'
+
+expect:
+  final_state: completed
+  file_renamed: true

@@ -20,10 +20,21 @@ const DEFAULT_NAME: &str = "download";
 /// we will meet, and it is a *byte* limit, not a character one.
 const MAX_NAME_BYTES: usize = 255;
 
-/// Truncation targets one byte below the limit so that a reserved-name prefix can always be
-/// added afterwards without a second truncation pass. That one byte of headroom is what keeps
-/// [`sanitise`] a single pass, and therefore idempotent.
-const MAX_TRUNCATED_BYTES: usize = MAX_NAME_BYTES - 1;
+/// Bytes the storage layer appends while a download is in progress: `.dppart`.
+///
+/// A name that fits exactly at the limit is still unusable, because the *working* file is
+/// `<name>.dppart` and that is what gets created first. Reserving the suffix here rather than
+/// at the creation site keeps the guarantee where the budget is: a name this module returns can
+/// always be written to disk, in progress and finished.
+///
+/// Found by `local/suggested-filename-exceeds-the-path-limit`, which truncated to exactly 255
+/// bytes and then failed with `ENAMETOOLONG` at 262.
+const PART_SUFFIX_BYTES: usize = ".dppart".len();
+
+/// Truncation leaves room for a reserved-name prefix and for the in-progress suffix, so that
+/// neither needs a second truncation pass afterwards. That headroom is what keeps [`sanitise`]
+/// a single pass, and therefore idempotent.
+const MAX_TRUNCATED_BYTES: usize = MAX_NAME_BYTES - 1 - PART_SUFFIX_BYTES;
 
 /// Windows device names. These are unusable as filenames on Windows *even with an extension*
 /// — `con.txt` resolves to the console, not a file. A cross-platform download manager must

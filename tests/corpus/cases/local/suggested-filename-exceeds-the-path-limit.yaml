@@ -1,0 +1,20 @@
+id: suggested-filename-exceeds-the-path-limit
+category: local
+description: >
+  The server suggests a 400-byte filename. ext4, APFS and NTFS all cap a single path component at
+  255 bytes, so the name has to be shortened before anything is created — and shortened with
+  enough headroom that appending `.dppart` still fits, or the part file would fail to create
+  while the final name looked achievable.
+
+  The check is that the download completes at all. A name that was not shortened cannot be
+  created on any filesystem we target, so reaching a renamed file is itself the proof, and the
+  runner's directory enumeration confirms nothing landed outside the target directory.
+references: ["docs/09-testing-strategy.md §3.2", "docs/04-storage-and-recovery-spec.md §7"]
+
+server:
+  content: { size: 16KiB, seed: 50 }
+  content_disposition: 'attachment; filename="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bin"'
+
+expect:
+  final_state: completed
+  file_renamed: true
