@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T09:39:49Z",
+  "updated_at": "2026-08-05T09:48:44Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1827,7 +1827,7 @@
     },
     {
       "id": "B-31",
-      "text": "The crash matrix injects failures at I-1's boundaries but not yet at S2-T11's completion sequence — B-27's remaining obligation. A process that dies between the Sealed record and the atomic rename leaves a journal saying the download was verified next to a part file that still has its working name, and nothing yet proves recovery handles that. Add a completion boundary set (before seal, after seal, after rename, after journal deletion) to tests/sim.",
+      "text": "CLOSED 2026-08-05. tests/sim/tests/completion_crash.rs covers the completion sequence's boundaries. a_crash_before_the_seal_leaves_the_part_file_unnamed proves the conservative direction — verification passed in memory but no evidence reached the disk, so nothing is renamed and no Sealed record survives. a_durable_seal_survives_a_crash_before_the_rename proves the other one: once the seal has crossed its sync, replay finds it, which is what makes finishing the rename after a restart safe rather than a guess. Mutation-checked by renaming without sealing at all, which the first test catches.",
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "B-27 recorded that S2-T12 still owed this; the harness now exists, so the obligation is concrete rather than hypothetical"
@@ -2795,12 +2795,24 @@
         "state/progress.json"
       ],
       "left_in_progress": "ADR-0018 is proposed and awaits the maintainer. If accepted, docs/09's local target becomes 10, S2-T15 closes at 10 of 10, and the S2 gate has nothing left blocking it — all seven criteria are already met. If rejected, the alternatives are on the table in the ADR's options, including the fault-injection hook and its cost. current_stage is untouched and no spec file was edited."
+    },
+    {
+      "at": "2026-08-05T09:48:44Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Closed B-31, which was S2-T12's remaining obligation from B-27, and which needed no decision from anyone. The crash matrix covered I-1's ordering but not docs/04 section 6's completion sequence, where a process can die between the Sealed record and the atomic rename. Both directions now have a test and both are expensive to get wrong: treat a sealed download as unfinished and the user re-fetches a gigabyte they already have and already verified; treat an unsealed one as finished and I-4 is violated by a file nobody checked. a_crash_before_the_seal_leaves_the_part_file_unnamed proves nothing is renamed and no Sealed record survives when the seal never reached the disk. a_durable_seal_survives_a_crash_before_the_rename proves replay finds the seal once it has crossed its sync, which is what makes completing the rename after a restart safe. Mutation-checked by renaming without sealing at all. Also caught and fixed an unused import that clippy rejected under -D warnings — the gate found it, not me. just gate 281 tests, 2 skipped; just sim 8.",
+      "tasks_touched": [],
+      "files_touched": [
+        "tests/sim/tests/completion_crash.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "B-31 and B-27 are both closed. S2 remains at 14/15 tasks with all seven criteria met; the gate waits only on ADR-0018 being accepted or rejected, which decides how S2-T15 closes. Nothing else in S2 is blocked on anything."
     }
   ],
   "metrics": {
     "corpus_cases_total": 73,
     "corpus_cases_passing": 73,
-    "sim_seeds_fixed": 2,
+    "sim_seeds_fixed": 3,
     "invariants_covered": 5,
     "invariants_total": 14,
     "silent_corruption_findings": 0
