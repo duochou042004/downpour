@@ -22,6 +22,15 @@ pub trait SinkTarget: Send {
     /// concurrently, and a shared seek cursor would make them contend.
     async fn write_at(&mut self, offset: u64, bytes: &[u8]) -> Result<(), SinkError>;
 
+    /// End of the contiguous durable prefix: where a resume may safely continue from.
+    ///
+    /// Zero means "nothing is proven durable", which is the only safe default — a target that
+    /// cannot answer must not be resumed over. Storage overrides it from the interval map, which
+    /// only reaches `Complete` past the writer's commit point (I-1).
+    fn durable_prefix_end(&self) -> u64 {
+        0
+    }
+
     /// Force everything written so far to stable storage.
     ///
     /// **The commit point for I-1.** A range is only ever recorded as complete after this
@@ -104,6 +113,24 @@ impl RangeSink {
     #[must_use]
     pub fn base_offset(&self) -> u64 {
         self.base_offset
+    }
+
+    /// Move the window to `base_offset`, with `limit` bytes remaining.
+    ///
+    /// Used when a resume continues from the durable prefix rather than from zero. The target is
+    /// untouched — only the window onto it moves — so the append-only property that makes a
+    /// backend unable to choose an offset still holds: it can no more address outside the new
+    /// window than it could outside the old one.
+    pub fn rebase(&mut self, base_offset: u64, limit: Option<u64>) {
+        self.base_offset = base_offset;
+        self.written = 0;
+        self.limit = limit;
+    }
+
+    /// End of the contiguous durable prefix of the underlying target.
+    #[must_use]
+    pub fn durable_prefix_end(&self) -> u64 {
+        self.target.durable_prefix_end()
     }
 }
 

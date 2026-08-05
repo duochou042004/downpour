@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T01:58:27Z",
+  "updated_at": "2026-08-05T02:23:10Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -629,8 +629,8 @@
         {
           "id": "S2-C4",
           "text": "Resume refuses on a changed strong validator and never splices",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "validators/etag-changed-midway and validators/200-instead-of-206 both end in error_kind validator_mismatch with file_renamed false, and the runner's unconditional byte comparison finds no corruption in the part file either case leaves. validators/weak-etag-only-never-resumes and validators/no-validator-never-resumes assert forbids_if_range, so no resume is attempted when no validator can condition one. Four mutations were checked and each was caught by the case naming the behaviour; in particular, removing the If-Range header makes both mismatch cases go red, which is the splice this criterion exists to prevent. just gate 251 tests on 2026-08-05.",
           "invariants": [
             "I-3"
           ]
@@ -837,15 +837,24 @@
         {
           "id": "S2-T9",
           "title": "Resume with If-Range and hard-stop on validator mismatch or a 200 response",
-          "status": "todo",
-          "proof": "corpus cases validators/etag-changed-midway, validators/200-instead-of-206, validators/weak-etag-only, and validators/no-validator",
+          "status": "done",
+          "proof": "corpus cases validators/etag-changed-midway, validators/200-instead-of-206, validators/weak-etag-only-never-resumes and validators/no-validator-never-resumes, all run by tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes (52 cases). The last two are named differently from the task's original text because ranges/weak-etag-only and ranges/no-validator already exist as the probe-time halves and case ids must be unique; the new ones cover what the absence forbids at resume time. Four mutations, each caught by the right case: never sending If-Range and accepting a non-206 answer to a resume both fail etag-changed-midway and 200-instead-of-206; resuming without a usable validator fails both never-resumes cases; and classifying a weak ETag as strong fails weak-etag-only-never-resumes on the new expect.forbids_if_range assertion. just gate 251 tests / 2 skipped; slow corpus 93/93.",
           "files": [
             "crates/downpour-http/src/download.rs",
+            "crates/downpour-http/src/h1h2.rs",
+            "crates/downpour-http/src/error.rs",
+            "crates/downpour-http/src/protocol.rs",
+            "crates/downpour-http/src/sink.rs",
+            "crates/downpour-http/src/storage_sink.rs",
+            "tests/corpus/src/case.rs",
+            "tests/corpus/src/runner.rs",
+            "tests/corpus/src/server.rs",
             "tests/corpus/cases/validators/",
+            "tests/corpus/tests/runner_self_test.rs",
             "tests/corpus/invariant-proof-deferrals.yaml"
           ],
           "blocked_by": "S2-T7, S2-T8",
-          "notes": "Upgrade S1's deliberate restart-from-byte-zero retry. A resumed request always carries If-Range with the recorded usable validator; 200 where 206 was expected is validator_mismatch, never permission to overwrite or splice. Shrink B-18's S2 deferrals in the same change.",
+          "notes": "Resume is in-call only: one download call keeps its session and continues into the same durable artifacts. Cross-process resume needs S2-T14's startup recovery. A resumed attempt deliberately does not re-probe — a validator taken from the retry's own response would match whatever the server is serving now and prove nothing; re-probe triggers are S2-T10. Two new corpus vocabulary items: ADR-0010's `behaviour` key is now enacted (set_etag at a bytes_served trigger) with deny_unknown_fields on every field so an unenactable mutation fails to load, and server.if_range: ignored expresses a server that does not implement If-Range. Added expect.forbids_if_range because a case whose point is 'must NOT resume' is otherwise indistinguishable from one that resumed successfully against an unchanged representation. B-18 shrank by two: etag-changed-midway and 200-instead-of-206 are no longer deferred.",
           "invariants": [
             "I-3",
             "I-4",
@@ -1742,6 +1751,13 @@
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "It fired three times in one session on work that was correctly recorded. The dangerous outcome is not the noise itself but the habit it teaches: an agent that learns the RECORD guard is noise will dismiss it on the day it is right, which is the exact drift the guard exists to prevent"
+    },
+    {
+      "id": "B-25",
+      "text": "Resume is in-call only: SingleStream::download keeps its session across retries. A download interrupted by a process exit cannot yet resume, because nothing reopens the part file and journal from disk — S2-T7's reconcile_download does exactly that but needs a MetadataStore, and wiring it in is S2-T14's startup recovery. Until then the durable bytes survive but are only usable by a future daemon, not by a second `dp add`.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "The distinction between in-call and cross-process resume is invisible from the corpus, which never restarts a process, so it needs recording rather than rediscovering"
     }
   ],
   "session_log": [
@@ -2409,11 +2425,39 @@
         "state/progress.json"
       ],
       "left_in_progress": "Nothing. S2 remains at 8/15 tasks and 2/7 exit criteria; S2-T9 is next. The guard now distinguishes a missing progress record from one written in the same commit, so a future block is evidence rather than noise."
+    },
+    {
+      "at": "2026-08-05T02:23:10Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Implemented S2-T9: resume carries If-Range and hard-stops on a non-206 answer. Added TransferError::ValidatorMismatch with the stable kind validator_mismatch, RangeRequest::resume, and the If-Range header on every resumed request; the status check runs before the body is touched, so a changed representation never reaches the file. SingleStream::download now keeps a Session across retries and continues into the same durable artifacts, resuming only when the recorded validator is usable for If-Range — a weak ETag or none falls back to restart-from-zero, which is slower and safe. Extended the corpus vocabulary to enact ADR-0010's behaviour key (set_etag at a bytes_served trigger) and added server.if_range: ignored; every field is deny_unknown_fields so a mutation the server cannot perform fails to load rather than silently changing nothing. Added expect.forbids_if_range, because a case whose point is that no resume may be attempted is otherwise indistinguishable from one that resumed successfully against an unchanged representation. Four new validators cases; B-18 lost etag-changed-midway and 200-instead-of-206. just gate 251 tests, 2 skipped; slow corpus 93/93.",
+      "tasks_touched": [
+        "S2-T9"
+      ],
+      "files_touched": [
+        "crates/downpour-http/src/download.rs",
+        "crates/downpour-http/src/h1h2.rs",
+        "crates/downpour-http/src/error.rs",
+        "crates/downpour-http/src/protocol.rs",
+        "crates/downpour-http/src/sink.rs",
+        "crates/downpour-http/src/storage_sink.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/cases/validators/etag-changed-midway.yaml",
+        "tests/corpus/cases/validators/200-instead-of-206.yaml",
+        "tests/corpus/cases/validators/weak-etag-only-never-resumes.yaml",
+        "tests/corpus/cases/validators/no-validator-never-resumes.yaml",
+        "tests/corpus/tests/runner_self_test.rs",
+        "tests/corpus/invariant-proof-deferrals.yaml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-C4 is now met with named evidence. S2-T9 unblocks S2-T10. Resume is in-call only; cross-process resume is B-25, waiting on S2-T14. S2-C6 remains unmet: the rename still happens after a length check but before gap and digest verification, which is S2-T11."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 48,
-    "corpus_cases_passing": 48,
+    "corpus_cases_total": 52,
+    "corpus_cases_passing": 52,
     "sim_seeds_fixed": 0,
     "invariants_covered": 5,
     "invariants_total": 14,

@@ -77,6 +77,7 @@ impl H1H2Backend {
         &self,
         url: &Url,
         range: Option<ByteRangeSpec>,
+        if_range: Option<&str>,
         headers: &[(String, String)],
         timeout: Duration,
     ) -> Result<reqwest::Response, reqwest::Error> {
@@ -90,6 +91,11 @@ impl H1H2Backend {
         request = request.header(reqwest::header::ACCEPT_ENCODING, "identity");
         if let Some(range) = range {
             request = request.header(reqwest::header::RANGE, range.header_value());
+        }
+        // I-3. Sent with every resume, so the server — not us — decides whether the bytes we
+        // already hold still belong to the representation it is about to serve.
+        if let Some(validator) = if_range {
+            request = request.header(reqwest::header::IF_RANGE, validator);
         }
         for (name, value) in headers {
             request = request.header(name, value);
@@ -212,6 +218,8 @@ impl TransferProtocol for H1H2Backend {
                     } else {
                         None
                     },
+                    // The probe never resumes, so it never conditions on a validator.
+                    None,
                     &request.headers,
                     request.timeout,
                 )
@@ -418,6 +426,7 @@ impl TransferProtocol for H1H2Backend {
             .send(
                 &request.url,
                 request.range,
+                request.if_range.as_deref(),
                 &request.headers,
                 request.timeout,
             )
@@ -437,6 +446,24 @@ impl TransferProtocol for H1H2Backend {
             })?;
 
         let status = response.status().as_u16();
+        // I-3, checked before the body is touched. `If-Range` means "this range only if the
+        // representation still matches"; anything but a 206 is the server saying it does not.
+        // Neither writing the body at the resume offset nor restarting over the existing bytes
+        // is acceptable — both splice two versions at exactly the expected size.
+        if let Some(validator) = &request.if_range
+            && status != 206
+        {
+            return Err(TransferError::ValidatorMismatch {
+                url: request.url.clone(),
+                resume_offset: request.range.map_or(0, |range| match range {
+                    ByteRangeSpec::From { first } => first,
+                    ByteRangeSpec::FromTo { first, .. } => first,
+                    ByteRangeSpec::Suffix { .. } => 0,
+                }),
+                status,
+                validator: validator.clone(),
+            });
+        }
         if !matches!(status, 200 | 206) {
             let retry_after = header_value(&response, "retry-after");
             return Err(TransferError::UnexpectedStatus {

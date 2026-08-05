@@ -117,30 +117,73 @@ expect:
 }
 
 #[test]
-fn a_case_describing_mid_transfer_mutations_is_rejected_until_they_are_implemented() {
-    // The server cannot enact `behaviour` until S2. Accepting it silently would let an
-    // `etag-changed-midway` case pass without anything changing mid-transfer, which is the most
-    // dangerous shape of false green available here.
-    let yaml = r#"
+fn a_mid_transfer_mutation_the_server_cannot_enact_is_rejected() {
+    // S2-T9 implements ADR-0010's `behaviour`, so the blanket rejection is gone. What replaces
+    // it must keep the same property: a case describing a mutation the server will not perform
+    // has to fail to LOAD, never load and quietly change nothing. An `etag-changed-midway` case
+    // that passes without any ETag ever changing is the most dangerous false green available
+    // here, because it reports I-3 as proven while proving nothing.
+    let header = r#"
 id: midway
 category: validators
 description: changes the etag part way through
 references: ["INVARIANTS.md#i-3"]
 server:
   content: { size: 1KiB, seed: 1 }
-  behaviour:
-    - at: { bytes_served: "40%" }
-      then: { set_etag: '"v2"' }
+"#;
+    let expectations = r#"
 expect:
   final_state: failed
   error_kind: validator_mismatch
   file_renamed: false
 "#;
-    let dir = CaseScratch::new("midway").expect("scratch");
+
+    // An effect the server has no code for.
+    let unknown_effect = r#"
+  behaviour:
+    - at: { bytes_served: "40%" }
+      then: { set_last_modified: "Mon, 3 Aug 2026 10:00:00 GMT" }
+"#;
+    // A trigger the server has no code for.
+    let unknown_trigger = r#"
+  behaviour:
+    - at: { requests_served: 2 }
+      then: { set_etag: '"v2"' }
+"#;
+    // Fires before the first byte, so nothing changes *mid*-transfer and the case would pass
+    // without the client ever meeting a changed representation.
+    let never_midway = r#"
+  behaviour:
+    - at: { bytes_served: "0%" }
+      then: { set_etag: '"v2"' }
+"#;
+
+    for (label, behaviour) in [
+        ("an unimplemented effect", unknown_effect),
+        ("an unimplemented trigger", unknown_trigger),
+        ("a trigger that fires before the transfer", never_midway),
+    ] {
+        let dir = CaseScratch::new("midway").expect("scratch");
+        let path = dir.path().join("midway.yaml");
+        std::fs::write(&path, format!("{header}{behaviour}{expectations}"))
+            .expect("write the fixture");
+        assert!(
+            Case::from_path(&path).is_err(),
+            "{label} loaded instead of being rejected; a case describing a mutation the server \
+             does not perform would report I-3 as proven while nothing changed mid-transfer"
+        );
+    }
+
+    // The one shape the server does enact must still load, or the corpus cannot express I-3.
+    let good = r#"
+  behaviour:
+    - at: { bytes_served: "40%" }
+      then: { set_etag: '"v2"' }
+"#;
+    let dir = CaseScratch::new("midway-ok").expect("scratch");
     let path = dir.path().join("midway.yaml");
-    std::fs::write(&path, yaml).expect("write the fixture");
-    let error = Case::from_path(&path).expect_err("unenactable behaviour must be rejected");
-    assert!(error.to_string().contains("behaviour"), "got: {error}");
+    std::fs::write(&path, format!("{header}{good}{expectations}")).expect("write the fixture");
+    Case::from_path(&path).expect("the implemented mutation must load");
 }
 
 #[tokio::test(flavor = "multi_thread")]

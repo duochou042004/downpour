@@ -60,6 +60,12 @@ pub struct RangeRequest {
     pub url: Url,
     /// The range to ask for, or `None` for the whole representation.
     pub range: Option<ByteRangeSpec>,
+    /// The validator to send in `If-Range`, set only on a resume (I-3).
+    ///
+    /// Its presence is what makes a `200` mean "the representation changed" rather than "this
+    /// server does not do ranges". The two need different answers: the first must never write,
+    /// the second is a legitimate single-stream fallback.
+    pub if_range: Option<String>,
     /// Headers to replay.
     pub headers: Vec<(String, String)>,
     /// Deadline for the whole fetch.
@@ -73,6 +79,7 @@ impl RangeRequest {
         Self {
             url,
             range: None,
+            if_range: None,
             headers: Vec::new(),
             timeout: Duration::from_secs(300),
         }
@@ -84,6 +91,24 @@ impl RangeRequest {
         Self {
             url,
             range: Some(range),
+            if_range: None,
+            headers: Vec::new(),
+            timeout: Duration::from_secs(300),
+        }
+    }
+
+    /// A resume of `url` from `range`, conditional on `validator` still matching (I-3).
+    ///
+    /// `If-Range` is what makes resume safe: the server serves the range only if the
+    /// representation is still the one the existing bytes came from, and answers `200` with the
+    /// whole thing when it is not. Without it, a changed file is spliced at exactly the expected
+    /// size and every check that does not hash the content passes.
+    #[must_use]
+    pub fn resume(url: Url, range: ByteRangeSpec, validator: String) -> Self {
+        Self {
+            url,
+            range: Some(range),
+            if_range: Some(validator),
             headers: Vec::new(),
             timeout: Duration::from_secs(300),
         }

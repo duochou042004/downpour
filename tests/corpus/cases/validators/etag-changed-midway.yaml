@@ -1,0 +1,23 @@
+id: etag-changed-midway
+category: validators
+description: >
+  The file changes on the server between the first attempt and the resume. The transfer is cut
+  short after 8 KiB, and by then the ETag has become "v2"; the resume carries
+  `If-Range: "v1"`, so a conforming server answers 200 with the whole new representation rather
+  than the range that was asked for. Continuing at the resume offset would produce a file that
+  is part version A and part version B, of exactly the expected size, which every integrity
+  check that does not hash the content passes. The engine must stop instead.
+references: ["RFC 9110 §13.1.5", "INVARIANTS.md#i-3"]
+
+server:
+  content: { size: 128KiB, seed: 11 }
+  etag: '"v1"'
+  truncate_body_after: 8KiB
+  behaviour:
+    - at: { bytes_served: 8KiB }
+      then: { set_etag: '"v2"' }
+
+expect:
+  final_state: failed
+  error_kind: validator_mismatch
+  file_renamed: false

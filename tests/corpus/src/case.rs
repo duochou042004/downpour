@@ -16,7 +16,10 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use crate::content::{Content, GENERATOR_V1};
-use crate::server::{Framing, Protocol, RangeBehaviour, RedirectLocation, ServerSpec};
+use crate::server::{
+    Framing, IfRangeBehaviour, Mutation, MutationEffect, Protocol, RangeBehaviour,
+    RedirectLocation, ServerSpec,
+};
 
 /// One corpus case.
 #[derive(Debug, Clone, Deserialize)]
@@ -174,13 +177,109 @@ pub struct ServerCase {
     /// prove the runner's corruption comparison actually fires.
     #[serde(default)]
     pub corrupt_from: Option<ByteSize>,
+    /// How the server treats `If-Range` on a resume.
+    #[serde(default)]
+    pub if_range: IfRangeCase,
     /// Triggered mid-transfer mutations (ADR-0010's `behaviour`).
     ///
-    /// Accepted so the ADR's schema stays valid, but **rejected when non-empty**: the server
-    /// cannot enact them until S2, and silently ignoring them would make an `etag-changed-midway`
-    /// case pass without changing anything mid-transfer. Failing closed is the whole point.
+    /// Enacted since S2-T9. Every field is `deny_unknown_fields`, so a mutation the server
+    /// cannot perform is a load error rather than a case that silently changes nothing — which
+    /// is what would make an `etag-changed-midway` case pass without any ETag ever changing.
     #[serde(default)]
-    pub behaviour: Vec<serde_norway::Value>,
+    pub behaviour: Vec<BehaviourCase>,
+}
+
+/// How a case's server treats `If-Range`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IfRangeCase {
+    /// RFC 9110 §13.1.5: the range when the validator matches, the whole representation when not.
+    #[default]
+    Honoured,
+    /// Answer any request carrying `If-Range` with `200` and the whole representation.
+    Ignored,
+}
+
+/// One entry of ADR-0010's `behaviour` list: a trigger and what it changes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BehaviourCase {
+    /// When this fires.
+    pub at: TriggerCase,
+    /// What it changes.
+    pub then: EffectCase,
+}
+
+/// When a [`BehaviourCase`] fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerCase {
+    /// Total body bytes served across all requests, absolute or a percentage of the content.
+    pub bytes_served: ServedAmount,
+}
+
+/// An amount of served content: `40%`, or an absolute size like `8KiB`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServedAmount {
+    /// A percentage of the representation length.
+    Percent(u64),
+    /// An absolute byte count.
+    Bytes(ByteSize),
+}
+
+impl ServedAmount {
+    /// Resolve against the representation length.
+    #[must_use]
+    pub fn resolve(self, total: u64) -> u64 {
+        match self {
+            Self::Percent(percent) => total.saturating_mul(percent) / 100,
+            Self::Bytes(size) => size.0,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ServedAmount {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Integer(u64),
+            Text(String),
+        }
+
+        match Raw::deserialize(deserializer)? {
+            Raw::Integer(value) => Ok(Self::Bytes(ByteSize(value))),
+            Raw::Text(text) => {
+                let trimmed = text.trim();
+                if let Some(number) = trimmed.strip_suffix('%') {
+                    let percent: u64 = number
+                        .trim()
+                        .parse()
+                        .map_err(|_| D::Error::custom(format!("bad percentage: {text}")))?;
+                    if percent > 100 {
+                        return Err(D::Error::custom(format!("percentage above 100: {text}")));
+                    }
+                    return Ok(Self::Percent(percent));
+                }
+                parse_byte_size(trimmed)
+                    .map(|bytes| Self::Bytes(ByteSize(bytes)))
+                    .map_err(D::Error::custom)
+            }
+        }
+    }
+}
+
+/// What a [`BehaviourCase`] changes when it fires.
+///
+/// Exactly one effect is implemented. `deny_unknown_fields` means a case naming any other
+/// mutation fails to load rather than loading and doing nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EffectCase {
+    /// Replace the `ETag` with this value, verbatim.
+    pub set_etag: String,
 }
 
 /// Which protocol a case runs over.
@@ -318,6 +417,15 @@ pub struct Expect {
     /// the requests the server actually recorded.
     #[serde(default)]
     pub forbids_head: Option<bool>,
+    /// Whether no request may carry `If-Range` — that is, no resume may be attempted.
+    ///
+    /// Without this, a case whose point is "the engine must NOT resume here" is indistinguishable
+    /// from one where it resumed successfully: an unchanged representation serves the range
+    /// happily, so the file comes out correct either way and the case passes while proving
+    /// nothing. Asserting on the request is the only way to see the decision rather than its
+    /// accidental outcome.
+    #[serde(default)]
+    pub forbids_if_range: Option<bool>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -460,13 +568,18 @@ impl Case {
                 self.server.content.generator
             )));
         }
-        if !self.server.behaviour.is_empty() {
-            return Err(invalid(
-                "server.behaviour describes mid-transfer mutations, which the pathology server \
-                 cannot enact until S2. Accepting it silently would let the case pass without \
-                 anything changing mid-transfer"
-                    .to_owned(),
-            ));
+        // A mutation that fires at or before byte zero is not a *mid*-transfer mutation: the
+        // representation would already have changed before the first request, so the case would
+        // pass without anything ever changing under the client — the exact hole the old blanket
+        // rejection existed to prevent.
+        for entry in &self.server.behaviour {
+            if entry.at.bytes_served.resolve(self.server.content.size.0) == 0 {
+                return Err(invalid(
+                    "server.behaviour has a mutation triggering at zero bytes served, so nothing \
+                     changes mid-transfer and the case would pass without exercising a change"
+                        .to_owned(),
+                ));
+            }
         }
         if self.expect.final_state == FinalState::Failed && self.expect.error_kind.is_none() {
             return Err(invalid(
@@ -508,6 +621,19 @@ impl Case {
             },
             content: self.content(),
             ranges: ranges_to_behaviour(&self.server.ranges),
+            if_range: match self.server.if_range {
+                IfRangeCase::Honoured => IfRangeBehaviour::Honoured,
+                IfRangeCase::Ignored => IfRangeBehaviour::Ignored,
+            },
+            behaviour: self
+                .server
+                .behaviour
+                .iter()
+                .map(|entry| Mutation {
+                    at_bytes_served: entry.at.bytes_served.resolve(self.server.content.size.0),
+                    then: MutationEffect::SetEtag(entry.then.set_etag.clone()),
+                })
+                .collect(),
             framing: match self.server.framing {
                 FramingCase::ContentLength => Framing::ContentLength,
                 FramingCase::Chunked => Framing::Chunked,

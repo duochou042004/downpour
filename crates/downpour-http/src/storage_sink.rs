@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use downpour_intervals::{IntervalMap, WorkerId};
+use downpour_intervals::{Interval, IntervalMap, IntervalState, WorkerId};
 use downpour_storage::journal::FileHeader;
 use downpour_storage::part_file::{PartFile, PartFileError};
 use downpour_storage::writer::{DurableWriter, JournalFile, WriterError};
@@ -200,6 +200,21 @@ impl StorageSink {
 
 #[async_trait]
 impl SinkTarget for StorageSink {
+    /// Read from the interval map, which only reaches `Complete` past the writer's commit
+    /// point — so this can never name a byte that is merely staged. A representation with no
+    /// stated length has no map and reports zero: it cannot be resumed anyway, since we only
+    /// got there because ranges were never proven.
+    fn durable_prefix_end(&self) -> u64 {
+        match &self.backing {
+            Some(Backing::Journalled { intervals, .. }) => intervals
+                .intervals()
+                .iter()
+                .find(|interval| *interval.state() != IntervalState::Complete)
+                .map_or_else(|| intervals.total_length(), Interval::start),
+            _ => 0,
+        }
+    }
+
     async fn write_at(&mut self, offset: u64, bytes: &[u8]) -> Result<(), SinkError> {
         // Copied because the write crosses onto a blocking thread and the borrow cannot. One
         // allocation per chunk; ADR-0016 records it as accepted and names what replaces it.

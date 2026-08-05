@@ -9,20 +9,6 @@
 # accept-ranges-lies existed, and nothing detected that. S1 was very nearly declared complete with
 # two thirds of one invariant's stated proof missing.
 
-etag-changed-midway:
-  stage: S2
-  reason: >
-    Needs the server to change its ETag part way through a transfer. ADR-0010's `behaviour` key
-    describes exactly this and the case loader deliberately REJECTS it while unimplemented, so a
-    case cannot silently pass without anything changing mid-transfer.
-
-200-instead-of-206:
-  stage: S2
-  reason: >
-    A 200 where 206 was expected only means "the representation changed" in the context of a resume
-    request carrying If-Range. Resume does not exist until S2, and the probe-time version of this
-    shape is already covered by accept-ranges-lies.
-
 signed-url-expiry:
   stage: S8
   reason: >

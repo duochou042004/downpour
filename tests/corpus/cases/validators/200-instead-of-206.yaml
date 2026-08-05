@@ -1,0 +1,20 @@
+id: 200-instead-of-206
+category: validators
+description: >
+  The representation has not changed, but the server does not implement `If-Range` and answers
+  the resume with 200 and the whole body. The engine cannot tell this apart from a representation
+  that really did change — and must not try. Both mean "what is on the wire is not the
+  continuation you asked for", so both are a hard stop rather than permission to write the body
+  at the resume offset or to overwrite from byte zero.
+references: ["RFC 9110 §13.1.5", "INVARIANTS.md#i-3"]
+
+server:
+  content: { size: 128KiB, seed: 12 }
+  etag: '"unchanged"'
+  if_range: ignored
+  truncate_body_after: 8KiB
+
+expect:
+  final_state: failed
+  error_kind: validator_mismatch
+  file_renamed: false
