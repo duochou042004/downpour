@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T10:14:18Z",
+  "updated_at": "2026-08-05T10:21:00Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -2844,11 +2844,23 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018. Documentation is now current — README, CHANGELOG, the ADR index and the invariant count all reflect what is actually in the tree."
+    },
+    {
+      "at": "2026-08-05T10:21:00Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Added two-consecutive-resumes-still-verify, a case where the body is cut short twice so the file is assembled from three fetches and the second resume continues from a prefix the first one built. The reasoning for it was that every other resume case exercises exactly one resume, which cannot distinguish an offset computed from the durable prefix from one computed from what the first attempt delivered. Mutation testing did not support that reasoning: an off-by-one in the resume offset is caught by the single-resume cases too, and I found no mutation this case alone detects. Kept it anyway, because a digest verified over a three-fetch assembly is a different shape from one verified over two, but the case now says in its own description that it is confidence rather than a new falsifiable claim. Counting it as coverage it has not demonstrated would be the same over-generosity B-12 exists to correct, one layer down.",
+      "tasks_touched": [],
+      "files_touched": [
+        "tests/corpus/cases/validators/two-consecutive-resumes-still-verify.yaml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "74 corpus cases. S2 unchanged at 14/15 tasks with all seven criteria met; the gate waits on ADR-0018."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 73,
-    "corpus_cases_passing": 73,
+    "corpus_cases_total": 74,
+    "corpus_cases_passing": 74,
     "sim_seeds_fixed": 3,
     "invariants_covered": 8,
     "invariants_total": 14,

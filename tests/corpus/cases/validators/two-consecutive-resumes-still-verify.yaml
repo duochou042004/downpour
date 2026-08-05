@@ -1,0 +1,26 @@
+id: two-consecutive-resumes-still-verify
+category: validators
+description: >
+  The body is cut short twice, so the file is assembled from three fetches and the second resume
+  continues from a prefix the first resume built. Every other resume case in this corpus
+  exercises exactly one, which cannot distinguish "the resume offset is computed from the
+  durable prefix" from "the resume offset is computed from what the first attempt delivered" —
+  the two agree only when there has been one attempt.
+
+  Honest about its own value: an off-by-one in the resume offset is caught by the single-resume
+  cases too, so no mutation has been found that only this case detects. What it adds is a
+  different shape — a file assembled from three fetches, with the second resume continuing from
+  a prefix the first one built — and a digest verified over that assembly. It is confidence
+  rather than a new falsifiable claim, and it is recorded that way rather than counted as
+  coverage it has not demonstrated.
+references: ["RFC 9110 §13.1.5", "RFC 9530", "INVARIANTS.md#i-1", "INVARIANTS.md#i-3"]
+
+server:
+  content: { size: 256KiB, seed: 34 }
+  etag: '"stable-across-resumes"'
+  digest: computed
+  transient_body_failures: 2
+
+expect:
+  final_state: completed
+  file_renamed: true
