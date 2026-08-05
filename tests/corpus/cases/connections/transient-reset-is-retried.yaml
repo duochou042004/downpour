@@ -1,5 +1,5 @@
 id: transient-reset-is-retried
-category: framing
+category: connections
 description: >
   The first body request is truncated mid-transfer and the connection closed — what a reset looks
   like to a client — and the second succeeds. The download must recover and produce a byte-exact

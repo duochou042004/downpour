@@ -1,5 +1,5 @@
 id: html-instead-of-file
-category: framing
+category: session
 description: >
   The server answers 200 with `text/html` and a login page where a binary was expected. Only
   inspecting the content type catches it. The engine must report a session problem and write

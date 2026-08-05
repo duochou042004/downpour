@@ -1,5 +1,5 @@
 id: repeated-resets-exhaust-the-budget
-category: framing
+category: connections
 description: >
   Every body request is truncated, forever. The engine must give up after MAX_RETRIES rather than
   looping indefinitely, and must not give the final name to the short file it has. The mirror of

@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T10:46:10Z",
+  "updated_at": "2026-08-05T10:51:35Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -2900,6 +2900,20 @@
         "state/progress.json"
       ],
       "left_in_progress": "The corpus inventory is now machine-visible rather than prose. S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018. The empty categories — proxies, protocols, media — are all gated on features that do not exist yet (S5 through S9), which the printed table now makes obvious at a glance."
+    },
+    {
+      "at": "2026-08-05T10:51:35Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Moved three miscategorised corpus cases, which the new inventory printout is what made visible. framing sat at 19 against a target of 15 while connections sat at 1 of 20, and that pattern is almost always cases filed in the wrong place rather than genuine overshoot. transient-reset-is-retried and repeated-resets-exhaust-the-budget both drive transient_body_failures — a connection dropping mid-body and being retried, which is docs/09's connections category (silent drops, close-after-N), not framing, which is about length signalling and encoding. html-instead-of-file is listed by name under session in docs/09's own table. framing goes 19 to 16, connections 1 to 3, session 1 to 2, and the total is unchanged at 74 because nothing was added or removed. The value is that the per-category numbers now mean what they say: connections showing 1 while three connection cases existed understated coverage in one place and overstated it in another, and a reader deciding what to write next would have been misled in both directions.",
+      "tasks_touched": [],
+      "files_touched": [
+        "tests/corpus/cases/connections/",
+        "tests/corpus/cases/session/",
+        "tests/corpus/cases/framing/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "Corpus categories now reflect docs/09's own taxonomy. S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018."
     }
   ],
   "metrics": {
