@@ -468,6 +468,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "downpour-daemon"
+version = "0.1.0"
+dependencies = [
+ "downpour-intervals",
+ "downpour-storage",
+ "downpour-types",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "downpour-http"
 version = "0.1.0"
 dependencies = [
