@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T06:33:05Z",
+  "updated_at": "2026-08-05T06:40:43Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1796,6 +1796,13 @@
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "Only proving the failure direction leaves the success path untested through the real engine, which is where a check that always fails would hide"
+    },
+    {
+      "id": "B-29",
+      "text": "OBSERVED, NOT REPRODUCED. Immediately after merging S2-T11 (develop 26c5c95), one `just gate` run reported 268 tests run: 267 passed, 1 failed, 2 skipped. Nine subsequent full-workspace runs on the same commit all passed 268/268, and the failing test's name was not captured before the output scrolled — a real mistake in how that run was filtered. Something in the suite is therefore intermittently red at roughly a 1-in-10 rate on this machine, and it is not yet known which test or why. Candidates worth eliminating first: the new completion tests and the recovery tests both build real files under a shared temp directory and are timing-sensitive around fsync; the corpus server binds ephemeral ports. Next step is `cargo nextest run --workspace` under a loop with output retained, or nextest's own retry/flaky reporting, until it reappears with a name.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "An intermittently red suite is worse than a red one: it trains everyone to re-run until green, which is exactly how a real defect gets classified as noise. Recorded with its exact observation so the next session starts from evidence rather than from memory"
     }
   ],
   "session_log": [
@@ -2534,6 +2541,17 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-C6 is met with named evidence; S2 now stands at 11/15 tasks and 4/7 criteria. S2-C1, C5 and C7 remain unmet. New backlog B-27 (S2-T12 still owes the crash-injected completion scenario; this task's test does not discharge it) and B-28 (the corpus proves the digest-mismatch direction but not the matching one, which needs a `digest: computed` server option in S2-T15). B-22 is now actionable: with real verification in place, the journal may be deleted after a successful download, which S2-T14 or a follow-up should do."
+    },
+    {
+      "at": "2026-08-05T06:40:43Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Recorded B-29: one just gate run on develop 26c5c95 reported 267 of 268 passing immediately after the S2-T11 merge, and nine subsequent full-workspace runs on the same commit all passed. The failing test's name was not captured before the output scrolled, which was a filtering mistake on my part, so the flake is recorded with its exact observation and the candidates worth eliminating rather than being quietly forgotten. No source changed.",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "B-29 is open and should be chased before S2-T12 builds the simulation harness on top of a suite that is intermittently red — a flaky baseline would make crash-matrix results unreadable. S2 stands at 11/15 tasks and 4/7 criteria."
     }
   ],
   "metrics": {
