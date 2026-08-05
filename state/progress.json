@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T09:34:08Z",
+  "updated_at": "2026-08-05T09:39:49Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1539,6 +1539,13 @@
       "status": "proposed",
       "superseded_by": null,
       "stage": "S2"
+    },
+    {
+      "id": "ADR-0018",
+      "title": "Fault injection lives at a production seam; the local corpus category targets 10",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S2"
     }
   ],
   "risks": [
@@ -2773,6 +2780,21 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T15 remains in_progress at local 10 of 12, and B-32 now carries the analysis rather than an open task: the last two classes look un-expressible by the corpus, so the honest resolutions are a spec change to docs/09 or an accepted permanent gap. Both are the maintainer's call. All seven S2 exit criteria are met; the gate waits only on how S2-T15 is closed."
+    },
+    {
+      "at": "2026-08-05T09:39:49Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Wrote ADR-0018 rather than continuing to ask which way to resolve local's last two cases. HARNESS.md section 5 gives the path for disagreeing with a spec — say so, implement it as written, then open an ADR proposing the change — and proposing is an agent's job in a way that editing docs/09 is not. The decision it proposes is to set the local corpus target to 10 and name an owner for each excluded class: tests/sim for disk-full, manual qualification for network filesystems. The reasoning that matters is the option NOT taken. Meeting 12 exactly would need a fault-injection hook inside StorageSink, and a production write path carrying a branch that exists only for tests is a branch that can be wrong in production — in the durability path specifically, which is unrecoverable. DurableData and DurableJournal are seams the writer already has for its own reasons, so a bounded volume implementing them costs the production path nothing, while a hook would cost it a branch. No invariant is weakened; only the layer that tests I-10 moves, and it moves to the layer that can observe it.",
+      "tasks_touched": [
+        "S2-T15"
+      ],
+      "files_touched": [
+        "docs/adr/0018-local-corpus-scope-and-fault-injection-boundary.md",
+        "docs/adr/README.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "ADR-0018 is proposed and awaits the maintainer. If accepted, docs/09's local target becomes 10, S2-T15 closes at 10 of 10, and the S2 gate has nothing left blocking it — all seven criteria are already met. If rejected, the alternatives are on the table in the ADR's options, including the fault-injection hook and its cost. current_stage is untouched and no spec file was edited."
     }
   ],
   "metrics": {
