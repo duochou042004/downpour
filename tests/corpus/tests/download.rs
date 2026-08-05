@@ -447,19 +447,27 @@ async fn a_zero_length_representation_still_produces_a_file() {
 async fn every_successful_download_uses_verified_storage() {
     use downpour_storage::journal::{JournalRecord, replay_bytes};
 
-    let server = PathologyServer::start(spec()).await.expect("server starts");
+    let server = PathologyServer::start(ServerSpec {
+        truncate_body_after: Some(64 * 1024),
+        ..spec()
+    })
+    .await
+    .expect("server starts");
     let scratch = Scratch::new("verified-storage");
 
-    let path = run(&server, &scratch, TransportMode::Http1Only)
+    // Interrupted rather than completed, and deliberately so. A *verified* download deletes its
+    // journal (docs/04 §6 step 10), so the durable record only exists to be inspected while the
+    // download is still resumable — which is exactly when it matters. The claim is unchanged:
+    // whatever the journal says is durable really is on disk, and really is the right bytes.
+    let _ = run(&server, &scratch, TransportMode::Http1Only)
         .await
-        .expect("downloads");
+        .expect_err("the body is truncated");
 
     let content = Content::new(42, SIZE);
-    let bytes = std::fs::read(&path).expect("read the downloaded file");
-    assert_eq!(content.first_mismatch(0, &bytes), None);
+    let bytes = std::fs::read(scratch.path().join("content.dppart")).expect("read the part file");
     assert_eq!(
         scratch.entries(),
-        vec!["content"],
+        vec!["content.dppart"],
         "the journal belongs with application state, not next to the data (docs/04 §1)"
     );
 
@@ -508,15 +516,20 @@ async fn every_successful_download_uses_verified_storage() {
     }
     covered.sort_unstable();
 
-    assert!(!covered.is_empty(), "a 512 KiB download recorded no blocks");
+    assert!(
+        !covered.is_empty(),
+        "the transfer recorded no blocks at all"
+    );
     let mut next = 0_u64;
     for (start, end) in &covered {
         assert_eq!(*start, next, "gap or overlap in journalled coverage");
         next = *end;
     }
     assert_eq!(
-        next, SIZE,
-        "the journal must account for every byte of the representation"
+        next,
+        64 * 1024,
+        "the journal must account for exactly the bytes that arrived — no more, which would \
+         claim bytes nobody wrote, and no less, which would refetch bytes already durable"
     );
 }
 
@@ -547,4 +560,41 @@ async fn the_part_file_is_preallocated_to_its_full_length_before_any_byte_arrive
         SIZE,
         "the part file is preallocated to the representation length, not grown to what arrived"
     );
+}
+
+/// The same URL can be downloaded twice. Regression test for B-29.
+///
+/// S2-T8 made both durable artifacts exclusive creates and named the journal from a digest of
+/// the final URL, and B-22 left the journal in place after a successful download. Together those
+/// meant the *second* download of any URL collided with the first one's journal and failed —
+/// user-visible as "delete the file, fetch it again, get an error". It surfaced first as an
+/// intermittent CLI test failure, because ephemeral ports are recycled and a reused port
+/// reproduces the same final URL.
+///
+/// docs/04 §6 step 10 deletes the journal once the download is verified, which is what makes the
+/// exclusive create a real ownership check rather than a one-shot latch. S2-T11 made that safe:
+/// before it, deleting on the strength of a byte counter is exactly what I-4 forbids.
+#[tokio::test]
+async fn the_same_url_can_be_downloaded_twice() {
+    let server = PathologyServer::start(spec()).await.expect("server starts");
+    let scratch = Scratch::new("twice");
+
+    let first = run(&server, &scratch, TransportMode::Http1Only)
+        .await
+        .expect("the first download succeeds");
+    assert_eq!(
+        scratch.journal_bytes(),
+        None,
+        "a verified download deletes its journal (docs/04 §6 step 10); leaving it behind both \
+         leaks state forever and makes the next download of this URL collide"
+    );
+    std::fs::remove_file(&first).expect("the user removes the file and fetches it again");
+
+    let second = run(&server, &scratch, TransportMode::Http1Only)
+        .await
+        .expect("the second download of the same URL must also succeed");
+
+    let bytes = std::fs::read(&second).expect("read");
+    assert_eq!(Content::new(42, SIZE).first_mismatch(0, &bytes), None);
+    assert_eq!(scratch.journal_bytes(), None);
 }

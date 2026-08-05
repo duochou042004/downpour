@@ -226,7 +226,13 @@ impl StorageSink {
     }
 
     /// Run one blocking operation on the writer, moving it out and back.
-    /// Verify this download and give it its final name, or fail without renaming (I-4).
+    /// Verify this download, give it its final name, and retire its journal (docs/04 §6).
+    ///
+    /// Step 10's deletion is what makes the exclusive create an ownership check rather than a
+    /// one-shot latch: a journal that outlives its verified download blocks the next download of
+    /// the same URL forever, and leaks a file per download besides. It happens only after
+    /// verification passed and the rename succeeded — deleting it on the strength of a byte
+    /// counter is exactly what I-4 forbids, which is why this could not land before S2-T11.
     pub async fn complete(&mut self, final_path: PathBuf) -> Result<Option<Sealed>, SinkError> {
         let part_path = self.artifacts.part_path.clone();
         let digest = self.digest.clone();
@@ -244,7 +250,22 @@ impl StorageSink {
             source: std::io::Error::other(error.to_string()),
         })?;
         self.backing = Some(backing);
-        result
+        let sealed = result?;
+
+        // Only now, and never on any failure path: on a digest mismatch or a short file the
+        // journal is evidence the user may want to retry from (docs/04 §6).
+        if let Some(journal) = self.artifacts.journal_path.take()
+            && let Err(error) = tokio::fs::remove_file(&journal).await
+        {
+            // The download is verified and named; a journal we could not remove is litter and a
+            // future collision, not a reason to fail a download that succeeded.
+            tracing::warn!(
+                path = %journal.display(),
+                %error,
+                "could not remove the recovery journal of a verified download"
+            );
+        }
+        Ok(sealed)
     }
 
     async fn on_writer<F>(&mut self, operation: F) -> Result<(), SinkError>
