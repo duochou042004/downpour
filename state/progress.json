@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T06:40:43Z",
+  "updated_at": "2026-08-05T07:52:51Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1750,7 +1750,7 @@
     },
     {
       "id": "B-22",
-      "text": "A successful download leaves its recovery journal behind. docs/04 section 6 step 10 deletes it, but only as the last step of a sequence whose earlier steps — gap check, server digest, Sealed record — are S2-T11. Deleting it on the strength of a byte counter is exactly what I-4 forbids, so retention is deliberate until T11 can delete it against real verification. every_successful_download_uses_verified_storage asserts on that journal and will need to move to the interrupted path when T11 lands.",
+      "text": "CLOSED 2026-08-05 by the B-29 fix. A verified download now deletes its journal (docs/04 section 6 step 10), which S2-T11's real verification made safe. every_successful_download_uses_verified_storage moved to the interrupted path as this entry predicted, where the durable record is both inspectable and actually useful.",
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "Retaining a journal is recoverable garbage; deleting one for a download that was not actually verified is data loss, so the conservative order is verify first, delete second"
@@ -1799,10 +1799,17 @@
     },
     {
       "id": "B-29",
-      "text": "OBSERVED, NOT REPRODUCED. Immediately after merging S2-T11 (develop 26c5c95), one `just gate` run reported 268 tests run: 267 passed, 1 failed, 2 skipped. Nine subsequent full-workspace runs on the same commit all passed 268/268, and the failing test's name was not captured before the output scrolled — a real mistake in how that run was filtered. Something in the suite is therefore intermittently red at roughly a 1-in-10 rate on this machine, and it is not yet known which test or why. Candidates worth eliminating first: the new completion tests and the recovery tests both build real files under a shared temp directory and are timing-sensitive around fsync; the corpus server binds ephemeral ports. Next step is `cargo nextest run --workspace` under a loop with output retained, or nextest's own retry/flaky reporting, until it reappears with a name.",
+      "text": "RESOLVED 2026-08-05. Not flakiness — a real user-facing bug introduced in S2-T8. Reproduced by saturating all 16 cores and running the workspace at 48 test threads: downpour-cli::dp_add::dp_add_downloads_from_a_server_without_range_support failed 2 of 6 runs. Cause: `dp` resolves its journal directory to the shared XDG data dir, names each journal blake3(final_url)[..16].dpj, creates it exclusively, and B-22 meant a successful download never deleted it. Ephemeral ports are recycled, so a reused port reproduces the same final URL, hits the previous run's journal, and the exclusive create fails the whole download. 185 leaked journals were found in the developer's real home directory. The user-visible form is worse than the test symptom: download a file, delete it, download it again, and it fails. Fixed by docs/04 section 6 step 10 — delete the journal after verification passes and the rename succeeds — which S2-T11 made safe. Regression test: tests/corpus/tests/download.rs::the_same_url_can_be_downloaded_twice. Verified with 8 runs under the same saturation, zero failures.",
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "An intermittently red suite is worse than a red one: it trains everyone to re-run until green, which is exactly how a real defect gets classified as noise. Recorded with its exact observation so the next session starts from evidence rather than from memory"
+    },
+    {
+      "id": "B-30",
+      "text": "A download that FAILS still leaves its journal in the shared state directory, correctly — it is evidence and a resume depends on it. Nothing ever removes those. Eight full-workspace runs left eight journals behind, so a real user accumulates one file per failed download forever. docs/04 section 8 defines cleanup and retention and is unimplemented; it needs an age or count bound, and a `dp` command to list and discard abandoned downloads. Distinct from B-29, which was about journals surviving SUCCESSFUL downloads and blocking the next one.",
+      "found_in_stage": "S2",
+      "target_stage": "S3",
+      "rationale": "Found while verifying the B-29 fix. Unbounded growth in a user's home directory is a real defect even though each individual retention is correct"
     }
   ],
   "session_log": [
@@ -2552,6 +2559,19 @@
         "state/progress.json"
       ],
       "left_in_progress": "B-29 is open and should be chased before S2-T12 builds the simulation harness on top of a suite that is intermittently red — a flaky baseline would make crash-matrix results unreadable. S2 stands at 11/15 tasks and 4/7 criteria."
+    },
+    {
+      "at": "2026-08-05T07:52:51Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Chased B-29 before starting S2-T12, on the grounds that a flaky baseline makes crash-matrix results unreadable. It was not flakiness. Reproduced it by saturating all 16 cores and running at 48 test threads, which failed dp_add_downloads_from_a_server_without_range_support 2 of 6 times; twelve runs at default settings had shown nothing. The cause was a bug I introduced in S2-T8: dp writes journals to the shared XDG data dir under a name derived from the final URL, creates them exclusively, and B-22 meant a successful download never deleted one. Recycled ephemeral ports reproduce a final URL, so a later download collides with an earlier journal and fails outright. 185 leaked journals were sitting in the developer's home directory. The user-visible form is worse than the test symptom: fetch a file, delete it, fetch it again, and it fails. Fixed by implementing docs/04 section 6 step 10 — delete the journal after verification passes and the rename succeeds — which only became safe once S2-T11 landed real verification. Moved every_successful_download_uses_verified_storage to the interrupted path, where the durable record is both inspectable and actually useful, exactly as B-22 predicted it would have to. Verified with 8 runs under the original saturation, zero failures. just gate 269 tests, 2 skipped.",
+      "tasks_touched": [],
+      "files_touched": [
+        "crates/downpour-http/src/storage_sink.rs",
+        "tests/corpus/tests/download.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "B-29 and B-22 are both closed. New B-30: a FAILED download still leaves its journal forever, which is correct individually but unbounded in aggregate; docs/04 section 8's retention policy is unimplemented and scoped to S3. S2-T12 is now unblocked against a baseline that is actually stable — which was the point of doing this first. S2 stands at 11/15 tasks and 4/7 criteria; S2-C1, C5 and C7 remain unmet."
     }
   ],
   "metrics": {
