@@ -1,0 +1,16 @@
+id: digest-payload-is-not-base64
+category: validators
+description: >
+  A `Repr-Digest` naming an algorithm we do implement, carrying a payload that is not base64 of
+  the right length. The header is syntactically a digest and semantically nothing. Same rule as
+  an unknown algorithm: it proves nothing either way, so it must not fail the download — a
+  server's bad syntax is not the user's problem.
+references: ["RFC 9530", "INVARIANTS.md#i-4", "ADR-0017"]
+
+server:
+  content: { size: 32KiB, seed: 24 }
+  digest: "sha-256=:this-is-not-base64-at-all:"
+
+expect:
+  final_state: completed
+  file_renamed: true

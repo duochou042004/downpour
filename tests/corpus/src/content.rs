@@ -123,6 +123,30 @@ impl Content {
     /// Returns the first disagreement, or `None` if every byte matches. This is the corpus's
     /// corruption check, which the runner applies to every case unconditionally (ADR-0010).
     ///
+    /// The base64 SHA-256 of this whole representation, for a server that states RFC 9530
+    /// evidence about content it generates on demand.
+    ///
+    /// Streams rather than materialising: a case may be a gigabyte, and the point of a seekable
+    /// generator is that no part of the corpus ever has to hold one.
+    #[must_use]
+    pub fn sha256_base64(&self) -> String {
+        use base64::Engine as _;
+        use sha2::{Digest as _, Sha256};
+
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut offset = 0_u64;
+        while offset < self.len() {
+            let take = usize::try_from((self.len() - offset).min(65_536)).unwrap_or(65_536);
+            self.fill(offset, &mut buffer[..take]);
+            hasher.update(&buffer[..take]);
+            offset += u64::try_from(take).unwrap_or(0);
+        }
+        base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
+    }
+
+    /// The first offset at which `actual` disagrees with this representation, if any.
+    ///
     /// Comparison is chunked so that verifying a 1 GB file does not allocate 1 GB, but the
     /// report is per byte so the offset is exact.
     #[must_use]

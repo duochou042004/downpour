@@ -1,0 +1,17 @@
+id: digest-unknown-algorithm-is-ignored
+category: validators
+description: >
+  The server states a digest under an algorithm this build cannot compute. Evidence we cannot
+  check is no better and no worse than evidence never offered, so the download completes on
+  length and coverage alone. Failing here would punish the user for a server choosing a hash we
+  do not implement; passing it off as verified would make a "verified" download mean two
+  different things.
+references: ["RFC 9530", "INVARIANTS.md#i-4", "ADR-0017"]
+
+server:
+  content: { size: 32KiB, seed: 23 }
+  digest: "sha-1=:2jmj7l5rSw0yVb/vlWAYkK/YBwk=:"
+
+expect:
+  final_state: completed
+  file_renamed: true

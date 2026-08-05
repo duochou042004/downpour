@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T08:33:54Z",
+  "updated_at": "2026-08-05T08:44:04Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -966,7 +966,7 @@
         {
           "id": "S2-T15",
           "title": "Complete the validators and local corpus categories and close the S2 invariant deferrals",
-          "status": "todo",
+          "status": "in_progress",
           "proof": "tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes, tests/corpus/tests/invariant_proofs.rs::every_named_invariant_proof_exists_or_is_deferred, and zero unconditional byte-comparison findings",
           "files": [
             "tests/corpus/cases/validators/",
@@ -975,7 +975,7 @@
             "state/progress.json"
           ],
           "blocked_by": "S2-T9, S2-T11, S2-T13",
-          "notes": "Meet the docs/09 category inventory with distinct server/local pathologies, not padded header variants. B-18 must lose etag-changed-midway and 200-instead-of-206; the S7/S8 request-context cases remain deferred with their existing reasons.",
+          "notes": "Meet the docs/09 category inventory with distinct server/local pathologies, not padded header variants. B-18 must lose etag-changed-midway and 200-instead-of-206; the S7/S8 request-context cases remain deferred with their existing reasons. PARTIAL 2026-08-05: validators is at 11 of docs/09's target of 15; local is at 0 of 12 and has no cases at all, because a local pathology — disk full, a read-only target, a path-length limit, a name collision — is a property of the filesystem and the case schema has no vocabulary for one. Adding that vocabulary is the bulk of the remaining work and is what B-32 records. B-28 is closed: `digest: computed` exists and validators/server-digest-verified proves the matching direction, which the corpus previously could not express.",
           "invariants": [
             "I-1",
             "I-3",
@@ -1799,7 +1799,7 @@
     },
     {
       "id": "B-28",
-      "text": "The corpus proves the digest-mismatch direction but not the matching direction: a case would need the pathology server to compute the SHA-256 of its own generated content, since a literal base64 digest in YAML for a given seed and size is unmaintainable by hand. Add a `digest: computed` server option in S2-T15 so a verified download is covered end to end as well as a refused one.",
+      "text": "CLOSED 2026-08-05. `digest: computed` asks the pathology server to state the true SHA-256 of the content it generates, and validators/server-digest-verified proves the matching direction. Before it the corpus could only express a WRONG digest, which a verification step that always failed would also have passed.",
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "Only proving the failure direction leaves the success path untested through the real engine, which is where a check that always fails would hide"
@@ -1824,6 +1824,13 @@
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "B-27 recorded that S2-T12 still owed this; the harness now exists, so the obligation is concrete rather than hypothetical"
+    },
+    {
+      "id": "B-32",
+      "text": "The `local` corpus category is empty and needs case-schema vocabulary that does not exist. docs/09 targets 12 cases — disk full, permissions, path limits, collisions, network filesystems — and every one is a property of the FILESYSTEM rather than of the server, so the declarative case format has no way to express them. The runner would need to set up a target directory in a particular state (read-only, near-full, holding a colliding name, at a path-length limit) before the transfer and assert on what the engine did about it. tests/sim already covers disk-full at the storage layer; the corpus case would cover it end to end through the real engine, which is a different claim.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "Recorded rather than padded: docs/09 asks for distinct pathologies and the honest blocker is missing vocabulary, not missing YAML"
     }
   ],
   "session_log": [
@@ -2638,11 +2645,30 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2 stands at 14/15 tasks and 6/7 criteria. Only S2-T15 remains, and it is what S2-C7 (zero silent corruption across the whole corpus) waits on. B-25's cross-process resume is now possible in principle — startup recovery reconciles the artifacts — but nothing wires a recovered download back into a transfer, which is S3. Paused(DiskFull) as a lifecycle state remains unimplemented for the same reason."
+    },
+    {
+      "at": "2026-08-05T08:44:04Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Advanced S2-T15 without completing it. Added `digest: computed`, which asks the pathology server to state the true SHA-256 of the content it generates — closing B-28, because until now the corpus could only express a WRONG digest and a verification step that always failed would have passed that case too. Added six distinct validators cases: the matching digest direction, an unknown digest algorithm, a non-base64 digest payload, Last-Modified as a usable If-Range validator, an unquoted ETag being refused as not strong, and an ETag that changes without changing the length — the last being the trap the whole category exists for, since every check that does not compare content agrees. One of those cases immediately found a real gap, in the corpus server rather than the engine: If-Range was only ever compared against the ETag, so a date-form condition got a 200 and a correct resume against a correct server would have failed. RFC 9110 section 13.1.5 allows either form. Both new server behaviours were mutation-checked and both are caught. just gate 279 tests, 2 skipped; 59 corpus cases.",
+      "tasks_touched": [
+        "S2-T15"
+      ],
+      "files_touched": [
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/content.rs",
+        "tests/corpus/tests/probe.rs",
+        "tests/corpus/cases/validators/",
+        "tests/corpus/Cargo.toml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T15 is IN PROGRESS, not done, and S2-C7 is NOT claimed. validators stands at 11 of docs/09's 15; local is at 0 of 12 and blocked on case-schema vocabulary for filesystem pathologies, recorded as B-32. S2 is at 14/15 tasks and 6/7 criteria. The remaining work is genuinely the harder half: four more validators cases that are distinct pathologies rather than header variants, and a local category that needs the runner to be able to put a target directory into a particular state before the transfer."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 53,
-    "corpus_cases_passing": 53,
+    "corpus_cases_total": 59,
+    "corpus_cases_passing": 59,
     "sim_seeds_fixed": 2,
     "invariants_covered": 5,
     "invariants_total": 14,

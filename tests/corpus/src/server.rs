@@ -145,7 +145,7 @@ pub struct ServerSpec {
     /// `Content-Disposition`, verbatim, traversal attempts included.
     pub content_disposition: Option<String>,
     /// `Repr-Digest`, verbatim (RFC 9530).
-    pub digest: Option<String>,
+    pub digest: Option<DigestSpec>,
     /// Statuses for a chain of redirect hops. Hop `i` redirects to hop `i + 1`; the last
     /// redirects to the content.
     pub redirect_chain: Vec<u16>,
@@ -245,6 +245,15 @@ impl Default for ServerSpec {
             behaviour: Vec::new(),
         }
     }
+}
+
+/// What a server states in `Repr-Digest`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DigestSpec {
+    /// Exactly these characters, however wrong they are.
+    Literal(String),
+    /// The true SHA-256 of the content this server serves.
+    Computed,
 }
 
 /// How a server treats the `If-Range` header a resume carries.
@@ -563,7 +572,17 @@ fn if_range_permits(spec: &ServerSpec, if_range: Option<&str>, current_etag: Opt
     };
     match spec.if_range {
         IfRangeBehaviour::Ignored => false,
-        IfRangeBehaviour::Honoured => current_etag.is_some_and(|etag| etag == sent),
+        // RFC 9110 §13.1.5: the condition carries *either* an entity-tag or an HTTP-date, and a
+        // date is compared against `Last-Modified`. Comparing only against the ETag would answer
+        // 200 to every date-form resume, which looks like "the representation changed" and would
+        // make a correct client's correct resume fail against a correct server.
+        IfRangeBehaviour::Honoured => {
+            current_etag.is_some_and(|etag| etag == sent)
+                || spec
+                    .last_modified
+                    .as_deref()
+                    .is_some_and(|modified| modified == sent)
+        }
     }
 }
 
@@ -746,7 +765,15 @@ fn plan(
         headers.push(("Content-Disposition".to_owned(), disposition.clone()));
     }
     if let Some(digest) = &spec.digest {
-        headers.push(("Repr-Digest".to_owned(), digest.clone()));
+        let value = match digest {
+            DigestSpec::Literal(literal) => literal.clone(),
+            // The true digest of the bytes this server is about to serve. Computed rather than
+            // written down because a literal for a given seed and size cannot be maintained by
+            // hand, and a corpus that can only express a WRONG digest cannot tell a working
+            // verification step from one that always fails.
+            DigestSpec::Computed => format!("sha-256=:{}:", spec.content.sha256_base64()),
+        };
+        headers.push(("Repr-Digest".to_owned(), value));
     }
     for (name, value) in &spec.extra_headers {
         headers.push((name.clone(), value.clone()));

@@ -1,0 +1,17 @@
+id: last-modified-is-usable-when-nothing-stronger
+category: validators
+description: >
+  No `ETag` at all, but a `Last-Modified`. I-3 permits it explicitly — "or `Last-Modified` when
+  the server offers nothing stronger" — so a resume may condition on it, unlike a weak ETag which
+  may compare equal across representations that differ byte for byte. The distinction matters:
+  treating this as unusable would restart every such download from zero for no safety gain.
+references: ["RFC 9110 §8.8.2", "RFC 9110 §13.1.5", "INVARIANTS.md#i-3"]
+
+server:
+  content: { size: 64KiB, seed: 25 }
+  last_modified: "Mon, 03 Aug 2026 10:00:00 GMT"
+  transient_body_failures: 1
+
+expect:
+  final_state: completed
+  file_renamed: true

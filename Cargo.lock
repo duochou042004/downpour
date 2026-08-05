@@ -453,6 +453,7 @@ dependencies = [
 name = "downpour-corpus"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "downpour-http",
  "downpour-storage",
@@ -462,6 +463,7 @@ dependencies = [
  "hyper-util",
  "serde",
  "serde_norway",
+ "sha2",
  "thiserror",
  "tokio",
  "url",

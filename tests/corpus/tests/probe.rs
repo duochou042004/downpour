@@ -389,7 +389,9 @@ async fn a_strong_validator_is_recorded_and_a_weak_one_is_not() {
 #[tokio::test]
 async fn a_server_digest_is_captured_when_offered() {
     let server = PathologyServer::start(ServerSpec {
-        digest: Some("sha-256=:BBBB:".to_owned()),
+        digest: Some(downpour_corpus::server::DigestSpec::Literal(
+            "sha-256=:BBBB:".to_owned(),
+        )),
         ..spec()
     })
     .await
