@@ -215,6 +215,10 @@ pub struct DurableWriter<D, J> {
     staged_bytes: u64,
     first_staged_at: Option<Duration>,
     poisoned: bool,
+    /// Offset at which the volume refused a write, once that has happened.
+    disk_full_at: Option<u64>,
+    /// Bytes whose journal record crossed the commit point.
+    durable_bytes: u64,
 }
 
 impl<D: DurableData, J: DurableJournal> DurableWriter<D, J> {
@@ -236,6 +240,8 @@ impl<D: DurableData, J: DurableJournal> DurableWriter<D, J> {
             staged_bytes: 0,
             first_staged_at: None,
             poisoned: false,
+            disk_full_at: None,
+            durable_bytes: 0,
         })
     }
 
@@ -274,6 +280,24 @@ impl<D: DurableData, J: DurableJournal> DurableWriter<D, J> {
         let digest = *blake3::hash(bytes).as_bytes();
 
         if let Err(error) = self.data.write_all_at(offset, bytes) {
+            if let Some(offset) = no_space_offset(&error, offset) {
+                // docs/04 §2.4. The write is refused, and the part file is emphatically NOT
+                // shortened to make room: the extent we hold is where the bytes we would resume
+                // from live, and the user's other data is not ours to sacrifice either.
+                //
+                // Everything already staged had its bytes written before this failure, so the
+                // journal — which is small, and for which there is almost always room — is
+                // flushed to record it. Skipping that is not corruption, but it discards work
+                // the user already paid for, and after a pause is exactly when that hurts.
+                if let Err(flush_error) = self.flush(intervals) {
+                    tracing::warn!(
+                        %flush_error,
+                        "could not record staged progress after the volume filled"
+                    );
+                }
+                self.disk_full_at = Some(offset);
+                return Err(WriterError::NoSpace { offset });
+            }
             self.poisoned = true;
             return Err(error);
         }
@@ -379,10 +403,30 @@ impl<D: DurableData, J: DurableJournal> DurableWriter<D, J> {
 
         *intervals = next_intervals;
         self.next_sequence = next_sequence;
+        for block in &completed {
+            self.durable_bytes = self
+                .durable_bytes
+                .saturating_add(block.range.end - block.range.start);
+        }
         self.staged.clear();
         self.staged_bytes = 0;
         self.first_staged_at = None;
         Ok(completed)
+    }
+
+    /// Bytes recorded durable by the time the volume filled.
+    ///
+    /// Meaningful only after [`WriterError::NoSpace`]. Reported so a caller can pause the
+    /// download at an exact, resumable point rather than guessing at one.
+    #[must_use]
+    pub fn durable_bytes_after_disk_full(&self) -> u64 {
+        self.durable_bytes
+    }
+
+    /// Whether the volume refused a write, and where.
+    #[must_use]
+    pub const fn disk_full_at(&self) -> Option<u64> {
+        self.disk_full_at
     }
 
     /// The sequence the next journal append must carry.
@@ -545,7 +589,39 @@ pub enum WriterError {
     /// No sequential journal number remains for the complete batch.
     #[error("recovery-journal sequence space is exhausted")]
     SequenceExhausted,
+    /// The volume is full. Its own variant, not a generic I/O failure, because I-10 requires a
+    /// clean resumable pause rather than a failed download — and the part file is never
+    /// truncated to make room, whatever that costs (docs/04 §2.4).
+    #[error("no space left on the volume while writing at offset {offset}")]
+    NoSpace {
+        /// Where the write was refused.
+        offset: u64,
+    },
     /// A preceding failure may have partially changed disk state; replay is required first.
     #[error("durable writer is poisoned and must be reconstructed from journal replay")]
     Poisoned,
+}
+
+/// Whether a writer failure is the volume filling up, and at which offset.
+///
+/// `std::io::ErrorKind::StorageFull` is still unstable, so the raw code is matched. Worth the
+/// platform constants because I-10 turns a full disk into a clean resumable pause rather than a
+/// failed download, and that dispatch needs the distinction.
+fn no_space_offset(error: &WriterError, offset: u64) -> Option<u64> {
+    /// `ENOSPC` on Linux and the other Unixes we target.
+    const ENOSPC: i32 = 28;
+    /// `ERROR_HANDLE_DISK_FULL`.
+    const WIN_HANDLE_DISK_FULL: i32 = 39;
+    /// `ERROR_DISK_FULL`.
+    const WIN_DISK_FULL: i32 = 112;
+
+    let raw = match error {
+        WriterError::PartFile(PartFileError::Io { source, .. })
+        | WriterError::Io { source, .. } => source.raw_os_error(),
+        WriterError::NoSpace { offset } => return Some(*offset),
+        _ => None,
+    }?;
+    let full = (cfg!(unix) && raw == ENOSPC)
+        || (cfg!(windows) && (raw == WIN_HANDLE_DISK_FULL || raw == WIN_DISK_FULL));
+    full.then_some(offset)
 }

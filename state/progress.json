@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T08:10:30Z",
+  "updated_at": "2026-08-05T08:24:18Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -638,8 +638,8 @@
         {
           "id": "S2-C5",
           "text": "disk-full-at-97pct leaves a resumable state with no truncation",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "tests/sim/tests/disk_full.rs fills a volume at 97 percent of the representation and writes until it refuses. The named test asserts the refusal is WriterError::NoSpace rather than a generic failure, that blocks staged before the refusal are journalled rather than discarded, that the preallocated part file is still exactly its full length on the filesystem afterwards, that the journal claims no range beyond what the disk accepted, and that the claimed prefix matches downpour_corpus::content::Content byte for byte. the_download_resumes_once_space_is_freed then frees the volume, resumes from the durable prefix, and compares the finished file to the generator. Two mutations were caught by the named test; the third, truncating the part file, cannot be produced from current code because no truncation path is reachable from the write path. just gate 275 tests on 2026-08-05.",
           "invariants": [
             "I-10"
           ]
@@ -928,14 +928,15 @@
         {
           "id": "S2-T13",
           "title": "Pause cleanly and remain resumable when disk fills at 97 percent",
-          "status": "todo",
-          "proof": "tests/sim/tests/disk_full.rs::disk_full_at_97pct_preserves_durable_coverage_without_truncation",
+          "status": "done",
+          "proof": "tests/sim/tests/disk_full.rs::disk_full_at_97pct_preserves_durable_coverage_without_truncation, plus the_download_resumes_once_space_is_freed and a_disk_full_pause_leaves_no_in_progress_claim. Three mutations attempted, two caught by the named test: collapsing ENOSPC back into a generic I/O failure, and skipping docs/04 section 2.4 step 2 so staged progress is discarded. The third — truncating the part file to make room — could NOT be produced by mutating current code, because no truncation path is reachable from the write path at all; PartFile has no shrink operation and extend_to's refusal to shrink is separately mutation-checked in part_file.rs. The length assertion therefore guards a future regression rather than a present one, and is recorded as such rather than counted as a caught mutation. just gate 275 tests / 2 skipped.",
           "files": [
             "crates/downpour-storage/src/writer.rs",
+            "tests/sim/src/lib.rs",
             "tests/sim/tests/disk_full.rs"
           ],
           "blocked_by": "S2-T12",
-          "notes": "Never truncate the part file on ENOSPC. Stop workers, flush the small journal when possible, preserve exact durable coverage, and expose Paused(DiskFull).",
+          "notes": "WriterError::NoSpace is its own variant so a full volume pauses the download cleanly instead of failing it (I-10). The behaviour that was actually missing is docs/04 section 2.4 step 2: before this, an ENOSPC write poisoned the writer and every already-staged block lost its journal record, so work the user had paid for was silently discarded. The writer now flushes what is staged — the journal is small and there is almost always room — and reports the exact durable byte count so the pause lands at a resumable point rather than a guessed one. Paused(DiskFull) as a lifecycle state belongs with the daemon's state machine in S2-T14 or S3; what S2 owes is that the storage layer makes the distinction available and loses nothing, which is what these tests check.",
           "invariants": [
             "I-1",
             "I-10"
@@ -2598,12 +2599,29 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-C1 is met; S2 stands at 12/15 tasks and 5/7 criteria. S2-C5 and S2-C7 remain unmet. S2-T13 (disk full at 97 percent) is now unblocked and is what S2-C5 waits on. New B-31: the matrix covers I-1's boundaries but not S2-T11's completion sequence, which is B-27's remaining obligation now made concrete."
+    },
+    {
+      "at": "2026-08-05T08:24:18Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Implemented S2-T13, meeting S2-C5. Added WriterError::NoSpace so a full volume is distinguishable from any other I/O failure, and implemented docs/04 section 2.4 step 2, which was the behaviour actually missing: before this an ENOSPC write poisoned the writer and every already-staged block lost its journal record, silently discarding work the user had paid for. The writer now flushes what is staged and reports the exact durable byte count, so the pause lands at a resumable point. Extended tests/sim with a bounded volume that refuses writes past a capacity. Three mutations attempted and two caught; the third, truncating the part file to make room, could not be produced by mutating current code because no truncation path is reachable from the write path, so the length assertion guards a future regression rather than a present one and is recorded that way rather than counted. just gate 275 tests, 2 skipped.",
+      "tasks_touched": [
+        "S2-T13"
+      ],
+      "files_touched": [
+        "crates/downpour-storage/src/writer.rs",
+        "crates/downpour-storage/Cargo.toml",
+        "tests/sim/src/lib.rs",
+        "tests/sim/tests/disk_full.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-C5 is met; S2 stands at 13/15 tasks and 6/7 criteria. Only S2-C7 (zero silent corruption across the whole corpus) remains, and S2-T14 and S2-T15 remain open. Paused(DiskFull) as a lifecycle state is not implemented — the storage layer exposes the distinction, but no state machine consumes it until the daemon exists; that belongs with S2-T14 or S3."
     }
   ],
   "metrics": {
     "corpus_cases_total": 53,
     "corpus_cases_passing": 53,
-    "sim_seeds_fixed": 1,
+    "sim_seeds_fixed": 2,
     "invariants_covered": 5,
     "invariants_total": 14,
     "silent_corruption_findings": 0
