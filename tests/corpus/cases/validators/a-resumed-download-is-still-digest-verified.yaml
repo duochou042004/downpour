@@ -1,0 +1,19 @@
+id: a-resumed-download-is-still-digest-verified
+category: validators
+description: >
+  Resume and end-to-end verification together, which is where a plausible bug lives: a file
+  assembled from two fetches must still satisfy the server's digest over the *whole*
+  representation. An implementation that hashed only what the last request delivered, or that
+  skipped verification on a resumed transfer because "we already checked the first part", would
+  pass every other case in this category and fail here.
+references: ["RFC 9530", "RFC 9110 §13.1.5", "INVARIANTS.md#i-3", "INVARIANTS.md#i-4"]
+
+server:
+  content: { size: 128KiB, seed: 33 }
+  etag: '"resume-and-verify"'
+  digest: computed
+  transient_body_failures: 1
+
+expect:
+  final_state: completed
+  file_renamed: true
