@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T08:44:04Z",
+  "updated_at": "2026-08-05T08:53:42Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -975,7 +975,7 @@
             "state/progress.json"
           ],
           "blocked_by": "S2-T9, S2-T11, S2-T13",
-          "notes": "Meet the docs/09 category inventory with distinct server/local pathologies, not padded header variants. B-18 must lose etag-changed-midway and 200-instead-of-206; the S7/S8 request-context cases remain deferred with their existing reasons. PARTIAL 2026-08-05: validators is at 11 of docs/09's target of 15; local is at 0 of 12 and has no cases at all, because a local pathology — disk full, a read-only target, a path-length limit, a name collision — is a property of the filesystem and the case schema has no vocabulary for one. Adding that vocabulary is the bulk of the remaining work and is what B-32 records. B-28 is closed: `digest: computed` exists and validators/server-digest-verified proves the matching direction, which the corpus previously could not express.",
+          "notes": "Meet the docs/09 category inventory with distinct server/local pathologies, not padded header variants. B-18 must lose etag-changed-midway and 200-instead-of-206; the S7/S8 request-context cases remain deferred with their existing reasons. PARTIAL 2026-08-05: validators is at 11 of docs/09's target of 15; local is at 0 of 12 and has no cases at all, because a local pathology — disk full, a read-only target, a path-length limit, a name collision — is a property of the filesystem and the case schema has no vocabulary for one. Adding that vocabulary is the bulk of the remaining work and is what B-32 records. B-28 is closed: `digest: computed` exists and validators/server-digest-verified proves the matching direction, which the corpus previously could not express. 2026-08-05 second increment: the `local` category now exists. B-32's missing vocabulary is added — case.local carries existing_target, existing_part and read_only_target_dir — and three cases use it. local is at 3 of docs/09's 12; validators remains at 11 of 15.",
           "invariants": [
             "I-1",
             "I-3",
@@ -1827,10 +1827,17 @@
     },
     {
       "id": "B-32",
-      "text": "The `local` corpus category is empty and needs case-schema vocabulary that does not exist. docs/09 targets 12 cases — disk full, permissions, path limits, collisions, network filesystems — and every one is a property of the FILESYSTEM rather than of the server, so the declarative case format has no way to express them. The runner would need to set up a target directory in a particular state (read-only, near-full, holding a colliding name, at a path-length limit) before the transfer and assert on what the engine did about it. tests/sim already covers disk-full at the storage layer; the corpus case would cover it end to end through the real engine, which is a different claim.",
+      "text": "PARTIALLY CLOSED 2026-08-05. The vocabulary exists: case.local carries existing_target, existing_part and read_only_target_dir, the runner sets each up before the transfer and restores permissions afterwards, and three cases use it. Nine more are needed to meet docs/09's target of 12 — path-length limits, network filesystems, and a disk that fills mid-transfer end to end through the engine rather than at the storage layer where tests/sim already covers it. Those need further vocabulary again, which is why they are not padded in now.",
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "Recorded rather than padded: docs/09 asks for distinct pathologies and the honest blocker is missing vocabulary, not missing YAML"
+    },
+    {
+      "id": "B-33",
+      "text": "Two assertions in the corpus cannot be falsified by mutating current code, and are recorded rather than counted as proven. The pre-existing-target survival check in the runner is belt-and-braces: the engine refuses before creating anything, so the file survives whether or not the check runs, and the case would already fail on its error_kind. And the read-only-directory refusal branch — which declines to report a pass when the process bypasses permission checks — is unreachable for an unprivileged user, so it is never exercised on a normal developer machine or in CI. Both guard future regressions. If CI ever runs as root the second becomes live, and that is the point at which it should be verified rather than assumed.",
+      "found_in_stage": "S2",
+      "target_stage": "S3",
+      "rationale": "An assertion that no mutation can break is not proven, only present; saying so is cheaper than rediscovering it when one of them silently stops working"
     }
   ],
   "session_log": [
@@ -2664,11 +2671,27 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T15 is IN PROGRESS, not done, and S2-C7 is NOT claimed. validators stands at 11 of docs/09's 15; local is at 0 of 12 and blocked on case-schema vocabulary for filesystem pathologies, recorded as B-32. S2 is at 14/15 tasks and 6/7 criteria. The remaining work is genuinely the harder half: four more validators cases that are distinct pathologies rather than header variants, and a local category that needs the runner to be able to put a target directory into a particular state before the transfer."
+    },
+    {
+      "at": "2026-08-05T08:53:42Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Built the `local` corpus vocabulary that B-32 said was the real blocker, and added the category's first three cases. case.local carries existing_target, existing_part and read_only_target_dir; the runner establishes each before the transfer and restores permissions before anything inspects the directory. The first case immediately caught the runner comparing the user's own pre-existing file against the content generator and reporting its survival as corruption — fixed by excluding it and, better, by asserting it comes back byte-identical, which is the case's actual claim. Three mutations attempted and one caught; the other two are recorded as B-33 rather than counted, because neither can be falsified by mutating current code: the survival assertion is belt-and-braces since the engine refuses before creating anything, and the read-only branch that declines to report a pass under privilege bypass is unreachable for an unprivileged user. just gate 279 tests, 2 skipped; 62 corpus cases.",
+      "tasks_touched": [
+        "S2-T15"
+      ],
+      "files_touched": [
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/cases/local/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T15 remains IN PROGRESS and S2-C7 is still not claimed. local is at 3 of 12, validators at 11 of 15. The remaining nine local cases need further vocabulary — path-length limits, network filesystems, a disk filling mid-transfer through the whole engine — and are recorded in B-32 rather than padded in. S2 is at 14/15 tasks and 6/7 criteria."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 59,
-    "corpus_cases_passing": 59,
+    "corpus_cases_total": 62,
+    "corpus_cases_passing": 62,
     "sim_seeds_fixed": 2,
     "invariants_covered": 5,
     "invariants_total": 14,

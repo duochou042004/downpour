@@ -208,6 +208,40 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         }
     }
 
+    // Local preconditions, before anything is fetched. A `local` case is about what the engine
+    // does when the disk is already in a particular state, so the state has to exist first.
+    let mut restore_permissions = None;
+    if let Some(bytes) = &case.local.existing_target
+        && let Err(error) = std::fs::write(scratch.join("content"), bytes)
+    {
+        return fail(format!("could not create the existing target: {error}"));
+    }
+    if let Some(bytes) = &case.local.existing_part
+        && let Err(error) = std::fs::write(scratch.join("content.dppart"), bytes)
+    {
+        return fail(format!("could not create the existing part file: {error}"));
+    }
+    if case.local.read_only_target_dir {
+        match make_read_only(scratch) {
+            Ok(Some(original)) => restore_permissions = Some(original),
+            // Running as a user who bypasses permission checks. Reporting a pass here would be a
+            // green result for a check that never ran, which is worse than an absent test.
+            Ok(None) => {
+                return CaseReport {
+                    id: case.id.clone(),
+                    failures: vec![
+                        "this case needs a directory the process cannot write to, and this user \
+                         bypasses permission checks; run it as an unprivileged user"
+                            .to_owned(),
+                    ],
+                    bytes_on_disk: 0,
+                    silent_corruption: false,
+                };
+            }
+            Err(error) => return fail(format!("could not make the target read-only: {error}")),
+        }
+    }
+
     // Journals live beside the data directory, never inside it: see `run_case`.
     let journal_dir = match journal_dir_beside(scratch) {
         Ok(path) => path,
@@ -292,6 +326,27 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         }
     }
 
+    // Permissions go back before anything inspects the directory, or the runner cannot read it.
+    if let Some(original) = restore_permissions {
+        let _ = std::fs::set_permissions(scratch, original);
+    }
+
+    // ---- unconditional: a file the user already had must come back byte-identical.
+    //
+    // The strongest statement this category can make. "The download failed" is not enough: it
+    // has to have failed without touching something it was never asked to touch.
+    if let Some(expected) = &case.local.existing_target {
+        match std::fs::read(scratch.join("content")) {
+            Ok(found) if found == expected.as_bytes() => {}
+            Ok(found) => failures.push(format!(
+                "the pre-existing target was modified: {} bytes where {} were placed",
+                found.len(),
+                expected.len()
+            )),
+            Err(error) => failures.push(format!("the pre-existing target was destroyed: {error}")),
+        }
+    }
+
     // ---- expectation: no resume was attempted (I-3)
     if case.expect.forbids_if_range == Some(true) {
         let conditioned: Vec<String> = server
@@ -356,6 +411,12 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
 
         // A literal body is not generated content, so there is nothing to compare it against.
         if case.server.body.is_some() {
+            continue;
+        }
+        // Neither is a file the case put there itself. Comparing the user's own pre-existing
+        // file against the generator would report its survival as corruption — which is exactly
+        // backwards, since surviving untouched is the whole point.
+        if case.local.existing_target.is_some() && name == "content" {
             continue;
         }
         for (start, end) in compare {
@@ -429,6 +490,37 @@ pub fn discover(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     }
     found.sort();
     Ok(found)
+}
+
+/// Drop write permission on `dir`, returning the permissions to restore.
+///
+/// `Ok(None)` means the process would not be stopped by the change — root, or a platform without
+/// meaningful directory permissions — and the caller must refuse to report a pass rather than
+/// run a check that cannot fail.
+fn make_read_only(dir: &Path) -> std::io::Result<Option<std::fs::Permissions>> {
+    let original = std::fs::metadata(dir)?.permissions();
+    let mut restricted = original.clone();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        restricted.set_mode(0o500);
+    }
+    #[cfg(not(unix))]
+    {
+        restricted.set_readonly(true);
+    }
+    std::fs::set_permissions(dir, restricted)?;
+
+    // Prove the restriction actually bites before letting a case depend on it.
+    let probe = dir.join(".downpour-permission-probe");
+    match std::fs::write(&probe, b"x") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            let _ = std::fs::set_permissions(dir, original);
+            Ok(None)
+        }
+        Err(_) => Ok(Some(original)),
+    }
 }
 
 /// The byte ranges the recovery journal records as durable, when a journal was written.

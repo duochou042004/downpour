@@ -37,6 +37,14 @@ pub struct Case {
     /// Excluded from the default profile when true.
     #[serde(default)]
     pub slow: bool,
+    /// The state the local filesystem is in before the transfer starts.
+    ///
+    /// The `local` category's pathologies are properties of the disk rather than of the server —
+    /// a target that already exists, a directory nobody may write to, a `.dppart` another process
+    /// already owns. None of them can be expressed by a server, which is why they need their own
+    /// section rather than another server knob.
+    #[serde(default)]
+    pub local: LocalCase,
     /// What the server should do.
     pub server: ServerCase,
     /// What the engine must do about it.
@@ -193,6 +201,34 @@ pub struct ServerCase {
     /// is what would make an `etag-changed-midway` case pass without any ETag ever changing.
     #[serde(default)]
     pub behaviour: Vec<BehaviourCase>,
+}
+
+/// The local preconditions a case sets up before the transfer runs.
+///
+/// Every field defaults to "nothing unusual", so a case that does not mention `local` behaves
+/// exactly as it did before this existed.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalCase {
+    /// Create a file at the final name before the download starts, holding these bytes.
+    ///
+    /// The user already has this file. Overwriting it is unrecoverable, so the engine must
+    /// refuse rather than silently replace it.
+    #[serde(default)]
+    pub existing_target: Option<String>,
+    /// Create the `.dppart` before the download starts, holding these bytes.
+    ///
+    /// A part file that already exists means another owner holds this download. Both artifacts
+    /// are created exclusively precisely so that collision is loud rather than an interleaving
+    /// of two writers into one file.
+    #[serde(default)]
+    pub existing_part: Option<String>,
+    /// Make the target directory unwritable before the download starts.
+    ///
+    /// Skipped when running as a user who bypasses permission checks, because a test that
+    /// silently passes for root is worse than one that is honestly absent.
+    #[serde(default)]
+    pub read_only_target_dir: bool,
 }
 
 /// How a case's server treats `If-Range`.
