@@ -89,10 +89,27 @@ fn verify_streaming(path: &Path, content: &Content, expected_len: u64) {
 }
 
 async fn download_a_gigabyte(protocol: Protocol, mode: TransportMode, tag: &str) {
+    download_a_gigabyte_with(protocol, mode, tag, None).await;
+}
+
+/// A gigabyte, optionally with the server stating a real RFC 9530 digest over it.
+///
+/// The digest arm exists because ADR-0017 accepted a cost without measuring it: verification
+/// streams the whole file a second time after the transfer, and the ADR's reversal trigger says
+/// to revisit that *if profiling shows it dominating completion for large files, and the
+/// measurement must come first.* This is that measurement. Both arms print their elapsed time,
+/// so the difference between them is the verification pass on a gigabyte.
+async fn download_a_gigabyte_with(
+    protocol: Protocol,
+    mode: TransportMode,
+    tag: &str,
+    digest: Option<downpour_corpus::server::DigestSpec>,
+) {
     let content = Content::new(SEED, ONE_GB);
     let server = PathologyServer::start(ServerSpec {
         protocol,
         content,
+        digest,
         ..ServerSpec::default()
     })
     .await
@@ -130,6 +147,27 @@ async fn a_gigabyte_over_http11_is_byte_exact() {
 #[ignore = "slow: transfers and verifies 1 GB. Run with `just corpus-slow`."]
 async fn a_gigabyte_over_http2_is_byte_exact() {
     download_a_gigabyte(Protocol::H2c, TransportMode::Http2PriorKnowledge, "h2c").await;
+}
+
+/// A gigabyte the server states a digest over, so the whole file is hashed before the rename.
+///
+/// ADR-0017 accepted "verification streams the whole file a second time" without measuring what
+/// that costs, and made the measurement the precondition for revisiting it. The elapsed time
+/// printed here against the plain arm above is that number.
+///
+/// It is also the only end-to-end proof that a real digest over a real gigabyte matches: every
+/// other digest case in the corpus is small enough that a whole-file hash and a chunked one
+/// cannot disagree about buffering.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "slow: transfers, hashes and verifies 1 GB. Run with `just corpus-slow`."]
+async fn a_gigabyte_with_a_server_digest_is_verified_before_it_is_named() {
+    download_a_gigabyte_with(
+        Protocol::Http11,
+        TransportMode::Http1Only,
+        "h1-digest",
+        Some(downpour_corpus::server::DigestSpec::Computed),
+    )
+    .await;
 }
 
 /// The verifier has to be able to fail, or the two tests above prove nothing.

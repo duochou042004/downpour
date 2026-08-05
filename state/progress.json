@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T10:21:00Z",
+  "updated_at": "2026-08-05T10:28:22Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1845,6 +1845,13 @@
       "found_in_stage": "S2",
       "target_stage": "S3",
       "rationale": "An assertion that no mutation can break is not proven, only present; saying so is cheaper than rediscovering it when one of them silently stops working"
+    },
+    {
+      "id": "B-34",
+      "text": "ADR-0017's reversal trigger has FIRED, and the measurement it required exists. A 1 GB download completes in 6.2s with no server digest and 12.0s with one — 162 MB/s against 83 MB/s — because verification streams the whole file a second time after the transfer. That is not a margin, it is half the total time, which is the 'verification dominating completion for large files' the ADR named. The fix the ADR also named is to compute the SHA-2 incrementally as bytes arrive rather than to stop verifying: the writer already hashes every block with BLAKE3 on the way past, so a second hasher over the same bytes costs one pass instead of two. It is deliberately NOT done here — docs/agent/HARNESS.md says not to optimise before the stage's correctness gate is green, and an optimisation in the verification path needs a test showing behaviour is unchanged, which is its own piece of work. Numbers reproduce with `cargo nextest run -p downpour-corpus --release --run-ignored all -E 'test(/gigabyte/)'`.",
+      "found_in_stage": "S2",
+      "target_stage": "S3",
+      "rationale": "ADR-0017 accepted this cost explicitly and made the measurement the precondition for revisiting it; taking the measurement without recording that the trigger fired would leave the accepted cost looking unexamined"
     }
   ],
   "session_log": [
@@ -2856,6 +2863,18 @@
         "state/progress.json"
       ],
       "left_in_progress": "74 corpus cases. S2 unchanged at 14/15 tasks with all seven criteria met; the gate waits on ADR-0018."
+    },
+    {
+      "at": "2026-08-05T10:28:22Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Took the measurement ADR-0017 required and had never been given. The ADR accepted that digest verification streams the whole file a second time, and made its reversal trigger conditional on profiling showing that cost dominate for large files — with the measurement first. Added a gigabyte arm where the server states a real computed digest: 1 GB completes in 6.2s without one and 12.0s with, 162 MB/s against 83 MB/s. That is half the total time, so the trigger has fired, and B-34 records it with the numbers and the reproduction command. Did not act on it. HARNESS.md says not to optimise before the stage's correctness gate is green, and the fix the ADR names — hashing SHA-2 incrementally as bytes arrive, alongside the BLAKE3 the writer already computes — is an optimisation in the verification path and needs its own test showing behaviour is unchanged. The new case is also the only end-to-end proof that a real digest over a real gigabyte matches; every other digest case is small enough that a whole-file hash and a chunked one cannot disagree about buffering.",
+      "tasks_touched": [],
+      "files_touched": [
+        "tests/corpus/tests/gigabyte.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "B-34 is open with its measurement recorded, targeted at S3 because it is an optimisation rather than a correctness gap — verification is correct today, just twice as expensive as it needs to be. S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018."
     }
   ],
   "metrics": {
