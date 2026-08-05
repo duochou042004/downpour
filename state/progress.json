@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T10:28:22Z",
+  "updated_at": "2026-08-05T10:32:52Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1848,7 +1848,7 @@
     },
     {
       "id": "B-34",
-      "text": "ADR-0017's reversal trigger has FIRED, and the measurement it required exists. A 1 GB download completes in 6.2s with no server digest and 12.0s with one — 162 MB/s against 83 MB/s — because verification streams the whole file a second time after the transfer. That is not a margin, it is half the total time, which is the 'verification dominating completion for large files' the ADR named. The fix the ADR also named is to compute the SHA-2 incrementally as bytes arrive rather than to stop verifying: the writer already hashes every block with BLAKE3 on the way past, so a second hasher over the same bytes costs one pass instead of two. It is deliberately NOT done here — docs/agent/HARNESS.md says not to optimise before the stage's correctness gate is green, and an optimisation in the verification path needs a test showing behaviour is unchanged, which is its own piece of work. Numbers reproduce with `cargo nextest run -p downpour-corpus --release --run-ignored all -E 'test(/gigabyte/)'`.",
+      "text": "ADR-0017's reversal trigger has FIRED, and the measurement it required exists. A 1 GB download completes in 6.2s with no server digest and 12.0s with one — 162 MB/s against 83 MB/s — because verification streams the whole file a second time after the transfer. That is not a margin, it is half the total time, which is the 'verification dominating completion for large files' the ADR named. The fix the ADR also named is to compute the SHA-2 incrementally as bytes arrive rather than to stop verifying: the writer already hashes every block with BLAKE3 on the way past, so a second hasher over the same bytes costs one pass instead of two. It is deliberately NOT done here — docs/agent/HARNESS.md says not to optimise before the stage's correctness gate is green, and an optimisation in the verification path needs a test showing behaviour is unchanged, which is its own piece of work. Numbers reproduce with `cargo nextest run -p downpour-corpus --release --run-ignored all -E 'test(/gigabyte/)'`.\n\nREFINED 2026-08-05, and the refinement matters more than the measurement. ADR-0017 suggests fixing this by computing the SHA-2 incrementally as bytes arrive. That is UNSOUND past S2. SHA-2 is order-dependent, and DurableWriter::stage takes an arbitrary offset because S3's segment allocator hands different ranges to different workers — bytes stop arriving in offset order the moment segmentation lands, so a hasher fed in arrival order would produce a digest for a byte sequence that is not the file. It would work in S2, pass every test written today, and start silently failing every digest comparison in S3 for a reason nobody would look for. BLAKE3 has a combiner for exactly this shape, which is why the journal uses it per block; SHA-2 does not, and the server chooses the algorithm. So the real options are: accept the second pass as inherent whenever bytes can arrive out of order, overlap it with the transfer rather than following it, or hash incrementally only while the transfer is provably a single sequential stream and fall back otherwise — which is a conditional in the verification path and needs to earn its complexity. ADR-0017 should be superseded rather than stretched if the third is chosen.",
       "found_in_stage": "S2",
       "target_stage": "S3",
       "rationale": "ADR-0017 accepted this cost explicitly and made the measurement the precondition for revisiting it; taking the measurement without recording that the trigger fired would leave the accepted cost looking unexamined"
@@ -2875,6 +2875,17 @@
         "state/progress.json"
       ],
       "left_in_progress": "B-34 is open with its measurement recorded, targeted at S3 because it is an optimisation rather than a correctness gap — verification is correct today, just twice as expensive as it needs to be. S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018."
+    },
+    {
+      "at": "2026-08-05T10:32:52Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Re-examined B-34 and found that my stated reason for deferring it was wrong, while the conclusion was right for a better reason. I had said HARNESS forbids optimising before the stage's correctness gate is green — but all seven S2 criteria are met, so that gate IS green and the rule does not bite. The real obstacle is that ADR-0017's own suggested fix is unsound past S2. SHA-2 is order-dependent, and DurableWriter::stage takes an arbitrary offset because S3's segment allocator hands different ranges to different workers; bytes stop arriving in offset order the moment segmentation lands, so a hasher fed in arrival order would digest a byte sequence that is not the file. It would work in S2, pass every test written today, and start silently failing every digest comparison in S3 for a reason nobody would think to look for. BLAKE3 has a combiner for exactly this shape, which is why the journal uses it per block, but SHA-2 does not and the server picks the algorithm. Recorded in B-34 with the three real options, and noted that ADR-0017 should be superseded rather than stretched if the conditional-hashing one is chosen. This is a correction to an ADR I wrote earlier this session.",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "B-34 now carries both the measurement and the reason the obvious fix is a trap. S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018."
     }
   ],
   "metrics": {
