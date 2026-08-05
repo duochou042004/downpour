@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T07:52:51Z",
+  "updated_at": "2026-08-05T08:10:30Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -602,8 +602,8 @@
         {
           "id": "S2-C1",
           "text": "Crash injection at every write boundary yields a byte-correct file after resume",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "tests/sim/tests/crash_matrix.rs injects a failure at each of the six boundaries in write, data sync, journal append, journal sync and Complete, then rebuilds state from the durable artifacts alone. crash_at_every_write_boundary_recovers_byte_exact asserts a pre-crash block always survives, that a range past the journal sync is never lost, that nothing is claimed when nothing was written, that every claimed byte matches downpour_corpus::content::Content — an oracle that knows nothing about how we wrote them — and that the in-memory interval map never claims a range the journal cannot support. resuming_after_a_crash_at_any_boundary_produces_the_whole_file then resumes from the recovered prefix and compares the finished file byte for byte. The reordering that moves the map before the journal sync makes the first of these go red, which is the specific corruption this criterion exists to catch. just gate 272 tests and just sim 3/3 on 2026-08-05.",
           "invariants": [
             "I-1"
           ]
@@ -908,14 +908,16 @@
         {
           "id": "S2-T12",
           "title": "Build the deterministic simulation harness and crash-matrix scenario",
-          "status": "todo",
-          "proof": "tests/sim/tests/crash_matrix.rs::crash_at_every_write_boundary_recovers_byte_exact",
+          "status": "done",
+          "proof": "tests/sim/tests/crash_matrix.rs::crash_at_every_write_boundary_recovers_byte_exact, plus resuming_after_a_crash_at_any_boundary_produces_the_whole_file and no_boundary_leaves_a_claim_the_journal_cannot_support. Three mutations, all caught: reordering I-1 so the interval map moves before the journal sync, writing a block one byte off, and disabling the crash injection entirely. just gate 272 tests / 2 skipped; just sim 3/3.",
           "files": [
-            "tests/sim/",
-            "justfile"
+            "tests/sim/src/lib.rs",
+            "tests/sim/tests/crash_matrix.rs",
+            "tests/sim/Cargo.toml",
+            "Cargo.toml"
           ],
           "blocked_by": "S2-T7, S2-T9, S2-T11",
-          "notes": "Inject crashes before and after each boundary in write -> data sync -> journal append -> journal sync -> Complete, restart from durable artifacts, and compare every byte to the independent deterministic generator.",
+          "notes": "The harness had to be made faithful twice before it could prove anything. First attempt asserted an exact equality between boundary and claimability; that was wrong, because a same-process simulation cannot demonstrate the loss of an unsynced append, so the honest guarantee is asymmetric — claiming less than the durable record is lost progress, claiming a wrong byte is corruption, and only the second is a correctness failure. Second and more serious: the I-1 reordering mutation SURVIVED, because the crash journal wrote appends straight to the file and the test only read the file. A journal that never loses an unsynced append makes a crash before the sync indistinguishable from one after it, which is exactly the distinction I-1 is about. Fixed by buffering appends until sync_data and injecting the JournalSync failure before the buffer reaches the file, and by adding the assertion that compares the in-memory interval map against the journal's union — the map must never run ahead of the commit point. Only with all three of those does the reordering go red.",
           "invariants": [
             "I-1",
             "I-3",
@@ -1810,6 +1812,13 @@
       "found_in_stage": "S2",
       "target_stage": "S3",
       "rationale": "Found while verifying the B-29 fix. Unbounded growth in a user's home directory is a real defect even though each individual retention is correct"
+    },
+    {
+      "id": "B-31",
+      "text": "The crash matrix injects failures at I-1's boundaries but not yet at S2-T11's completion sequence — B-27's remaining obligation. A process that dies between the Sealed record and the atomic rename leaves a journal saying the download was verified next to a part file that still has its working name, and nothing yet proves recovery handles that. Add a completion boundary set (before seal, after seal, after rename, after journal deletion) to tests/sim.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "B-27 recorded that S2-T12 still owed this; the harness now exists, so the obligation is concrete rather than hypothetical"
     }
   ],
   "session_log": [
@@ -2572,12 +2581,29 @@
         "state/progress.json"
       ],
       "left_in_progress": "B-29 and B-22 are both closed. New B-30: a FAILED download still leaves its journal forever, which is correct individually but unbounded in aggregate; docs/04 section 8's retention policy is unimplemented and scoped to S3. S2-T12 is now unblocked against a baseline that is actually stable — which was the point of doing this first. S2 stands at 11/15 tasks and 4/7 criteria; S2-C1, C5 and C7 remain unmet."
+    },
+    {
+      "at": "2026-08-05T08:10:30Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Built tests/sim and the crash matrix, meeting S2-C1. The harness injects a failure at each boundary in I-1's ordering and rebuilds state from the durable artifacts alone, comparing every claimed byte against the corpus content generator. Two rounds of correction were needed before it proved anything. The first assertion demanded an exact equality between boundary and claimability, which a same-process simulation cannot demonstrate; the honest guarantee is asymmetric. The second was worse and only mutation testing found it: the I-1 reordering mutation SURVIVED, because the crash journal wrote appends straight through and the test only read the file afterwards, so a crash before the sync looked identical to one after. Fixed by buffering appends until sync_data, injecting the JournalSync failure before the buffer reaches the file, and adding an assertion that compares the in-memory interval map against the journal's union. All three were needed; with them the reordering goes red. just gate 272 tests, 2 skipped; just sim 3/3; three mutations, all caught.",
+      "tasks_touched": [
+        "S2-T12"
+      ],
+      "files_touched": [
+        "tests/sim/src/lib.rs",
+        "tests/sim/tests/crash_matrix.rs",
+        "tests/sim/Cargo.toml",
+        "Cargo.toml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-C1 is met; S2 stands at 12/15 tasks and 5/7 criteria. S2-C5 and S2-C7 remain unmet. S2-T13 (disk full at 97 percent) is now unblocked and is what S2-C5 waits on. New B-31: the matrix covers I-1's boundaries but not S2-T11's completion sequence, which is B-27's remaining obligation now made concrete."
     }
   ],
   "metrics": {
     "corpus_cases_total": 53,
     "corpus_cases_passing": 53,
-    "sim_seeds_fixed": 0,
+    "sim_seeds_fixed": 1,
     "invariants_covered": 5,
     "invariants_total": 14,
     "silent_corruption_findings": 0

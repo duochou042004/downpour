@@ -493,6 +493,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "downpour-sim"
+version = "0.1.0"
+dependencies = [
+ "downpour-corpus",
+ "downpour-intervals",
+ "downpour-storage",
+ "downpour-types",
+]
+
+[[package]]
 name = "downpour-storage"
 version = "0.1.0"
 dependencies = [
