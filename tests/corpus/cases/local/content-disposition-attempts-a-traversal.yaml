@@ -1,0 +1,20 @@
+id: content-disposition-attempts-a-traversal
+category: local
+description: >
+  `Content-Disposition` names `../../../../tmp/owned.bin`. A server that can choose where its
+  bytes land on the client's disk is a remote code execution waiting to happen — overwrite a
+  shell profile, a systemd unit, an autostart entry. The name is server-controlled input and has
+  to be reduced to a single path component before it is joined to anything.
+
+  The runner's directory enumeration is what makes this checkable: it lists the target directory
+  and nothing outside it, so a file that escaped would show up as the target directory being
+  empty while the download reported success.
+references: ["docs/04-storage-and-recovery-spec.md §7", "docs/10-security-privacy-legal.md"]
+
+server:
+  content: { size: 8KiB, seed: 60 }
+  content_disposition: 'attachment; filename="../../../../tmp/owned.bin"'
+
+expect:
+  final_state: completed
+  file_renamed: true

@@ -1,0 +1,19 @@
+id: content-disposition-is-only-dots
+category: local
+description: >
+  The suggested filename is `..`, which names the parent directory rather than a file. Neither
+  `.` nor `..` can be created, and treating either as a name produces an operation on a
+  directory the download has no business touching. The engine must fall back to a usable name
+  instead of failing or, worse, acting on the path it was handed.
+
+  A separate shape from the traversal case: there the dots are a *component* of a longer path
+  and get stripped with it, here they are the entire name and stripping leaves nothing.
+references: ["docs/04-storage-and-recovery-spec.md §7"]
+
+server:
+  content: { size: 4KiB, seed: 61 }
+  content_disposition: 'attachment; filename=".."'
+
+expect:
+  final_state: completed
+  file_renamed: true

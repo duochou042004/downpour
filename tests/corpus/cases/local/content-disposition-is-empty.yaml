@@ -1,0 +1,17 @@
+id: content-disposition-is-empty
+category: local
+description: >
+  The header is present and its filename parameter is the empty string. A parser that trusted
+  the header's presence over its content would produce a zero-length name, and joining one to a
+  directory yields the directory itself — so the "download" would attempt to write over the
+  folder it was saving into. The fallback chain in docs/04 §7 exists for exactly this: an
+  unusable suggestion is no suggestion.
+references: ["docs/04-storage-and-recovery-spec.md §7", "RFC 6266"]
+
+server:
+  content: { size: 4KiB, seed: 62 }
+  content_disposition: 'attachment; filename=""'
+
+expect:
+  final_state: completed
+  file_renamed: true

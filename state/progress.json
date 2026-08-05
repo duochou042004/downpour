@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T09:13:50Z",
+  "updated_at": "2026-08-05T09:20:51Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -975,7 +975,7 @@
             "state/progress.json"
           ],
           "blocked_by": "S2-T9, S2-T11, S2-T13",
-          "notes": "Meet the docs/09 category inventory with distinct server/local pathologies, not padded header variants. B-18 must lose etag-changed-midway and 200-instead-of-206; the S7/S8 request-context cases remain deferred with their existing reasons. PARTIAL 2026-08-05: validators is at 11 of docs/09's target of 15; local is at 0 of 12 and has no cases at all, because a local pathology — disk full, a read-only target, a path-length limit, a name collision — is a property of the filesystem and the case schema has no vocabulary for one. Adding that vocabulary is the bulk of the remaining work and is what B-32 records. B-28 is closed: `digest: computed` exists and validators/server-digest-verified proves the matching direction, which the corpus previously could not express. 2026-08-05 second increment: the `local` category now exists. B-32's missing vocabulary is added — case.local carries existing_target, existing_part and read_only_target_dir — and three cases use it. local is at 3 of docs/09's 12; validators remains at 11 of 15. 2026-08-05 third increment: validators reaches 15 of 15, meeting docs/09's target for the category. The four added are CDN-inconsistent ETags between probe and body, strong ETag preferred over Last-Modified, weak ETag falling back to the date, and a resumed download still being digest-verified over the whole representation. local remains at 3 of 12. 2026-08-05 fourth increment: local reaches 6 of 12, and one of the new cases found a real engine bug. filename::sanitise truncated to exactly 255 bytes, leaving no room for the .dppart suffix the storage layer appends, so any name at the filesystem limit failed with ENAMETOOLONG before a byte was written. Present since S1 and never exercised until a corpus case asked for a 400-byte filename. Fixed by reserving the suffix inside the byte budget, where the guarantee belongs.",
+          "notes": "Meet the docs/09 category inventory with distinct server/local pathologies, not padded header variants. B-18 must lose etag-changed-midway and 200-instead-of-206; the S7/S8 request-context cases remain deferred with their existing reasons. PARTIAL 2026-08-05: validators is at 11 of docs/09's target of 15; local is at 0 of 12 and has no cases at all, because a local pathology — disk full, a read-only target, a path-length limit, a name collision — is a property of the filesystem and the case schema has no vocabulary for one. Adding that vocabulary is the bulk of the remaining work and is what B-32 records. B-28 is closed: `digest: computed` exists and validators/server-digest-verified proves the matching direction, which the corpus previously could not express. 2026-08-05 second increment: the `local` category now exists. B-32's missing vocabulary is added — case.local carries existing_target, existing_part and read_only_target_dir — and three cases use it. local is at 3 of docs/09's 12; validators remains at 11 of 15. 2026-08-05 third increment: validators reaches 15 of 15, meeting docs/09's target for the category. The four added are CDN-inconsistent ETags between probe and body, strong ETag preferred over Last-Modified, weak ETag falling back to the date, and a resumed download still being digest-verified over the whole representation. local remains at 3 of 12. 2026-08-05 fourth increment: local reaches 6 of 12, and one of the new cases found a real engine bug. filename::sanitise truncated to exactly 255 bytes, leaving no room for the .dppart suffix the storage layer appends, so any name at the filesystem limit failed with ENAMETOOLONG before a byte was written. Present since S1 and never exercised until a corpus case asked for a 400-byte filename. Fixed by reserving the suffix inside the byte budget, where the guarantee belongs. 2026-08-05 fifth increment: local reaches 9 of 12 with three server-controlled-filename cases — a traversal, a name that is only dots, and an empty one. All four filename cases go red when sanitisation is removed entirely, but NOT when only the path-component strip is removed, because a later pass also replaces separators. That is defence in depth working, and it means no single-layer mutation can falsify them; recorded rather than reported as a caught mutation per layer.",
           "invariants": [
             "I-1",
             "I-3",
@@ -2732,11 +2732,25 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T15 remains IN PROGRESS and S2-C7 is still not claimed. validators is complete at 15 of 15; local is at 6 of 12. The remaining six need vocabulary that does not exist — network filesystems, and a disk filling mid-transfer through the whole engine rather than at the storage layer where tests/sim covers it — recorded in B-32. S2 is at 14/15 tasks and 6/7 criteria."
+    },
+    {
+      "at": "2026-08-05T09:20:51Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Added three local cases covering server-controlled filenames: a traversal to /tmp, a name that is only dots, and an empty filename parameter. All three are about the same underlying hazard — a server choosing where its bytes land on the client's disk is a remote code execution waiting to happen — reached by three different shapes, and the runner's directory enumeration is what makes them checkable, since a file that escaped shows up as the target directory being empty while the download reports success. Mutation testing was informative in both directions: removing only the path-component strip does NOT fail them, because a later pass also replaces separators, while removing sanitisation entirely fails all four filename cases including the path-limit one. That is defence in depth working as intended, and it means no single-layer mutation can falsify these cases; recorded as such rather than counted per layer. just gate 279 tests, 2 skipped; 72 corpus cases.",
+      "tasks_touched": [
+        "S2-T15"
+      ],
+      "files_touched": [
+        "tests/corpus/cases/local/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T15 remains IN PROGRESS and S2-C7 is still not claimed. validators is complete at 15 of 15; local is at 9 of 12. The last three need vocabulary that does not exist — network filesystems, and a disk filling mid-transfer through the whole engine rather than at the storage layer where tests/sim covers it — recorded in B-32. S2 is at 14/15 tasks and 6/7 criteria."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 69,
-    "corpus_cases_passing": 69,
+    "corpus_cases_total": 72,
+    "corpus_cases_passing": 72,
     "sim_seeds_fixed": 2,
     "invariants_covered": 5,
     "invariants_total": 14,
