@@ -23,13 +23,19 @@ PROGRESS="state/progress.json"
 
 WATCHED=(crates src extensions tests scripts docs/adr .claude/skills .claude/agents .claude/hooks plugins)
 
-progress_mtime=$(stat -c %Y "$PROGRESS" 2>/dev/null || echo 0)
+# Compared file-to-file, never through a formatted timestamp. `stat -c %Y` truncates
+# to whole seconds, and `find -newermt "@<seconds>"` then compares at nanosecond
+# precision against <seconds>.000000000 — so any file whose mtime carries a sub-second
+# fraction reads as newer, INCLUDING state/progress.json itself. A `git checkout` or
+# `merge` stamps every file it writes with the same sub-second mtime, which made the
+# guard fire on a change whose progress record had already been written and committed
+# alongside it. `-newer` compares the two files' mtimes directly, at full precision.
 newer=""
 for dir in "${WATCHED[@]}"; do
   [ -d "$dir" ] || continue
   while IFS= read -r f; do
     [ -n "$f" ] && newer+="  - ${f#./}"$'\n'
-  done < <(find "$dir" -type f -newermt "@$progress_mtime" \
+  done < <(find "$dir" -type f -newer "$PROGRESS" \
              ! -name '*.swp' ! -name '*~' ! -path '*/target/*' ! -path '*/node_modules/*' \
              2>/dev/null | head -12)
 done

@@ -10,7 +10,7 @@ default:
     @just --list
 
 # Everything a change must pass before it is proposed as done.
-gate: progress sync-check shell-lint rust-gate
+gate: progress sync-check shell-lint hook-test rust-gate
     @echo ""
     @echo "  all applicable gates passed"
 
@@ -33,6 +33,11 @@ doctor:
 # The ORIENT step: what stage are we in and what is open.
 brief:
     @bash .claude/hooks/session-brief.sh | jq -r '.hookSpecificOutput.additionalContext'
+
+# Prove the RECORD-step guard still fires when it should, and stays quiet when it should not.
+# A guard that cries wolf gets dismissed, which is the same outcome as no guard at all.
+hook-test:
+    @bash scripts/test-progress-guard.sh
 
 shell-lint:
     @if command -v shellcheck >/dev/null 2>&1; then \
