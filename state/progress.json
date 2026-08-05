@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T09:27:42Z",
+  "updated_at": "2026-08-05T09:34:08Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1827,7 +1827,7 @@
     },
     {
       "id": "B-32",
-      "text": "PARTIALLY CLOSED 2026-08-05. The vocabulary exists: case.local carries existing_target, existing_part and read_only_target_dir, the runner sets each up before the transfer and restores permissions afterwards, and three cases use it. Nine more are needed to meet docs/09's target of 12 — path-length limits, network filesystems, and a disk that fills mid-transfer end to end through the engine rather than at the storage layer where tests/sim already covers it. Those need further vocabulary again, which is why they are not padded in now.",
+      "text": "ANALYSED 2026-08-05. local stands at 10 of docs/09's 12, and the remaining two classes appear NOT to be corpus-expressible, which is a defect in the inventory rather than work outstanding. (1) Disk full mid-transfer, end to end through the engine: the corpus runs the real SingleStream against a real filesystem, so bounding the volume would need either a controllable filesystem — not portable, and root-only where it is possible — or a fault-injection hook inside StorageSink, which would put test scaffolding in the production write path. tests/sim covers the same property at the storage layer with a bounded volume, which is where injection belongs. (2) Network filesystems: an NFS or SMB mount cannot be created in-process, and the pathologies that matter — silent write reordering, a server that acknowledges an fsync it did not perform — are precisely the ones a local mount would not reproduce. PROPOSAL for the maintainer: rewrite docs/09's local target from 12 to 10 and record that disk-full is owned by tests/sim and network filesystems by manual qualification, OR keep 12 and accept the category can never honestly close. Not changing the spec unilaterally.",
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "Recorded rather than padded: docs/09 asks for distinct pathologies and the honest blocker is missing vocabulary, not missing YAML"
@@ -2757,11 +2757,27 @@
         "state/progress.json"
       ],
       "left_in_progress": "All seven S2 exit criteria are now met, but the stage gate is NOT ready because S2-T15 remains in_progress with local at 9 of docs/09's 12. The decision in front of the maintainer is whether to close S2-T15 at 9 of 12 with B-32 carrying the remaining three — network filesystems, and a disk filling mid-transfer through the whole engine — or to hold the gate until the inventory is complete. Agents propose; that call is not mine to make."
+    },
+    {
+      "at": "2026-08-05T09:34:08Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Added the-target-path-is-an-existing-directory, taking local to 10 of 12, and then analysed why the last two will not come. Both remaining classes appear to be outside what the corpus can express, which is a defect in docs/09's inventory rather than work outstanding. Disk full end to end would need either a controllable filesystem — not portable, and root-only where possible — or a fault-injection hook inside StorageSink, which would put test scaffolding in the production write path; tests/sim already covers the property at the storage layer, which is where injection belongs. Network filesystems cannot be created in-process, and the pathologies that matter, such as a server acknowledging an fsync it did not perform, are exactly the ones a local mount would not reproduce. Recorded as a proposal in B-32 rather than acted on: the fix is either to rewrite the target from 12 to 10 and name the owners of the two classes, or to accept that the category can never honestly close, and both are spec decisions. just gate 279 tests, 2 skipped; 73 corpus cases.",
+      "tasks_touched": [
+        "S2-T15"
+      ],
+      "files_touched": [
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/cases/local/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T15 remains in_progress at local 10 of 12, and B-32 now carries the analysis rather than an open task: the last two classes look un-expressible by the corpus, so the honest resolutions are a spec change to docs/09 or an accepted permanent gap. Both are the maintainer's call. All seven S2 exit criteria are met; the gate waits only on how S2-T15 is closed."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 72,
-    "corpus_cases_passing": 72,
+    "corpus_cases_total": 73,
+    "corpus_cases_passing": 73,
     "sim_seeds_fixed": 2,
     "invariants_covered": 5,
     "invariants_total": 14,

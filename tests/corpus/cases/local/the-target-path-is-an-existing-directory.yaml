@@ -1,0 +1,23 @@
+id: the-target-path-is-an-existing-directory
+category: local
+description: >
+  The user already has a *directory* where the download wants to put a file — common when a
+  previous tool unpacked an archive of the same name. Every filesystem call involved behaves
+  differently from the file case: the exclusive create fails with EISDIR rather than EEXIST, and
+  a rename onto a non-empty directory fails at the end rather than the start.
+
+  The requirement is the same as for an existing file and the reason is the same: whatever is
+  there belongs to the user, and replacing it is unrecoverable. The engine must decline without
+  touching it.
+references: ["docs/04-storage-and-recovery-spec.md §2.1", "INVARIANTS.md#i-4"]
+
+local:
+  existing_target_directory: true
+
+server:
+  content: { size: 8KiB, seed: 70 }
+
+expect:
+  final_state: failed
+  error_kind: target_exists
+  file_renamed: true
