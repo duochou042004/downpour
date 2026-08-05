@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T10:07:36Z",
+  "updated_at": "2026-08-05T10:14:18Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -2832,6 +2832,18 @@
         "state/progress.json"
       ],
       "left_in_progress": "Invariant coverage is 8 of 14 with each claim backed by a named test. The six uncounted are I-7 (S4), I-8 (S8 refresh flow), I-11 and I-12 and I-13 (all need IPC, which is S3), and I-14 (secret redaction, S3 or later). S2 is otherwise unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018."
+    },
+    {
+      "at": "2026-08-05T10:14:18Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Wrote the S1 and S2 changelog entries. CHANGELOG.md stopped at Stage 0 while two stages had shipped, and its own header says it is written for humans rather than generated from commit subjects, so each entry says what the work protects against rather than listing what was added. Checked CLAUDE.md against AGENTS.md for the drift HARNESS.md section 6 warns about and found structural differences rather than rule differences — AGENTS.md carries a project-overview section CLAUDE.md does not — which is the two files framing the same rules for different readers, not drift. Did not touch it.",
+      "tasks_touched": [],
+      "files_touched": [
+        "CHANGELOG.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2 unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018. Documentation is now current — README, CHANGELOG, the ADR index and the invariant count all reflect what is actually in the tree."
     }
   ],
   "metrics": {
