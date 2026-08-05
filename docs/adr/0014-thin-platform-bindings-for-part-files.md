@@ -1,6 +1,6 @@
 # ADR-0014: Use thin platform bindings for truthful part-file allocation
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-08-04
 - **Stage:** S2
 - **Deciders:** maintainer (proposed by Codex)

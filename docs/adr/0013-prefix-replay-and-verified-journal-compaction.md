@@ -1,6 +1,6 @@
 # ADR-0013: Split fatal journal headers from recoverable tails and verify data before compaction
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-08-04
 - **Stage:** S2
 - **Deciders:** maintainer (proposed by Codex)

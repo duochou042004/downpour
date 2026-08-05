@@ -1,6 +1,6 @@
 # ADR-0012: Use a manually encoded, versioned binary recovery journal
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-08-04
 - **Stage:** S2
 - **Deciders:** maintainer (proposed by Codex)
