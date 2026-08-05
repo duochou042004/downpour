@@ -13,7 +13,7 @@ use std::path::Path;
 use downpour_corpus::content::Content;
 use downpour_corpus::server::{Framing, PathologyServer, Protocol, RangeBehaviour, ServerSpec};
 use downpour_http::download::{DownloadError, SingleStream};
-use downpour_http::{H1H2Backend, TransportMode};
+use downpour_http::{H1H2Backend, StorageLayout, TransportMode};
 use url::Url;
 
 const SIZE: u64 = 512 * 1024;
@@ -29,9 +29,17 @@ fn backend(mode: TransportMode) -> H1H2Backend {
     H1H2Backend::new(mode).expect("the h1h2 backend builds")
 }
 
-/// A scratch directory that cleans itself up.
+/// A scratch area that cleans itself up.
+///
+/// Data and recovery state are separate directories, matching docs/04 §1: the journal lives with
+/// application state rather than beside the download, so clearing a downloads folder cannot
+/// silently destroy the evidence a resume depends on. Keeping them apart here also means
+/// [`Self::entries`] still answers "what did the user end up with", which is what the I-4
+/// assertions in this file are about.
 struct Scratch {
-    path: std::path::PathBuf,
+    root: std::path::PathBuf,
+    data: std::path::PathBuf,
+    journals: std::path::PathBuf,
 }
 
 impl Scratch {
@@ -40,18 +48,29 @@ impl Scratch {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!("downpour-test-{tag}-{unique}"));
-        std::fs::create_dir_all(&path).expect("create the scratch directory");
-        Self { path }
+        let root = std::env::temp_dir().join(format!("downpour-test-{tag}-{unique}"));
+        let data = root.join("data");
+        let journals = root.join("journals");
+        std::fs::create_dir_all(&data).expect("create the scratch data directory");
+        std::fs::create_dir_all(&journals).expect("create the scratch journal directory");
+        Self {
+            root,
+            data,
+            journals,
+        }
     }
 
     fn path(&self) -> &Path {
-        &self.path
+        &self.data
     }
 
-    /// Every entry in the directory, sorted, so a test can assert on what exists.
+    fn layout(&self) -> StorageLayout {
+        StorageLayout::new(&self.data, &self.journals)
+    }
+
+    /// Every entry in the data directory, sorted, so a test can assert on what exists.
     fn entries(&self) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(&self.path)
+        let mut names: Vec<String> = std::fs::read_dir(&self.data)
             .expect("read the scratch directory")
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
@@ -59,11 +78,27 @@ impl Scratch {
         names.sort();
         names
     }
+
+    /// The bytes of the single recovery journal, when one was written.
+    fn journal_bytes(&self) -> Option<Vec<u8>> {
+        let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&self.journals)
+            .expect("read the journal directory")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("dpj"))
+            .collect();
+        found.sort();
+        match found.as_slice() {
+            [] => None,
+            [one] => Some(std::fs::read(one).expect("read the journal")),
+            many => panic!("expected at most one journal, found {}", many.len()),
+        }
+    }
 }
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -74,7 +109,7 @@ async fn run(
 ) -> Result<std::path::PathBuf, DownloadError> {
     let url = Url::parse(&server.entry_url()).expect("the server URL is well formed");
     SingleStream::new(backend(mode))
-        .download(url, scratch.path())
+        .download(url, &scratch.layout())
         .await
 }
 
@@ -279,8 +314,14 @@ async fn the_partial_file_holds_correct_bytes_so_a_resume_can_trust_them() {
         .expect_err("incomplete");
 
     let partial = std::fs::read(scratch.path().join("content.dppart")).expect("read the partial");
-    assert_eq!(partial.len(), 8192);
-    assert_eq!(Content::new(42, SIZE).first_mismatch(0, &partial), None);
+    // Preallocated, so the file is full length from the start (I-10) and the bytes that arrived
+    // are a correct *prefix* of it rather than the whole of it. What resume needs is that those
+    // bytes are right, and that the journal — not the file length — says how far they go.
+    assert_eq!(u64::try_from(partial.len()).expect("fits"), SIZE);
+    assert_eq!(
+        Content::new(42, SIZE).first_mismatch(0, &partial[..8192]),
+        None
+    );
 }
 
 // ---------------------------------------------------------------- I-5
@@ -385,4 +426,125 @@ async fn a_zero_length_representation_still_produces_a_file() {
         .expect("downloads");
     assert_eq!(std::fs::read(&path).expect("read").len(), 0);
     assert_eq!(scratch.entries(), vec!["content"]);
+}
+
+// ---------------------------------------------------------------- S2-T8: verified storage
+
+/// Every byte that reaches the disk goes through `downpour-storage`, and the journal proves it.
+///
+/// This is the named proof for **S2-T8**. Before it, `downpour-http` wrote through a minimal
+/// seek-then-write sink of its own: no preallocation, no journal, no interval map, and a
+/// durability ordering that existed only as a comment. That sink is gone, and the evidence that
+/// it is gone is that a successful download now leaves a recovery journal whose `BlockComplete`
+/// records reconstruct the file exactly.
+///
+/// The digest check is the part that matters. Asserting a journal *exists* would only prove
+/// something wrote a file; asserting that every recorded BLAKE3 matches the generator's bytes at
+/// that offset proves the durable record and the delivered bytes are the same bytes. A sink that
+/// journalled optimistically — recording ranges it had not actually written — would produce a
+/// perfectly well-formed journal and fail here.
+#[tokio::test]
+async fn every_successful_download_uses_verified_storage() {
+    use downpour_storage::journal::{JournalRecord, replay_bytes};
+
+    let server = PathologyServer::start(spec()).await.expect("server starts");
+    let scratch = Scratch::new("verified-storage");
+
+    let path = run(&server, &scratch, TransportMode::Http1Only)
+        .await
+        .expect("downloads");
+
+    let content = Content::new(42, SIZE);
+    let bytes = std::fs::read(&path).expect("read the downloaded file");
+    assert_eq!(content.first_mismatch(0, &bytes), None);
+    assert_eq!(
+        scratch.entries(),
+        vec!["content"],
+        "the journal belongs with application state, not next to the data (docs/04 §1)"
+    );
+
+    let journal = scratch
+        .journal_bytes()
+        .expect("a recovery journal was written");
+    let replayed = replay_bytes(&journal).expect("the journal replays");
+    assert_eq!(
+        replayed.header().total_length(),
+        SIZE,
+        "the journal is bound to the representation the probe established"
+    );
+
+    // Rebuild coverage from the durable record alone.
+    let mut covered: Vec<(u64, u64)> = Vec::new();
+    for framed in replayed.records() {
+        if let JournalRecord::BlockComplete {
+            offset,
+            len,
+            blake3,
+        } = framed.record()
+        {
+            let len64 = u64::from(*len);
+            assert_eq!(
+                content.first_mismatch(
+                    *offset,
+                    &bytes[usize::try_from(*offset).expect("fits")..]
+                        [..usize::try_from(len64).expect("fits")]
+                ),
+                None,
+                "journalled range [{offset}, {}) does not match the generator",
+                offset + len64
+            );
+            let recorded = blake3::hash(
+                &bytes[usize::try_from(*offset).expect("fits")..]
+                    [..usize::try_from(len64).expect("fits")],
+            );
+            assert_eq!(
+                recorded.as_bytes(),
+                blake3,
+                "the journal's digest for [{offset}, {}) is not the digest of those bytes",
+                offset + len64
+            );
+            covered.push((*offset, offset + len64));
+        }
+    }
+    covered.sort_unstable();
+
+    assert!(!covered.is_empty(), "a 512 KiB download recorded no blocks");
+    let mut next = 0_u64;
+    for (start, end) in &covered {
+        assert_eq!(*start, next, "gap or overlap in journalled coverage");
+        next = *end;
+    }
+    assert_eq!(
+        next, SIZE,
+        "the journal must account for every byte of the representation"
+    );
+}
+
+/// I-10: the extent is reserved before the first byte, not grown as bytes arrive.
+///
+/// S1's sink created an empty file and let it grow, so "disk full at 97%" was discovered at 97%.
+/// Preallocating converts that into a start-time error, which is the whole point of I-10 — and
+/// the observable consequence is that an interrupted download leaves a *full-length* sparse part
+/// file rather than a short one.
+#[tokio::test]
+async fn the_part_file_is_preallocated_to_its_full_length_before_any_byte_arrives() {
+    let server = PathologyServer::start(ServerSpec {
+        truncate_body_after: Some(8192),
+        ..spec()
+    })
+    .await
+    .expect("server starts");
+    let scratch = Scratch::new("preallocated");
+
+    let _ = run(&server, &scratch, TransportMode::Http1Only)
+        .await
+        .expect_err("the body is truncated");
+
+    let part = scratch.path().join("content.dppart");
+    let metadata = std::fs::metadata(&part).expect("the part file survives for a later resume");
+    assert_eq!(
+        metadata.len(),
+        SIZE,
+        "the part file is preallocated to the representation length, not grown to what arrived"
+    );
 }

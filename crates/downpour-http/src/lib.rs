@@ -32,8 +32,9 @@ pub mod h1h2;
 pub mod protocol;
 pub mod retry;
 pub mod sink;
+pub mod storage_sink;
 
-pub use download::{DownloadError, SingleStream};
+pub use download::{DownloadError, SingleStream, StorageLayout};
 pub use error::{ProbeError, TransferError};
 pub use h1h2::{H1H2Backend, TransportMode};
 pub use protocol::{
@@ -41,3 +42,4 @@ pub use protocol::{
 };
 pub use retry::{RetryDecision, RetryPolicy, RetryState, TransientKind};
 pub use sink::{RangeSink, SinkError, SinkTarget};
+pub use storage_sink::{Artifacts, StorageSink};

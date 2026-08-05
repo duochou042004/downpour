@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 blake3 = { workspace = true }
 downpour-http = { workspace = true }
+downpour-storage = { workspace = true }
 downpour-types = { workspace = true }
 serde = { workspace = true }
 serde_norway = { workspace = true }

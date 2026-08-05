@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-04T17:48:42Z",
+  "updated_at": "2026-08-05T01:49:58Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -810,15 +810,24 @@
         {
           "id": "S2-T8",
           "title": "Replace the S1 minimal sink with downpour-storage without regressing single-stream downloads",
-          "status": "todo",
-          "proof": "tests/corpus/tests/download.rs::every_successful_download_uses_verified_storage and existing S1 corpus/gigabyte tests remain byte-exact",
+          "status": "done",
+          "proof": "tests/corpus/tests/download.rs::every_successful_download_uses_verified_storage replays the recovery journal a completed download leaves and asserts its BlockComplete records cover [0, 512 KiB) with no gap and that every recorded BLAKE3 is the digest of those exact bytes; the_part_file_is_preallocated_to_its_full_length_before_any_byte_arrives proves I-10's start-time reservation; tests/corpus/tests/runner_self_test.rs::the_runner_detects_corrupt_bytes_in_an_unfinished_part_file proves the narrowed .dppart comparison still catches corruption; crates/downpour-storage/tests/part_file.rs::{a_growable_part_file_starts_empty_and_never_claims_reserved_space,a_growable_part_file_refuses_to_shrink,a_growable_part_file_creation_is_exclusive} cover the no-stated-length path; tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes covers the retry artifact cleanup via transient-reset-is-retried, truncated-body, truncated-after-one-byte, repeated-resets-exhaust-the-budget, chunked-short-but-well-formed and content-range-total-overstated. just gate 251 tests / 2 skipped; the full slow corpus 93/93 including both 1 GB cases byte-exact. Seven mutations were checked and each was caught by the test named above.",
           "files": [
+            "crates/downpour-http/src/storage_sink.rs",
             "crates/downpour-http/src/download.rs",
-            "crates/downpour-http/src/sink.rs",
-            "crates/downpour-storage/"
+            "crates/downpour-http/src/lib.rs",
+            "crates/downpour-http/Cargo.toml",
+            "crates/downpour-storage/src/part_file.rs",
+            "crates/downpour-storage/tests/part_file.rs",
+            "crates/downpour-cli/src/main.rs",
+            "tests/corpus/src/runner.rs",
+            "tests/corpus/tests/download.rs",
+            "tests/corpus/tests/runner_self_test.rs",
+            "tests/corpus/self-test/corrupt-bytes-in-an-unfinished-part-file.yaml",
+            "docs/adr/0016-storage-backed-sink-in-http-until-the-engine-lands.md"
           ],
           "blocked_by": "S2-T5, S2-T6",
-          "notes": "Closes B-5. Remove the minimal sink only after all callers use the storage crate; do not keep two competing durability paths.",
+          "notes": "Closes B-5: the S1 minimal sink is deleted, and there is one durability path in the workspace. ADR-0016 records why the storage-backed sink lives in downpour-http beside SingleStream — the architecture puts this wiring in downpour-engine, which is S3 — and names its removal. Measured 1 GB cost: 3.375s and 4.005s against an S1 baseline of 3.029s and 3.565s, about 8 percent for preallocation, journaling and the fsyncs S1 did not perform. Three consequences worth carrying: part files are now full length from creation, so an interrupted download leaves a sparse full-length file and the corpus compares only journal-claimed ranges; the CLI resolves the journal directory through `directories` per docs/02 section 7 rather than dropping journals beside the user's downloads; and a retry now deletes its predecessor's artifacts, because both files are created exclusively.",
           "invariants": [
             "I-1",
             "I-4",
@@ -1490,6 +1499,13 @@
       "status": "proposed",
       "superseded_by": null,
       "stage": "S2"
+    },
+    {
+      "id": "ADR-0016",
+      "title": "Storage-backed sink hosted in downpour-http until downpour-engine lands",
+      "status": "proposed",
+      "superseded_by": null,
+      "stage": "S2"
     }
   ],
   "risks": [
@@ -1698,6 +1714,27 @@
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "An unconsumed enum variant looks like dead weight; recording who consumes it keeps the non-truncating choice from being 'simplified' away later"
+    },
+    {
+      "id": "B-21",
+      "text": "ADR-0016 gives downpour-http a dependency on downpour-storage so the storage-backed sink can live beside SingleStream. The architecture diagram in docs/02 section 3 has no such arrow: engine is the crate that sees both. Delete the dependency in S3 when downpour-engine lands and SingleStream moves there with the sink. If S3 closes with it still present, it was forgotten.",
+      "found_in_stage": "S2",
+      "target_stage": "S3",
+      "rationale": "ADR-0016's reversal trigger is an expected end, not a contingency, and an expected end that nothing tracks is just a permanent exception"
+    },
+    {
+      "id": "B-22",
+      "text": "A successful download leaves its recovery journal behind. docs/04 section 6 step 10 deletes it, but only as the last step of a sequence whose earlier steps — gap check, server digest, Sealed record — are S2-T11. Deleting it on the strength of a byte counter is exactly what I-4 forbids, so retention is deliberate until T11 can delete it against real verification. every_successful_download_uses_verified_storage asserts on that journal and will need to move to the interrupted path when T11 lands.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "Retaining a journal is recoverable garbage; deleting one for a download that was not actually verified is data loss, so the conservative order is verify first, delete second"
+    },
+    {
+      "id": "B-23",
+      "text": "StorageSink drives the blocking DurableWriter with one spawn_blocking per accepted chunk, moving the writer in and out. docs/04 section 2.2 prescribes a writer task behind a bounded channel instead, which amortises the handoff across workers. With one worker there is nothing to amortise, so this lands in S3 with the worker pool. Measured baseline to beat: 3.375s and 4.005s on the two 1 GB cases.",
+      "found_in_stage": "S2",
+      "target_stage": "S3",
+      "rationale": "Recorded with a number so the S3 change can be judged against evidence rather than against the argument that a channel sounds faster"
     }
   ],
   "session_log": [
@@ -2320,6 +2357,36 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T7 is complete and unblocks S2-T8, S2-T11 and S2-T14. No exit criterion is claimed met: S2-C1 still needs the crash-injection simulation (S2-T12), because recovery is now proven against artifacts a crash could leave but not yet against crashes injected at every write boundary. Two behaviours are recorded in the S2-T7 note rather than an ADR because both follow directly from an existing invariant: a Truncate resets range_support to Unknown (I-6), and a Sealed record is reported but never completes a download (I-4). New backlog B-19 (verify_on_resume is unimplemented) and B-20 (nobody consumes PartFileExtent::Overlong yet; S2-T11 should)."
+    },
+    {
+      "at": "2026-08-05T01:49:58Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Implemented S2-T8, closing B-5. Wrote ADR-0016 first, because the wiring S2-T8 needs has no legal home in docs/02 section 3's dependency graph: http and storage are siblings and downpour-engine, the crate that sees both, is S3. The decision is to give downpour-http the dependency and put the storage-backed sink beside SingleStream, which already lives there for the same reason, and to remove both together in S3. Deleted FileTarget, the S1 minimal sink. StorageSink owns one PartFile, one JournalFile, one DurableWriter and one IntervalMap, and drives the blocking writer through spawn_blocking; I-1's ordering is not reimplemented, it stays inside DurableWriter::flush. Measured before implementing that total_length is None only when a server offers neither ranges nor a declared length, and covered that residual case with PartFile::create_growable and extend_to rather than refusing it or adding a second durability path. Preallocation changed what an interrupted download leaves behind, so the corpus runner now compares only the ranges the journal claims durable, and a new self-test fixture proves that narrowing did not turn the corruption check into a no-op. The CLI resolves its journal directory through `directories` per docs/02 section 7. just gate passes 251 tests, 2 skipped; the full slow corpus passes 93/93 with both 1 GB cases byte-exact at 3.375s and 4.005s against an S1 baseline of 3.029s and 3.565s.",
+      "tasks_touched": [
+        "S2-T8"
+      ],
+      "files_touched": [
+        "crates/downpour-http/src/storage_sink.rs",
+        "crates/downpour-http/src/download.rs",
+        "crates/downpour-http/src/lib.rs",
+        "crates/downpour-http/Cargo.toml",
+        "crates/downpour-storage/src/part_file.rs",
+        "crates/downpour-storage/tests/part_file.rs",
+        "crates/downpour-cli/src/main.rs",
+        "crates/downpour-cli/Cargo.toml",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/tests/download.rs",
+        "tests/corpus/tests/gigabyte.rs",
+        "tests/corpus/tests/runner_self_test.rs",
+        "tests/corpus/self-test/corrupt-bytes-in-an-unfinished-part-file.yaml",
+        "tests/corpus/Cargo.toml",
+        "Cargo.toml",
+        "docs/adr/0016-storage-backed-sink-in-http-until-the-engine-lands.md",
+        "docs/adr/README.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T8 is complete and unblocks S2-T9 and S2-T11. No exit criterion is claimed met. S2-C6 in particular is still unmet: the rename happens after a length check but before any gap or digest verification, which is S2-T11's whole job. New backlog B-21 (delete http's dependency on storage when the engine lands), B-22 (the journal is not deleted after a successful download until T11 can delete it against real verification) and B-23 (replace spawn_blocking with the section 2.2 writer task in S3, baseline recorded). S2-T9 is the natural next task now that resume has durable coverage to resume from."
     }
   ],
   "metrics": {

@@ -62,6 +62,12 @@ impl CaseReport {
 }
 
 /// Run one case in `scratch`, which must be an empty directory owned by the caller.
+///
+/// `scratch` is the *data* directory: everything in it at the end is what the user would be left
+/// with, which is what the byte-comparison and file-count expectations are written against.
+/// Recovery journals go in a sibling, matching docs/04 §1 — and keeping them out of `scratch` is
+/// what stops a journal from being compared against the content generator and reported as
+/// corruption.
 pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
     let mut failures: Vec<String> = Vec::new();
 
@@ -202,11 +208,20 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         }
     }
 
+    // Journals live beside the data directory, never inside it: see `run_case`.
+    let journal_dir = match journal_dir_beside(scratch) {
+        Ok(path) => path,
+        Err(error) => return fail(format!("could not create the journal directory: {error}")),
+    };
+
     // Fast retry delays: see RetryPolicy::fast_for_tests for why, and note Retry-After is still
     // honoured exactly, so `retry-after-is-honoured` still waits the second the server asked for.
     let outcome = SingleStream::new(backend)
         .with_retry_policy(downpour_http::RetryPolicy::fast_for_tests())
-        .download(url, scratch)
+        .download(
+            url,
+            &downpour_http::StorageLayout::new(scratch, &journal_dir),
+        )
         .await;
 
     // ---- expectation: final state and error kind
@@ -288,7 +303,15 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
     }
 
     // ---- unconditional: silent corruption. No case may opt out of this (ADR-0010).
+    //
+    // A finished file is compared whole. An unfinished `.dppart` is not: since S2-T8 it is
+    // preallocated to the representation length (I-10), so most of it is a hole that no byte has
+    // been written to yet, and comparing that against the generator would report the absence of
+    // bytes nobody claimed to have. What is claimed is exactly what the recovery journal records,
+    // so the durable ranges are what get compared — which also checks the journal and the file
+    // agree, and would catch a journal that recorded a range it never wrote.
     let content = case.content();
+    let durable = durable_ranges(&journal_dir);
     let mut bytes_on_disk = 0_u64;
     let mut silent_corruption = false;
     for name in &entries {
@@ -296,18 +319,40 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
         };
-        bytes_on_disk = bytes_on_disk.saturating_add(u64::try_from(bytes.len()).unwrap_or(0));
+        let unfinished = name.ends_with(".dppart");
+        let compare: Vec<(u64, u64)> = if unfinished {
+            durable.clone().unwrap_or_default()
+        } else {
+            vec![(0, u64::try_from(bytes.len()).unwrap_or(0))]
+        };
+        bytes_on_disk = bytes_on_disk.saturating_add(if unfinished {
+            compare.iter().map(|(start, end)| end - start).sum()
+        } else {
+            u64::try_from(bytes.len()).unwrap_or(0)
+        });
 
         // A literal body is not generated content, so there is nothing to compare it against.
         if case.server.body.is_some() {
             continue;
         }
-        if let Some(mismatch) = content.first_mismatch(0, &bytes) {
-            silent_corruption = true;
-            failures.push(format!(
-                "SILENT CORRUPTION in {name}: byte {} should be {:#04x} and is {:#04x}",
-                mismatch.offset, mismatch.expected, mismatch.actual
-            ));
+        for (start, end) in compare {
+            let (Ok(from), Ok(to)) = (usize::try_from(start), usize::try_from(end)) else {
+                continue;
+            };
+            let Some(window) = bytes.get(from..to) else {
+                failures.push(format!(
+                    "{name} claims durable bytes [{start}, {end}) but holds only {}",
+                    bytes.len()
+                ));
+                continue;
+            };
+            if let Some(mismatch) = content.first_mismatch(start, window) {
+                silent_corruption = true;
+                failures.push(format!(
+                    "SILENT CORRUPTION in {name}: byte {} should be {:#04x} and is {:#04x}",
+                    mismatch.offset, mismatch.expected, mismatch.actual
+                ));
+            }
         }
     }
 
@@ -363,6 +408,50 @@ pub fn discover(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(found)
 }
 
+/// The byte ranges the recovery journal records as durable, when a journal was written.
+///
+/// `None` means no journal exists — either nothing was created, or the representation had no
+/// stated length and therefore no journal to bind (ADR-0016). In both cases there is no claim
+/// about which bytes are durable, so there is nothing to compare.
+fn durable_ranges(journal_dir: &Path) -> Option<Vec<(u64, u64)>> {
+    use downpour_storage::journal::{JournalRecord, replay_bytes};
+
+    let mut journals: Vec<PathBuf> = std::fs::read_dir(journal_dir)
+        .ok()?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("dpj"))
+        .collect();
+    journals.sort();
+    let bytes = std::fs::read(journals.first()?).ok()?;
+    let replayed = replay_bytes(&bytes).ok()?;
+
+    let mut ranges: Vec<(u64, u64)> = replayed
+        .records()
+        .iter()
+        .filter_map(|framed| match framed.record() {
+            JournalRecord::BlockComplete { offset, len, .. } => {
+                Some((*offset, offset + u64::from(*len)))
+            }
+            _ => None,
+        })
+        .collect();
+    ranges.sort_unstable();
+    Some(ranges)
+}
+
+/// The journal directory for a case whose data directory is `scratch`.
+///
+/// A sibling rather than a child, so nothing the runner counts or byte-compares can ever be a
+/// journal.
+fn journal_dir_beside(scratch: &Path) -> std::io::Result<PathBuf> {
+    let mut name = scratch.as_os_str().to_os_string();
+    name.push("-journals");
+    let path = PathBuf::from(name);
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
 /// A scratch directory for one case, removed when dropped.
 pub struct CaseScratch {
     path: PathBuf,
@@ -394,5 +483,8 @@ impl CaseScratch {
 impl Drop for CaseScratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
+        if let Ok(journals) = journal_dir_beside(&self.path) {
+            let _ = std::fs::remove_dir_all(journals);
+        }
     }
 }

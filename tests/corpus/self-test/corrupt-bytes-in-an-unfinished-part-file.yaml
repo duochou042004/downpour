@@ -1,0 +1,22 @@
+id: corrupt-bytes-in-an-unfinished-part-file
+category: framing
+description: >
+  NOT A REAL CASE. The server corrupts from byte 0 and then truncates, so the download fails and
+  leaves an unfinished `.dppart` holding wrong bytes. Since S2-T8 the part file is preallocated to
+  the full representation length, so most of it is a hole no byte has been written to; the runner
+  therefore compares only the ranges the recovery journal records as durable. That narrowing is
+  exactly the kind of change that can quietly turn a real check into no check at all — a
+  `durable_ranges` that returned nothing would make every unfinished download pass. This fixture
+  claims failure with the right error kind, which it genuinely has, so the ONLY thing that can
+  fail it is the byte comparison inside the durable prefix.
+references: ["ADR-0010 contract rule 1", "ADR-0016", "INVARIANTS.md#i-1"]
+
+server:
+  content: { size: 128KiB, seed: 42 }
+  corrupt_from: 0
+  truncate_body_after: 8KiB
+
+expect:
+  final_state: failed
+  error_kind: truncated_body
+  file_renamed: false
