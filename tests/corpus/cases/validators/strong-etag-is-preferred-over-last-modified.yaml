@@ -1,0 +1,18 @@
+id: strong-etag-is-preferred-over-last-modified
+category: validators
+description: >
+  The server offers both. RFC 9110 §13.1.5 permits either in `If-Range`, but they are not
+  equivalent: `Last-Modified` has one-second granularity, so two representations replaced within
+  the same second are indistinguishable by it. A strong `ETag` has no such window. When both are
+  available the strong one must be used, and a resume conditioned on it must be served.
+references: ["RFC 9110 §8.8.2", "RFC 9110 §13.1.5", "INVARIANTS.md#i-3"]
+
+server:
+  content: { size: 64KiB, seed: 31 }
+  etag: '"strong-v1"'
+  last_modified: "Mon, 03 Aug 2026 10:00:00 GMT"
+  transient_body_failures: 1
+
+expect:
+  final_state: completed
+  file_renamed: true

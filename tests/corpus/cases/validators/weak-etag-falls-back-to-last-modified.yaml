@@ -1,0 +1,22 @@
+id: weak-etag-falls-back-to-last-modified
+category: validators
+description: >
+  A weak `ETag` and a `Last-Modified` together. The weak tag is unusable for `If-Range` — it may
+  compare equal across representations that differ byte for byte — but the date is not, so the
+  resume conditions on the date rather than giving up. Refusing to resume here would be safe and
+  needlessly slow; resuming on the weak tag would be fast and occasionally wrong. The rule picks
+  the strongest *usable* validator, which is neither of those mistakes.
+
+  Distinct from `weak-etag-only-never-resumes`, where nothing else is offered and there is
+  genuinely nothing to condition on.
+references: ["RFC 9110 §8.8.3", "RFC 9110 §13.1.5", "INVARIANTS.md#i-3"]
+
+server:
+  content: { size: 64KiB, seed: 32 }
+  etag: 'W/"weak-v1"'
+  last_modified: "Tue, 04 Aug 2026 11:30:00 GMT"
+  transient_body_failures: 1
+
+expect:
+  final_state: completed
+  file_renamed: true

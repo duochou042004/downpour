@@ -1,0 +1,24 @@
+id: cdn-changes-etag-between-probe-and-body
+category: validators
+description: >
+  The CDN-inconsistent case docs/09 names. The capability probe reads one byte and gets one
+  ETag; by the time the body is requested, a different edge answers with a different ETag for
+  the same URL. Nothing is wrong with either response on its own — this is two caches
+  disagreeing, not a server misbehaving — and it is the shape that makes "record the validator
+  at probe time and trust it forever" unsafe.
+
+  The transfer itself still completes: a first fetch has no existing bytes to splice onto, so
+  there is nothing for I-3 to protect yet. What must not happen is the engine carrying the
+  probe's validator into a resume as though the body had confirmed it.
+references: ["RFC 9110 §8.8.3", "INVARIANTS.md#i-3", "INVARIANTS.md#i-6"]
+
+server:
+  content: { size: 64KiB, seed: 30 }
+  etag: '"edge-a"'
+  behaviour:
+    - at: { bytes_served: 1 }
+      then: { set_etag: '"edge-b"' }
+
+expect:
+  final_state: completed
+  file_renamed: true
