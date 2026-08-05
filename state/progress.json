@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T08:24:18Z",
+  "updated_at": "2026-08-05T08:33:54Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -945,13 +945,17 @@
         {
           "id": "S2-T14",
           "title": "Run storage recovery on daemon startup and leave recovered downloads paused",
-          "status": "todo",
-          "proof": "crates/downpour-daemon/tests/startup_recovery.rs::unclean_downloads_are_reconciled_and_left_paused",
+          "status": "done",
+          "proof": "crates/downpour-daemon/tests/startup_recovery.rs::unclean_downloads_are_reconciled_and_left_paused, plus one_unrecoverable_download_does_not_stop_the_rest, a_download_whose_recovery_errors_does_not_stop_the_pass and a_store_with_nothing_in_it_recovers_nothing_and_succeeds. Three mutations, all caught: leaving recovered downloads Transferring instead of Paused, reconciling terminal downloads, and aborting the whole pass when one download fails. just gate 279 tests / 2 skipped.",
           "files": [
-            "crates/downpour-daemon/"
+            "crates/downpour-daemon/src/lib.rs",
+            "crates/downpour-daemon/src/startup.rs",
+            "crates/downpour-daemon/tests/startup_recovery.rs",
+            "crates/downpour-daemon/Cargo.toml",
+            "Cargo.toml"
           ],
           "blocked_by": "S2-T7",
-          "notes": "Implement only startup recovery ownership required by S2. IPC, scheduling, and client migration remain S3 or later unless separately added to the backlog.",
+          "notes": "Only startup recovery, as the task scoped it: no IPC, no scheduling, no client migration. One download failing never stops the pass, and the mutation matrix found that the first version of that test did not actually prove it — a missing part file reconciles to a Failed record, which is an Ok outcome, so the error branch was never exercised. Added a case that puts a directory where a journal belongs, which makes reconcile_download return Err for real. Nothing is ever resumed: docs/04 section 5 step (f) is the point of the whole sequence, and the auto-resume mutation is what pins it.",
           "invariants": [
             "I-1",
             "I-9",
@@ -2616,6 +2620,24 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-C5 is met; S2 stands at 13/15 tasks and 6/7 criteria. Only S2-C7 (zero silent corruption across the whole corpus) remains, and S2-T14 and S2-T15 remain open. Paused(DiskFull) as a lifecycle state is not implemented — the storage layer exposes the distinction, but no state machine consumes it until the daemon exists; that belongs with S2-T14 or S3."
+    },
+    {
+      "at": "2026-08-05T08:33:54Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Implemented S2-T14: the downpour-daemon crate with startup recovery only, per the task's scope. recover_all walks every non-terminal download, reconciles each through S2-T7's reconcile_download, and leaves all of them Paused — docs/04 section 5 step (f), which exists because auto-resuming ten transfers on boot is how a download manager gets uninstalled. One download failing never stops the pass. Mutation testing found that the first version of that test did not prove what it claimed: a missing part file reconciles to a Failed record, which is an Ok outcome, so the error branch was never taken and an early-abort mutation survived. Added a case that puts a directory where a journal belongs, which makes reconcile_download error for real; with it the mutation is caught. Also fixed a clippy failure on a redundant must_use. just gate 279 tests, 2 skipped; three mutations, all caught.",
+      "tasks_touched": [
+        "S2-T14"
+      ],
+      "files_touched": [
+        "crates/downpour-daemon/src/lib.rs",
+        "crates/downpour-daemon/src/startup.rs",
+        "crates/downpour-daemon/tests/startup_recovery.rs",
+        "crates/downpour-daemon/Cargo.toml",
+        "Cargo.toml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2 stands at 14/15 tasks and 6/7 criteria. Only S2-T15 remains, and it is what S2-C7 (zero silent corruption across the whole corpus) waits on. B-25's cross-process resume is now possible in principle — startup recovery reconciles the artifacts — but nothing wires a recovered download back into a transfer, which is S3. Paused(DiskFull) as a lifecycle state remains unimplemented for the same reason."
     }
   ],
   "metrics": {
