@@ -304,3 +304,86 @@ pub fn writer_over_real_files<'a>(
         next_sequence,
     )
 }
+
+/// A volume with a fixed capacity, which refuses writes past it.
+///
+/// Models the only thing about a full disk that matters here: at some point a write returns
+/// `ENOSPC` and everything already on the platter stays exactly where it is. Preallocation means
+/// the real failure usually arrives at creation, but a filesystem that could not reserve — or a
+/// volume another process is filling underneath us — produces exactly this, mid-transfer.
+#[derive(Debug)]
+pub struct FullDiskAfter {
+    capacity: AtomicU64,
+    accepted: AtomicU64,
+}
+
+impl FullDiskAfter {
+    /// A volume that accepts `capacity` bytes and then refuses.
+    #[must_use]
+    pub const fn new(capacity: u64) -> Self {
+        Self {
+            capacity: AtomicU64::new(capacity),
+            accepted: AtomicU64::new(0),
+        }
+    }
+
+    /// The user deletes something. Every subsequent write is accepted.
+    pub fn free(&self) {
+        self.capacity.store(u64::MAX, Ordering::SeqCst);
+    }
+
+    fn accept(&self, len: u64) -> bool {
+        let capacity = self.capacity.load(Ordering::SeqCst);
+        let used = self.accepted.load(Ordering::SeqCst);
+        if used.saturating_add(len) > capacity {
+            return false;
+        }
+        self.accepted.fetch_add(len, Ordering::SeqCst);
+        true
+    }
+}
+
+/// A part file on a volume that fills up.
+pub struct BoundedData<'a> {
+    inner: PartFile,
+    disk: &'a FullDiskAfter,
+}
+
+impl DurableData for BoundedData<'_> {
+    fn total_length(&self) -> u64 {
+        PartFile::total_length(&self.inner)
+    }
+
+    fn write_all_at(&mut self, offset: u64, bytes: &[u8]) -> Result<(), WriterError> {
+        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if !self.disk.accept(len) {
+            // ENOSPC, by its raw code, because that is what the writer classifies on. Nothing is
+            // written and nothing is shortened: the extent stays exactly as preallocated.
+            return Err(WriterError::Io {
+                operation: "write part-file bytes positionally",
+                source: io::Error::from_raw_os_error(if cfg!(windows) { 112 } else { 28 }),
+            });
+        }
+        PartFile::write_all_at(&self.inner, offset, bytes).map_err(WriterError::from)
+    }
+
+    fn sync_data(&mut self) -> Result<(), WriterError> {
+        PartFile::sync_data(&self.inner).map_err(WriterError::from)
+    }
+}
+
+/// Build a writer whose volume fills after `disk`'s capacity.
+///
+/// # Errors
+///
+/// If either artifact cannot be created.
+pub fn writer_over_a_full_disk<'a>(
+    scenario: &Scenario,
+    total_length: u64,
+    disk: &'a FullDiskAfter,
+    next_sequence: u64,
+) -> Result<DurableWriter<BoundedData<'a>, JournalFile>, WriterError> {
+    let part = PartFile::create(scenario.target(), total_length)?;
+    let journal = JournalFile::create(scenario.journal(), Scenario::header(total_length))?;
+    DurableWriter::try_new(BoundedData { inner: part, disk }, journal, next_sequence)
+}

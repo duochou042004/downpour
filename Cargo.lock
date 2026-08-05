@@ -519,6 +519,7 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror",
+ "tracing",
  "url",
  "windows-sys 0.61.2",
 ]
