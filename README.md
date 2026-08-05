@@ -13,7 +13,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-informational?style=flat-square)](docs/11-packaging-release.md)
 
 [![CI](https://github.com/duochou042004/downpour/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/duochou042004/downpour/actions/workflows/ci.yml)
-[![Invariants](https://img.shields.io/badge/invariants-14-critical?style=flat-square)](docs/agent/INVARIANTS.md)
+[![Invariants](https://img.shields.io/badge/invariants-8%20%2F%2014%20covered-critical?style=flat-square)](docs/agent/INVARIANTS.md)
 [![ADRs](https://img.shields.io/badge/ADRs-18-purple?style=flat-square)](docs/adr/README.md)
 [![Corpus](https://img.shields.io/badge/corpus-73%20%2F%20159%20planned-lightgrey?style=flat-square)](docs/09-testing-strategy.md)
 [![Silent corruption](https://img.shields.io/badge/silent%20corruption-0-brightgreen?style=flat-square)](docs/00-vision-and-scorecard.md)

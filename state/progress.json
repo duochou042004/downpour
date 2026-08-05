@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T10:01:43Z",
+  "updated_at": "2026-08-05T10:07:36Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1694,7 +1694,7 @@
     },
     {
       "id": "B-12",
-      "text": "Invariant coverage accounting, corrected 2026-08-03 from an over-generous 5 to 3. FULLY covered by S1 tests: I-4 (verify before rename, asserted on every corpus case), I-5 (four layers, mutation-checked), I-6 (one of eight server behaviours proves range support). S2 UPDATE 2026-08-04: I-2 is now fully covered by S2-T1's 10000-sequence canonical interval-map property plus S2-T5's mutation-checked debug grant and staged-overlap barriers; I-9 is now fully covered end to end by S2-T2's checksummed versioned codec, S2-T3's 10000-case prefix replay/compaction proofs, and S2-T5's exclusive append path with real replay. metrics.invariants_covered is therefore 5. PARTIALLY covered and still not counted: I-1 (local boundary ordering is proven, but the required crash/restart full-file simulation is S2-T12), I-3 (resume refusal is S2-T9), I-8 (URL-refresh flow is S8), I-10 (disk-full recovery is S2-T13), and I-11 (SQLite and IPC version proofs remain).",
+      "text": "Invariant coverage accounting, corrected 2026-08-03 from an over-generous 5 to 3, raised to 5 on 2026-08-04, and audited again 2026-08-05 to 8. This number gets quoted as release evidence, so it is only ever raised against a named test that exists and passes, never against work that is merely finished.\n\nFULLY COVERED (8): I-2, interval-map property over 10000 sequences plus the writer's mutation-checked grant and staged-overlap barriers. I-4, verified before rename on every corpus case plus completion.rs's length, coverage and digest checks. I-5, four layers, mutation-checked. I-6, an observed validated 206 is the only route to Proven. I-9, versioned checksummed codec, 10000-case prefix replay, verified compaction, exclusive append. NEWLY COUNTED 2026-08-05: I-1, whose stated proof is crash injection at every point in the ordering plus post-crash full-file verification — delivered by S2-T12's tests/sim/tests/crash_matrix.rs, which also compares the in-memory map against the journal so the reordering the invariant forbids goes red. I-3, whose stated proof list is etag-changed-midway, weak-etag-only, no-validator and 200-instead-of-206 — all four now exist, with resume-time counterparts alongside the probe-time ones. I-10, whose stated proof is the disk-full-at-97pct scenario asserting resumability and an accurate block map after space is freed — delivered by S2-T13's tests/sim/tests/disk_full.rs.\n\nPARTIALLY COVERED and still NOT counted: I-7 (the concurrency controller is S4). I-8 (identity is persisted and reused, but the URL-refresh flow its proof list names is S8). I-11 (the journal and SQLite both refuse a newer version, but the invariant names three formats and the IPC handshake does not exist — there is no downpour-ipc crate). I-12 (the daemon recovers state on startup, but nothing yet proves a client disconnect leaves a transfer running, because there is no IPC). I-13 and I-14 (IPC boundary and secret redaction, both S3 or later).",
       "found_in_stage": "S1",
       "target_stage": null,
       "rationale": "invariants_covered gets quoted as release evidence, so an inflated count is worse than a low one"
@@ -2821,13 +2821,24 @@
         "state/progress.json"
       ],
       "left_in_progress": "B-30's collision half is fixed; its retention half — docs/04 section 8, an age or count bound on journals from failed downloads — remains open and targeted at S3. S2 is at 14/15 tasks with all seven criteria met, and the gate still waits only on ADR-0018 deciding how S2-T15 closes."
+    },
+    {
+      "at": "2026-08-05T10:07:36Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Ran B-12's invariant coverage audit, which I had deliberately deferred earlier rather than raise the number by guessing. B-12 named exactly what was blocking each partially-covered invariant, and three of those blockers have since landed: I-1 needed crash injection at every boundary plus post-crash full-file verification, which S2-T12 delivered; I-3 needed the four validator corpus cases, which S2-T9 delivered and which now have resume-time counterparts alongside the probe-time ones; I-10 needed the disk-full-at-97pct scenario asserting resumability and an accurate block map, which S2-T13 delivered. Each was checked by finding the named test rather than by reasoning from the task being done. metrics.invariants_covered goes 5 to 8. I-11 stays uncounted despite the journal and SQLite both refusing a newer version, because the invariant names three formats and the IPC handshake does not exist — there is no downpour-ipc crate — and counting two of three is the over-generosity B-12 was created to correct. I-12 stays uncounted for the same reason: startup recovery exists, but nothing proves a client disconnect leaves a transfer running, because there are no clients.",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "Invariant coverage is 8 of 14 with each claim backed by a named test. The six uncounted are I-7 (S4), I-8 (S8 refresh flow), I-11 and I-12 and I-13 (all need IPC, which is S3), and I-14 (secret redaction, S3 or later). S2 is otherwise unchanged: 14/15 tasks, all seven criteria met, gate waiting on ADR-0018."
     }
   ],
   "metrics": {
     "corpus_cases_total": 73,
     "corpus_cases_passing": 73,
     "sim_seeds_fixed": 3,
-    "invariants_covered": 5,
+    "invariants_covered": 8,
     "invariants_total": 14,
     "silent_corruption_findings": 0
   }
