@@ -127,6 +127,12 @@ pub struct ServerCase {
     pub content_disposition: Option<String>,
     /// `Repr-Digest` (RFC 9530).
     #[serde(default)]
+    /// `Repr-Digest`, verbatim — or the literal `computed`, which asks the server to state the
+    /// true SHA-256 of the content it is about to serve.
+    ///
+    /// A literal base64 digest for a given seed and size is unmaintainable by hand, so without
+    /// `computed` the corpus could only ever prove the *mismatch* direction — and a verification
+    /// step that always fails looks exactly like one that works (B-28).
     pub digest: Option<String>,
     /// Statuses for a chain of redirect hops.
     #[serde(default)]
@@ -647,7 +653,11 @@ impl Case {
             content_encoding: self.server.content_encoding.clone(),
             content_type: self.server.content_type.clone(),
             content_disposition: self.server.content_disposition.clone(),
-            digest: self.server.digest.clone(),
+            digest: match self.server.digest.as_deref() {
+                Some("computed") => Some(crate::server::DigestSpec::Computed),
+                Some(literal) => Some(crate::server::DigestSpec::Literal(literal.to_owned())),
+                None => None,
+            },
             redirect_chain: self.server.redirect_chain.clone(),
             extra_headers: self
                 .server

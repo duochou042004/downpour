@@ -1,0 +1,22 @@
+id: etag-changes-without-changing-length
+category: validators
+description: >
+  The trap this whole category exists for. The representation is replaced mid-transfer by one of
+  exactly the same length, so every check that does not compare content agrees: the byte count
+  matches, the `Content-Length` matches, the finished file is precisely the expected size. Only
+  the validator disagrees. Resuming would splice version A's prefix onto version B's suffix and
+  produce a file no length check, no size check, and no progress bar could tell from a good one.
+references: ["RFC 9110 §13.1.5", "INVARIANTS.md#i-3"]
+
+server:
+  content: { size: 128KiB, seed: 27 }
+  etag: '"same-size-v1"'
+  truncate_body_after: 16KiB
+  behaviour:
+    - at: { bytes_served: 16KiB }
+      then: { set_etag: '"same-size-v2"' }
+
+expect:
+  final_state: failed
+  error_kind: validator_mismatch
+  file_renamed: false

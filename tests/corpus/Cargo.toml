@@ -10,11 +10,13 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+base64 = { workspace = true }
 blake3 = { workspace = true }
 downpour-http = { workspace = true }
 downpour-storage = { workspace = true }
 downpour-types = { workspace = true }
 serde = { workspace = true }
+sha2 = { workspace = true }
 serde_norway = { workspace = true }
 thiserror = { workspace = true }
 http-body-util = { workspace = true }
