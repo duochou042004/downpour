@@ -42,6 +42,13 @@ impl Scratch {
         std::fs::create_dir_all(&path).expect("create the scratch directory");
         Self { path }
     }
+
+    /// Recovery journals go beside the data, never in it (docs/04 §1).
+    fn journals(&self) -> PathBuf {
+        let path = self.path.join("journals");
+        std::fs::create_dir_all(&path).expect("create the journal directory");
+        path
+    }
 }
 
 impl Drop for Scratch {
@@ -97,7 +104,10 @@ async fn download_a_gigabyte(protocol: Protocol, mode: TransportMode, tag: &str)
 
     let started = std::time::Instant::now();
     let path = SingleStream::new(backend)
-        .download(url, &scratch.path)
+        .download(
+            url,
+            &downpour_http::StorageLayout::new(&scratch.path, scratch.journals()),
+        )
         .await
         .expect("a gigabyte downloads");
     let elapsed = started.elapsed();

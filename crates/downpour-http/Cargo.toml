@@ -10,11 +10,14 @@ authors.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+blake3 = { workspace = true }
+downpour-intervals = { workspace = true }
+downpour-storage = { workspace = true }
 downpour-types = { workspace = true }
 httpdate = { workspace = true }
 mime = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "time"] }
 tracing = { workspace = true }
 url = { workspace = true }
 

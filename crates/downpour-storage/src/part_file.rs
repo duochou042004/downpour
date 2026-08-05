@@ -178,6 +178,71 @@ impl PartFile {
         &self.path
     }
 
+    /// Create `<target>.dppart` exclusively for a representation of unknown length.
+    ///
+    /// Only for the case where the server stated no length and proved no range support, so there
+    /// is nothing to reserve and nothing to reserve it *for*: such a transfer cannot be resumed
+    /// or segmented, because both need a length. The extent starts empty and grows through
+    /// [`Self::extend_to`].
+    ///
+    /// The reported method is [`PreallocationMethod::SetLength`] and `space_reserved` is false.
+    /// That is the truth rather than a degraded result — I-10 converts "disk full at 97%" into a
+    /// start-time error by reserving the full length up front, and no length means no such
+    /// protection is available.
+    pub fn create_growable(target: impl AsRef<Path>) -> Result<Self, PartFileError> {
+        let path = part_path_for(target.as_ref())?;
+        let file = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(PartFileError::AlreadyExists { path });
+            }
+            Err(source) => {
+                return Err(PartFileError::Io {
+                    operation: "create growable part file exclusively",
+                    path,
+                    source,
+                });
+            }
+        };
+        Ok(Self {
+            file,
+            path,
+            total_length: 0,
+            preallocation_method: PreallocationMethod::SetLength,
+        })
+    }
+
+    /// Grow the accepted extent to `new_length`.
+    ///
+    /// Only ever grows: a request to shrink is rejected rather than silently ignored, because
+    /// shortening a part file destroys bytes a resume would have reused, which I-10 forbids as
+    /// firmly as truncating on `ENOSPC`.
+    pub fn extend_to(&mut self, new_length: u64) -> Result<(), PartFileError> {
+        if new_length < self.total_length {
+            return Err(PartFileError::CannotShrink {
+                current: self.total_length,
+                requested: new_length,
+            });
+        }
+        if new_length == self.total_length {
+            return Ok(());
+        }
+        self.file
+            .set_len(new_length)
+            .map_err(|source| PartFileError::Io {
+                operation: "extend growable part-file extent",
+                path: self.path.clone(),
+                source,
+            })?;
+        self.total_length = new_length;
+        Ok(())
+    }
+
     /// The exact logical extent accepted by [`Self::write_all_at`].
     #[must_use]
     pub const fn total_length(&self) -> u64 {
@@ -295,6 +360,14 @@ pub enum PartFileError {
     Missing {
         /// The recorded part path that no longer resolves.
         path: PathBuf,
+    },
+    /// A growable extent was asked to shrink, which would destroy resumable bytes.
+    #[error("part-file extent {current} cannot shrink to {requested}")]
+    CannotShrink {
+        /// The extent currently accepted.
+        current: u64,
+        /// The smaller extent that was requested.
+        requested: u64,
     },
     /// The target has no filename to which `.dppart` can be appended.
     #[error("target path has no filename: {target}", target = .target.display())]

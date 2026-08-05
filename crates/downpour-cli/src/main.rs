@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use downpour_http::{H1H2Backend, SingleStream, TransportMode};
+use downpour_http::{H1H2Backend, SingleStream, StorageLayout, TransportMode};
 use url::Url;
 
 /// A download manager that does not corrupt your files.
@@ -102,9 +102,14 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 TransportMode::Negotiated
             };
 
+            let journal_dir = journal_dir().context("could not resolve the state directory")?;
+            std::fs::create_dir_all(&journal_dir)
+                .with_context(|| format!("creating {}", journal_dir.display()))?;
+
             let backend = H1H2Backend::new(mode).context("could not build the HTTP backend")?;
+            let layout = StorageLayout::new(&output_dir, &journal_dir);
             let path = SingleStream::new(backend)
-                .download(url.clone(), &output_dir)
+                .download(url.clone(), &layout)
                 .await
                 .with_context(|| format!("downloading {url}"))?;
 
@@ -130,4 +135,16 @@ fn init_tracing(verbosity: u8) {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .try_init();
+}
+
+/// Where recovery journals live: `$XDG_DATA_HOME/downpour/journals/` and the Windows equivalent.
+///
+/// Resolved through `directories` rather than hard-coded or derived from the executable's
+/// location (`docs/02-architecture.md` §7). It has to be the same directory the daemon will use,
+/// because a journal the daemon cannot find is a download it cannot recover — and one written
+/// beside the user's downloads would be destroyed by clearing that folder.
+fn journal_dir() -> anyhow::Result<PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", "downpour")
+        .context("no home directory for this user")?;
+    Ok(dirs.data_dir().join("journals"))
 }

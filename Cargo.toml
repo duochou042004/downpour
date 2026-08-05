@@ -14,9 +14,13 @@ authors = ["Downpour contributors"]
 # updating that file and saying why — it is the record of what was verified when.
 [workspace.dependencies]
 clap = "4.6.5"
+# Platform state paths (docs/02 §7). Never hard-code them, and never derive them from the
+# executable location: the journal directory has to be the same one the daemon will use.
+directories = "6.0"
 downpour-corpus = { path = "tests/corpus" }
 downpour-http = { path = "crates/downpour-http" }
 downpour-intervals = { path = "crates/downpour-intervals" }
+downpour-storage = { path = "crates/downpour-storage" }
 downpour-types = { path = "crates/downpour-types" }
 anyhow = "1.0"
 async-trait = "0.1.91"

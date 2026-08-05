@@ -173,3 +173,70 @@ fn windows_preallocation_marks_sparse_and_reserves_physical_clusters() {
     assert_ne!(metadata.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE, 0);
     assert!(allocated_size >= LENGTH);
 }
+
+/// A representation with no stated length grows as bytes arrive, and reports no reservation.
+///
+/// The honest position, not a degraded one: I-10 turns "disk full at 97%" into a start-time error
+/// by reserving the full length up front, and a server that never stated a length has given us
+/// nothing to reserve. Claiming `space_reserved` here would be claiming a protection that does
+/// not exist.
+#[test]
+fn a_growable_part_file_starts_empty_and_never_claims_reserved_space() {
+    let directory = TestDirectory::new("growable");
+    let target = directory.path().join("payload.bin");
+    let mut part = PartFile::create_growable(&target).expect("an unused target is exclusive");
+
+    assert_eq!(part.total_length(), 0);
+    assert!(!part.space_reserved());
+    assert_eq!(part.preallocation_method(), PreallocationMethod::SetLength);
+    assert!(matches!(
+        part.write_all_at(0, b"x"),
+        Err(PartFileError::OutOfBounds { .. })
+    ));
+
+    part.extend_to(4).expect("growing is allowed");
+    part.write_all_at(0, b"abcd").expect("the extent now fits");
+    part.extend_to(8).expect("growing again is allowed");
+    part.write_all_at(4, b"efgh").expect("the new extent fits");
+    part.sync_data().expect("data reaches stable storage");
+
+    assert_eq!(fs::read(part.path()).unwrap(), b"abcdefgh");
+    assert_eq!(part.total_length(), 8);
+}
+
+/// I-10: a growable extent never shrinks, because shrinking destroys resumable bytes.
+#[test]
+fn a_growable_part_file_refuses_to_shrink() {
+    let directory = TestDirectory::new("growable-shrink");
+    let target = directory.path().join("payload.bin");
+    let mut part = PartFile::create_growable(&target).expect("exclusive");
+    part.extend_to(16).expect("grow");
+    part.write_all_at(0, b"0123456789abcdef").expect("fill");
+
+    assert!(matches!(
+        part.extend_to(8),
+        Err(PartFileError::CannotShrink {
+            current: 16,
+            requested: 8
+        })
+    ));
+    assert_eq!(
+        fs::read(part.path()).unwrap().len(),
+        16,
+        "the refusal must leave every byte in place"
+    );
+    part.extend_to(16)
+        .expect("re-stating the same extent is a no-op");
+}
+
+/// The exclusive create applies to the growable constructor too: a collision is another owner.
+#[test]
+fn a_growable_part_file_creation_is_exclusive() {
+    let directory = TestDirectory::new("growable-exclusive");
+    let target = directory.path().join("payload.bin");
+    let _first = PartFile::create_growable(&target).expect("first owner wins");
+    assert!(matches!(
+        PartFile::create_growable(&target),
+        Err(PartFileError::AlreadyExists { .. })
+    ));
+}

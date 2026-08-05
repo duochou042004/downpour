@@ -15,18 +15,55 @@
 
 use std::path::{Path, PathBuf};
 
-use async_trait::async_trait;
+use downpour_types::Validator;
 use thiserror::Error;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use url::Url;
 
 use crate::error::{ProbeError, TransferError};
 use crate::protocol::{ProbeRequest, RangeRequest, TransferProtocol};
 use crate::retry::{RetryDecision, RetryPolicy, RetryState, TransientKind};
-use crate::sink::{RangeSink, SinkError, SinkTarget};
+use crate::sink::{RangeSink, SinkError};
+use crate::storage_sink::{Artifacts, StorageSink};
 
 /// Extension for a download in progress. Never the final name (I-4).
 pub const PART_EXTENSION: &str = "dppart";
+
+/// Extension for a download's recovery journal.
+pub const JOURNAL_EXTENSION: &str = "dpj";
+
+/// Where a download's data and its recovery state live.
+///
+/// Two directories rather than one, because `docs/04-storage-and-recovery-spec.md` §1 puts the
+/// part file next to the target — so the final rename is same-filesystem and therefore atomic —
+/// and the journal with application state, so that clearing a downloads folder does not silently
+/// destroy the recovery information for an active transfer.
+#[derive(Clone, Debug)]
+pub struct StorageLayout {
+    target_dir: PathBuf,
+    journal_dir: PathBuf,
+}
+
+impl StorageLayout {
+    /// Data in `target_dir`, recovery journals in `journal_dir`.
+    pub fn new(target_dir: impl Into<PathBuf>, journal_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            target_dir: target_dir.into(),
+            journal_dir: journal_dir.into(),
+        }
+    }
+
+    /// Where the finished file and its `.dppart` live.
+    #[must_use]
+    pub fn target_dir(&self) -> &Path {
+        &self.target_dir
+    }
+
+    /// Where recovery journals live.
+    #[must_use]
+    pub fn journal_dir(&self) -> &Path {
+        &self.journal_dir
+    }
+}
 
 /// A whole-file, single-connection download.
 pub struct SingleStream<B> {
@@ -62,14 +99,23 @@ impl<B: TransferProtocol> SingleStream<B> {
     /// # Errors
     ///
     /// The last error seen, once the failure is not retryable or the budget is spent.
-    pub async fn download(&self, url: Url, target_dir: &Path) -> Result<PathBuf, DownloadError> {
+    pub async fn download(
+        &self,
+        url: Url,
+        layout: &StorageLayout,
+    ) -> Result<PathBuf, DownloadError> {
         // Keyed by origin, not by attempt, because that is what §7 requires once S3 opens N
         // connections. With one worker it is a map of size one.
         let mut retries = RetryState::new();
         let origin = format!("{}://{}", url.scheme(), url.authority());
 
+        // What the last attempt created, so a retry can remove it. Only ever this loop's own
+        // artifacts: the part file and journal are created exclusively, so deleting anything we
+        // did not create would be destroying another owner's download.
+        let mut artifacts: Option<Artifacts> = None;
+
         loop {
-            let error = match self.attempt(url.clone(), target_dir).await {
+            let error = match self.attempt(url.clone(), layout, &mut artifacts).await {
                 Ok(path) => {
                     retries.reset(&origin);
                     return Ok(path);
@@ -94,6 +140,13 @@ impl<B: TransferProtocol> SingleStream<B> {
                         error = %error,
                         "transient failure; retrying from byte 0"
                     );
+                    // Restarting from byte 0 means the previous attempt's artifacts must go:
+                    // both files are created exclusively, so a retry would otherwise collide
+                    // with its own predecessor. When the budget runs out instead, the last
+                    // attempt's artifacts survive — that is what a later resume builds on.
+                    if let Some(previous) = artifacts.take() {
+                        remove_artifacts(&previous).await;
+                    }
                     tokio::time::sleep(delay).await;
                 }
                 RetryDecision::GiveUp => return Err(error),
@@ -103,9 +156,16 @@ impl<B: TransferProtocol> SingleStream<B> {
 
     /// One attempt: probe, fetch, verify, rename.
     ///
-    /// `File::create` truncates, so every attempt begins with an empty `.dppart` — see
-    /// [`Self::download`] for why restarting rather than resuming is the correct S1 behaviour.
-    async fn attempt(&self, url: Url, target_dir: &Path) -> Result<PathBuf, DownloadError> {
+    /// Records what it created in `artifacts` so [`Self::download`] can clear it before a retry.
+    /// Every attempt starts from byte 0 — see [`Self::download`] for why that is still the right
+    /// behaviour until S2-T9 brings `If-Range`.
+    async fn attempt(
+        &self,
+        url: Url,
+        layout: &StorageLayout,
+        artifacts: &mut Option<Artifacts>,
+    ) -> Result<PathBuf, DownloadError> {
+        let target_dir = layout.target_dir();
         let remote = self.backend.probe(ProbeRequest::new(url)).await?;
 
         // Already sanitised by the probe, so it is exactly one path component and cannot escape
@@ -115,7 +175,6 @@ impl<B: TransferProtocol> SingleStream<B> {
             .clone()
             .unwrap_or_else(|| "download".to_owned());
         let final_path = target_dir.join(&name);
-        let part_path = target_dir.join(format!("{name}.{PART_EXTENSION}"));
 
         // Checked before anything is created, so a refusal leaves the directory exactly as it
         // was. Refusing rather than picking a "(1)" suffix is deliberate for S1: silently
@@ -125,13 +184,33 @@ impl<B: TransferProtocol> SingleStream<B> {
             return Err(DownloadError::TargetExists { path: final_path });
         }
 
-        let file = tokio::fs::File::create(&part_path)
-            .await
-            .map_err(|source| DownloadError::Io {
-                path: part_path.clone(),
-                source,
-            })?;
-        let target = FileTarget { file };
+        // Creating the durable artifacts is blocking work — preallocation, an exclusive create,
+        // a header write and two syncs — so it does not run on the executor.
+        let journal_dir = layout.journal_dir().to_path_buf();
+        let target_for_sink = final_path.clone();
+        let total_length = remote.total_length;
+        let transfer_id = transfer_id_for(&remote.final_url);
+        let validator_hash = validator_hash_of(&remote.validator);
+        let target = tokio::task::spawn_blocking(move || {
+            StorageSink::create(
+                &target_for_sink,
+                &journal_dir,
+                total_length,
+                transfer_id,
+                validator_hash,
+            )
+        })
+        .await
+        .map_err(|error| DownloadError::Io {
+            path: final_path.clone(),
+            source: std::io::Error::other(error.to_string()),
+        })?
+        .map_err(|source| DownloadError::Sink {
+            path: final_path.clone(),
+            source,
+        })?;
+        *artifacts = Some(target.artifacts().clone());
+        let part_path = target.artifacts().part_path.clone();
 
         // The limit is what the probe established. A server that delivers more than it declared
         // is refused at the sink rather than written, so it cannot run past the end of the
@@ -144,9 +223,8 @@ impl<B: TransferProtocol> SingleStream<B> {
             .fetch_range(RangeRequest::whole(remote.final_url.clone()), &mut sink)
             .await;
 
-        // I-1's ordering, in the reduced form S1 can express: the bytes are forced to stable
-        // storage before the download is treated as complete. S2 adds the journal record that
-        // makes this the commit point for a *range* rather than for the whole file.
+        // I-1's commit point, in full: inside the writer this is data sync, journal append,
+        // journal sync, then the interval map moves to Complete. Nothing here reorders it.
         //
         // Done before the fetch result is inspected, and deliberately so: whatever arrived is
         // what a later resume will build on, so it has to survive a crash even when the fetch
@@ -193,64 +271,6 @@ impl<B: TransferProtocol> SingleStream<B> {
             "download complete"
         );
         Ok(final_path)
-    }
-}
-
-/// A `.dppart` file on disk.
-///
-/// Replaced in S2 by `downpour-storage`'s writer, which adds sparse preallocation and real
-/// positional writes. The seek-then-write here is correct for one sequential stream and would
-/// not be for many concurrent workers, which is exactly why S3 depends on that replacement.
-struct FileTarget {
-    file: tokio::fs::File,
-}
-
-#[async_trait]
-impl SinkTarget for FileTarget {
-    async fn write_at(&mut self, offset: u64, bytes: &[u8]) -> Result<(), SinkError> {
-        self.file
-            .seek(std::io::SeekFrom::Start(offset))
-            .await
-            .map_err(|source| classify_io(offset, source))?;
-        self.file
-            .write_all(bytes)
-            .await
-            .map_err(|source| classify_io(offset, source))?;
-        Ok(())
-    }
-
-    async fn sync(&mut self) -> Result<(), SinkError> {
-        // `sync_data` rather than `sync_all`: the file's data must be durable, but its metadata
-        // timestamps need not be, and the difference is measurable on every write.
-        self.file
-            .sync_data()
-            .await
-            .map_err(|source| classify_io(0, source))
-    }
-}
-
-/// Separate `ENOSPC` from other I/O failures.
-///
-/// Worth the platform constants because running out of disk at 97% is common and must pause the
-/// download cleanly rather than truncate it (I-10). `std::io::ErrorKind::StorageFull` is still
-/// unstable, so the raw code is matched instead.
-fn classify_io(offset: u64, error: std::io::Error) -> SinkError {
-    /// `ENOSPC` on Linux and the other Unixes we target.
-    const ENOSPC: i32 = 28;
-    /// `ERROR_HANDLE_DISK_FULL`.
-    const WIN_HANDLE_DISK_FULL: i32 = 39;
-    /// `ERROR_DISK_FULL`.
-    const WIN_DISK_FULL: i32 = 112;
-
-    match error.raw_os_error() {
-        Some(ENOSPC) if cfg!(unix) => SinkError::NoSpace { offset },
-        Some(WIN_HANDLE_DISK_FULL | WIN_DISK_FULL) if cfg!(windows) => {
-            SinkError::NoSpace { offset }
-        }
-        _ => SinkError::Io {
-            offset,
-            source: error,
-        },
     }
 }
 
@@ -356,5 +376,60 @@ impl DownloadError {
             Self::Sink { .. } => "sink",
             Self::Io { .. } => "io",
         }
+    }
+}
+
+/// A stable journal identity for one representation.
+///
+/// Derived from the final URL rather than allocated, because there is no id allocator until the
+/// daemon owns one. Deterministic is the useful property here: the retries inside one
+/// [`SingleStream::download`] call resolve to the same journal path, so a retry collides with its
+/// own predecessor rather than silently accumulating orphans — and the collision is what forces
+/// the cleanup to be explicit.
+fn transfer_id_for(final_url: &Url) -> [u8; 16] {
+    let digest = blake3::hash(final_url.as_str().as_bytes());
+    let mut id = [0_u8; 16];
+    id.copy_from_slice(&digest.as_bytes()[..16]);
+    id
+}
+
+/// The journal header's binding to the remote validator (I-3).
+///
+/// A representation with no usable validator hashes to zero rather than to something
+/// arbitrary — "nothing to compare against" is the honest record, and it is what a resume must
+/// refuse on.
+fn validator_hash_of(validator: &Validator) -> [u8; 32] {
+    match validator {
+        Validator::StrongETag(value) => {
+            *blake3::hash(format!("etag:{value}").as_bytes()).as_bytes()
+        }
+        Validator::LastModified(value) => {
+            *blake3::hash(format!("last-modified:{value}").as_bytes()).as_bytes()
+        }
+        Validator::None => [0_u8; 32],
+    }
+}
+
+/// Remove one attempt's durable artifacts before the next attempt recreates them.
+///
+/// Failures are logged rather than propagated: the caller is already handling a transient error
+/// and is about to retry, and a leftover file makes the retry fail loudly at its exclusive
+/// create. Silently swallowing the result would hide that, so it is warned about instead.
+async fn remove_artifacts(artifacts: &Artifacts) {
+    if let Err(error) = tokio::fs::remove_file(&artifacts.part_path).await {
+        tracing::warn!(
+            path = %artifacts.part_path.display(),
+            %error,
+            "could not remove the previous attempt's part file"
+        );
+    }
+    if let Some(journal) = &artifacts.journal_path
+        && let Err(error) = tokio::fs::remove_file(journal).await
+    {
+        tracing::warn!(
+            path = %journal.display(),
+            %error,
+            "could not remove the previous attempt's recovery journal"
+        );
     }
 }

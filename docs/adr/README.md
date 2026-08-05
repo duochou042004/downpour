@@ -67,6 +67,7 @@ it is an opinion with a number.
 | [0013](0013-prefix-replay-and-verified-journal-compaction.md) | Fatal headers, prefix replay, and verified journal compaction | proposed | S2 |
 | [0014](0014-thin-platform-bindings-for-part-files.md) | Thin platform bindings for truthful part-file allocation | proposed | S2 |
 | [0015](0015-versioned-metadata-and-secret-references.md) | Strict SQLite metadata, versioned CBOR evidence, and secret references | proposed | S2 |
+| [0016](0016-storage-backed-sink-in-http-until-the-engine-lands.md) | Storage-backed sink hosted in `downpour-http` until `downpour-engine` lands | proposed | S2 |
 
 ## Rules
 

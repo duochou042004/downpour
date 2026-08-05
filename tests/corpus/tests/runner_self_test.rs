@@ -175,3 +175,38 @@ async fn the_runner_detects_a_server_that_serves_corrupt_bytes() {
         "the report must name the first corrupt offset so it is actionable, got: {described}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_runner_detects_corrupt_bytes_in_an_unfinished_part_file() {
+    // The companion to `the_runner_detects_a_server_that_serves_corrupt_bytes`, and it exists
+    // because S2-T8 narrowed what gets compared. Part files are preallocated now (I-10), so most
+    // of an unfinished one is a hole; comparing it whole would report the absence of bytes nobody
+    // claimed. The runner instead compares the ranges the journal records as durable — and a
+    // narrowing like that is precisely how a real check becomes a no-op nobody notices, because
+    // every case keeps passing.
+    //
+    // This fixture fails for a genuine reason (truncated body) that the runner already checks,
+    // so the assertions below can only be satisfied by the byte comparison actually running
+    // inside the durable prefix.
+    let case = Case::from_path(&fixture("corrupt-bytes-in-an-unfinished-part-file.yaml"))
+        .expect("the fixture loads");
+    let scratch = CaseScratch::new(&case.id).expect("scratch directory");
+
+    let report = run_case(&case, scratch.path()).await;
+
+    assert!(
+        report.silent_corruption,
+        "the runner accepted an unfinished part file whose durable bytes are wrong. Every corpus \
+         case that ends in a .dppart is then checking nothing. Report was: {}",
+        report.describe()
+    );
+    let described = report.describe();
+    assert!(
+        described.contains("SILENT CORRUPTION"),
+        "the report must say so unmistakably, got: {described}"
+    );
+    assert!(
+        described.contains("byte 0"),
+        "the first corrupt offset must be named so it is actionable, got: {described}"
+    );
+}
