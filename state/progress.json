@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T01:49:58Z",
+  "updated_at": "2026-08-05T01:58:27Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -1735,6 +1735,13 @@
       "found_in_stage": "S2",
       "target_stage": "S3",
       "rationale": "Recorded with a number so the S3 change can be judged against evidence rather than against the argument that a channel sounds faster"
+    },
+    {
+      "id": "B-24",
+      "text": "FIXED 2026-08-05: the Stop-hook RECORD guard fired on changes whose progress record had already been written and committed alongside them. .claude/hooks/progress-guard.sh read the record's mtime with `stat -c %Y`, which truncates to whole seconds, then compared with `find -newermt \"@<seconds>\"`, which compares at nanosecond precision against <seconds>.000000000. Every file carrying a sub-second mtime therefore read as newer, including state/progress.json itself, and `git checkout` and `git merge` stamp every file they write with one shared sub-second mtime. Fixed to `find -newer \"$PROGRESS\"`, a direct file-to-file comparison at full precision. scripts/test-progress-guard.sh now asserts both directions and is wired into `just gate`.",
+      "found_in_stage": "S2",
+      "target_stage": "S2",
+      "rationale": "It fired three times in one session on work that was correctly recorded. The dangerous outcome is not the noise itself but the habit it teaches: an agent that learns the RECORD guard is noise will dismiss it on the day it is right, which is the exact drift the guard exists to prevent"
     }
   ],
   "session_log": [
@@ -2387,6 +2394,21 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-T8 is complete and unblocks S2-T9 and S2-T11. No exit criterion is claimed met. S2-C6 in particular is still unmet: the rename happens after a length check but before any gap or digest verification, which is S2-T11's whole job. New backlog B-21 (delete http's dependency on storage when the engine lands), B-22 (the journal is not deleted after a successful download until T11 can delete it against real verification) and B-23 (replace spawn_blocking with the section 2.2 writer task in S3, baseline recorded). S2-T9 is the natural next task now that resume has durable coverage to resume from."
+    },
+    {
+      "at": "2026-08-05T01:58:27Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Fixed a false-positive in the Stop-hook RECORD guard that fired three times during the S2-T8 session on a change whose progress record was written and committed in the same commit. Root cause: progress-guard.sh took the record's mtime with `stat -c %Y`, truncating to whole seconds, then compared with `find -newermt \"@<seconds>\"`, which compares at nanosecond precision — so a file with mtime 1785894883.558 read as newer than a threshold of 1785894883.000, and state/progress.json flagged itself. `git checkout` and `git merge --ff-only` write every file with one shared sub-second mtime, which is why it reproduced on every merge. Changed to `find -newer \"$PROGRESS\"`. Added scripts/test-progress-guard.sh asserting three cases — blocks on a genuinely newer source, stays quiet on equal mtimes, stays quiet when the record is newer — and wired it into `just gate` as a new `hook-test` recipe. Mutation-checked against the original comparison: two of the three assertions fail, including the everyday case where the record is strictly newer than every source. Mirrored to the Codex plugin with `just sync`. No engine or storage behaviour changed.",
+      "tasks_touched": [],
+      "files_touched": [
+        ".claude/hooks/progress-guard.sh",
+        "scripts/test-progress-guard.sh",
+        "justfile",
+        "plugins/downpour-harness/hooks/scripts/progress-guard.sh",
+        "state/progress.json"
+      ],
+      "left_in_progress": "Nothing. S2 remains at 8/15 tasks and 2/7 exit criteria; S2-T9 is next. The guard now distinguishes a missing progress record from one written in the same commit, so a future block is evidence rather than noise."
     }
   ],
   "metrics": {
