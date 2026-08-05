@@ -207,6 +207,28 @@ pub enum TransferError {
         #[source]
         source: crate::sink::SinkError,
     },
+    /// A resume carrying `If-Range` was answered with the whole representation (I-3).
+    ///
+    /// `If-Range` means "send me this range **only if** the representation still matches this
+    /// validator". A `200` is the server saying it does not: what is on the wire is a different
+    /// version from the one the existing bytes came from. This is a hard stop, never permission
+    /// to overwrite from byte zero and never permission to write the body at the resume offset —
+    /// either would splice two versions of a file together at exactly the expected size, which
+    /// every integrity check that does not hash the content would pass.
+    #[error(
+        "{url} answered a resume from byte {resume_offset} with {status}, so the representation \
+         changed since validator {validator} was recorded; refusing to splice"
+    )]
+    ValidatorMismatch {
+        /// The URL being fetched.
+        url: Url,
+        /// The offset the resume asked to continue from.
+        resume_offset: u64,
+        /// The status that arrived where `206` was required.
+        status: u16,
+        /// The validator sent in `If-Range`, recorded when the existing bytes were fetched.
+        validator: String,
+    },
 }
 
 impl TransferError {
@@ -224,6 +246,7 @@ impl TransferError {
             Self::UnusableRangeResponse { .. } => "unusable_range_response",
             Self::OverDelivery { .. } => "over_delivery",
             Self::Sink { .. } => "sink",
+            Self::ValidatorMismatch { .. } => "validator_mismatch",
         }
     }
 }

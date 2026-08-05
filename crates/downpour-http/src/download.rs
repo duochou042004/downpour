@@ -24,6 +24,7 @@ use crate::protocol::{ProbeRequest, RangeRequest, TransferProtocol};
 use crate::retry::{RetryDecision, RetryPolicy, RetryState, TransientKind};
 use crate::sink::{RangeSink, SinkError};
 use crate::storage_sink::{Artifacts, StorageSink};
+use downpour_types::ByteRangeSpec;
 
 /// Extension for a download in progress. Never the final name (I-4).
 pub const PART_EXTENSION: &str = "dppart";
@@ -109,13 +110,12 @@ impl<B: TransferProtocol> SingleStream<B> {
         let mut retries = RetryState::new();
         let origin = format!("{}://{}", url.scheme(), url.authority());
 
-        // What the last attempt created, so a retry can remove it. Only ever this loop's own
-        // artifacts: the part file and journal are created exclusively, so deleting anything we
-        // did not create would be destroying another owner's download.
-        let mut artifacts: Option<Artifacts> = None;
+        // Carried across attempts so a retry can resume into the same durable artifacts
+        // instead of starting a second copy of the download.
+        let mut session: Option<Session> = None;
 
         loop {
-            let error = match self.attempt(url.clone(), layout, &mut artifacts).await {
+            let error = match self.attempt(url.clone(), layout, &mut session).await {
                 Ok(path) => {
                     retries.reset(&origin);
                     return Ok(path);
@@ -133,19 +133,42 @@ impl<B: TransferProtocol> SingleStream<B> {
 
             match self.policy.decide(kind, attempt, retry_after_of(&error)) {
                 RetryDecision::RetryAfter(delay) => {
-                    tracing::warn!(
-                        url = %url,
-                        attempt = failures,
-                        delay_ms = delay.as_millis(),
-                        error = %error,
-                        "transient failure; retrying from byte 0"
-                    );
-                    // Restarting from byte 0 means the previous attempt's artifacts must go:
-                    // both files are created exclusively, so a retry would otherwise collide
-                    // with its own predecessor. When the budget runs out instead, the last
-                    // attempt's artifacts survive — that is what a later resume builds on.
-                    if let Some(previous) = artifacts.take() {
-                        remove_artifacts(&previous).await;
+                    // Resume needs two things, and neither is optional. A validator usable for
+                    // `If-Range`, so the server can tell us whether our bytes still belong to
+                    // the representation it is about to serve (I-3) — a weak ETag will not do,
+                    // since it may compare equal across representations that differ byte for
+                    // byte. And durable bytes to resume *from*, which means past the writer's
+                    // commit point, not merely written.
+                    let resume_from = session.as_ref().map_or(0, Session::durable_prefix_end);
+                    let resumable = session
+                        .as_ref()
+                        .is_some_and(|held| held.validator.if_range_value().is_some())
+                        && resume_from > 0;
+
+                    if resumable {
+                        tracing::warn!(
+                            url = %url,
+                            attempt = failures,
+                            delay_ms = delay.as_millis(),
+                            resume_from,
+                            error = %error,
+                            "transient failure; resuming with If-Range"
+                        );
+                    } else {
+                        tracing::warn!(
+                            url = %url,
+                            attempt = failures,
+                            delay_ms = delay.as_millis(),
+                            error = %error,
+                            "transient failure; restarting from byte 0"
+                        );
+                        // Starting over means the previous attempt's artifacts must go: both
+                        // files are created exclusively, so a retry would otherwise collide with
+                        // its own predecessor. When the budget runs out instead, the last
+                        // attempt's artifacts survive — that is what a later resume builds on.
+                        if let Some(previous) = session.take() {
+                            remove_artifacts(&previous.artifacts).await;
+                        }
                     }
                     tokio::time::sleep(delay).await;
                 }
@@ -154,17 +177,23 @@ impl<B: TransferProtocol> SingleStream<B> {
         }
     }
 
-    /// One attempt: probe, fetch, verify, rename.
+    /// One attempt: probe (or resume an existing session), fetch, verify, rename.
     ///
-    /// Records what it created in `artifacts` so [`Self::download`] can clear it before a retry.
-    /// Every attempt starts from byte 0 — see [`Self::download`] for why that is still the right
-    /// behaviour until S2-T9 brings `If-Range`.
+    /// The session is left in `session` on failure so [`Self::download`] can either resume into
+    /// it or discard it. A resumed attempt does not re-probe: the validator that matters is the
+    /// one recorded when the existing bytes were fetched, and re-probing would replace it with a
+    /// fresh one that trivially matches whatever the server is serving now — which is exactly
+    /// the check I-3 asks for, thrown away. Re-probe triggers are S2-T10.
     async fn attempt(
         &self,
         url: Url,
         layout: &StorageLayout,
-        artifacts: &mut Option<Artifacts>,
+        session: &mut Option<Session>,
     ) -> Result<PathBuf, DownloadError> {
+        if let Some(existing) = session.take() {
+            return self.resume(existing, session).await;
+        }
+
         let target_dir = layout.target_dir();
         let remote = self.backend.probe(ProbeRequest::new(url)).await?;
 
@@ -209,19 +238,66 @@ impl<B: TransferProtocol> SingleStream<B> {
             path: final_path.clone(),
             source,
         })?;
-        *artifacts = Some(target.artifacts().clone());
-        let part_path = target.artifacts().part_path.clone();
+        let artifacts = target.artifacts().clone();
 
         // The limit is what the probe established. A server that delivers more than it declared
         // is refused at the sink rather than written, so it cannot run past the end of the
         // representation. Absent a declared length — close-delimited framing — there is nothing
         // to bound it with, and the length is whatever arrived.
-        let mut sink = RangeSink::new(Box::new(target), 0, remote.total_length);
+        let sink = RangeSink::new(Box::new(target), 0, remote.total_length);
+        let held = Session {
+            sink,
+            validator: remote.validator.clone(),
+            final_url: remote.final_url.clone(),
+            total_length: remote.total_length,
+            final_path,
+            artifacts,
+        };
+        let request = RangeRequest::whole(held.final_url.clone());
+        self.run(held, request, session).await
+    }
 
-        let fetched = self
-            .backend
-            .fetch_range(RangeRequest::whole(remote.final_url.clone()), &mut sink)
-            .await;
+    /// Continue an existing session from its durable prefix, conditional on the validator (I-3).
+    async fn resume(
+        &self,
+        mut held: Session,
+        session: &mut Option<Session>,
+    ) -> Result<PathBuf, DownloadError> {
+        let from = held.durable_prefix_end();
+        let Some(validator) = held.validator.if_range_value().map(str::to_owned) else {
+            // download() only resumes when a usable validator exists, so reaching here would be
+            // a logic error rather than a server behaviour. Refuse rather than silently
+            // continuing without the one check that makes resume safe.
+            let path = held.artifacts.part_path.clone();
+            *session = Some(held);
+            return Err(DownloadError::Incomplete {
+                path,
+                expected: None,
+                actual: from,
+            });
+        };
+
+        // The window moves; the target does not. The backend still cannot address a byte outside
+        // what it was granted, it is just granted a different part of the file now.
+        let remaining = held.total_length.map(|total| total.saturating_sub(from));
+        held.sink.rebase(from, remaining);
+        let request = RangeRequest::resume(
+            held.final_url.clone(),
+            ByteRangeSpec::From { first: from },
+            validator,
+        );
+        self.run(held, request, session).await
+    }
+
+    /// Fetch into a session, make it durable, verify, and rename.
+    async fn run(
+        &self,
+        mut held: Session,
+        request: RangeRequest,
+        session: &mut Option<Session>,
+    ) -> Result<PathBuf, DownloadError> {
+        let part_path = held.artifacts.part_path.clone();
+        let fetched = self.backend.fetch_range(request, &mut held.sink).await;
 
         // I-1's commit point, in full: inside the writer this is data sync, journal append,
         // journal sync, then the interval map moves to Complete. Nothing here reorders it.
@@ -229,34 +305,38 @@ impl<B: TransferProtocol> SingleStream<B> {
         // Done before the fetch result is inspected, and deliberately so: whatever arrived is
         // what a later resume will build on, so it has to survive a crash even when the fetch
         // failed. Returning early here would leave those bytes in the page cache only.
-        sink.sync().await.map_err(|source| DownloadError::Sink {
-            path: part_path.clone(),
-            source,
-        })?;
-
-        let outcome = fetched?;
-
-        // Verification, before the rename and with no fast path around it (I-4).
-        let delivered = sink.written();
-        if let Some(expected) = remote.total_length
-            && delivered != expected
-        {
-            return Err(DownloadError::Incomplete {
-                path: part_path,
-                expected: Some(expected),
-                actual: delivered,
-            });
+        if let Err(source) = held.sink.sync().await {
+            let path = part_path.clone();
+            *session = Some(held);
+            return Err(DownloadError::Sink { path, source });
         }
-        if outcome.truncated {
+
+        let outcome = match fetched {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                *session = Some(held);
+                return Err(error.into());
+            }
+        };
+
+        // Verification, before the rename and with no fast path around it (I-4). `next_offset`
+        // rather than `written`: after a resume the window starts at the durable prefix, so what
+        // matters is where the file now ends, not how much this attempt contributed.
+        let delivered = held.sink.next_offset();
+        let total_length = held.total_length;
+        if total_length.is_some_and(|expected| delivered != expected) || outcome.truncated {
+            let path = part_path.clone();
+            *session = Some(held);
             return Err(DownloadError::Incomplete {
-                path: part_path,
-                expected: remote.total_length,
+                path,
+                expected: total_length,
                 actual: delivered,
             });
         }
 
         // Only now. Rename is atomic within a directory on every platform we target, so there is
         // no window in which the final name refers to an incomplete file.
+        let final_path = held.final_path.clone();
         tokio::fs::rename(&part_path, &final_path)
             .await
             .map_err(|source| DownloadError::Io {
@@ -271,6 +351,28 @@ impl<B: TransferProtocol> SingleStream<B> {
             "download complete"
         );
         Ok(final_path)
+    }
+}
+
+/// One download's live state, carried across the retries of a single `download` call.
+///
+/// It exists so a retry can continue into the same durable artifacts rather than start a second
+/// copy. The validator is the one recorded when the existing bytes were fetched and is never
+/// refreshed, because a validator taken from the retry's own response would match whatever the
+/// server is serving now and prove nothing (I-3).
+struct Session {
+    sink: RangeSink,
+    validator: Validator,
+    final_url: Url,
+    total_length: Option<u64>,
+    final_path: PathBuf,
+    artifacts: Artifacts,
+}
+
+impl Session {
+    /// Where a resume may continue from: the end of the contiguous durable prefix.
+    fn durable_prefix_end(&self) -> u64 {
+        self.sink.durable_prefix_end()
     }
 }
 

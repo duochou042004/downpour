@@ -207,6 +207,10 @@ pub struct ServerSpec {
     /// which is indistinguishable from a comparison that never runs. Used only by
     /// `tests/corpus/self-test/`.
     pub corrupt_from: Option<u64>,
+    /// How this server treats `If-Range` on a resume.
+    pub if_range: IfRangeBehaviour,
+    /// Ordered mid-transfer mutations (ADR-0010's `behaviour`), applied as bytes are served.
+    pub behaviour: Vec<Mutation>,
 }
 
 impl Default for ServerSpec {
@@ -237,8 +241,39 @@ impl Default for ServerSpec {
             redirect_final_target: None,
             redirect_loop: false,
             corrupt_from: None,
+            if_range: IfRangeBehaviour::default(),
+            behaviour: Vec::new(),
         }
     }
+}
+
+/// How a server treats the `If-Range` header a resume carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IfRangeBehaviour {
+    /// RFC 9110 §13.1.5: serve the range when the validator still matches, otherwise the whole
+    /// representation with `200`.
+    #[default]
+    Honoured,
+    /// Answer any request carrying `If-Range` with `200` and the whole representation, whatever
+    /// the validator says. Servers and intermediaries that do not implement `If-Range` do this,
+    /// and a client that takes the body as permission to continue splices two versions together.
+    Ignored,
+}
+
+/// One triggered mid-transfer mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mutation {
+    /// Fire once this many body bytes have been served in total across all requests.
+    pub at_bytes_served: u64,
+    /// What changes when it fires.
+    pub then: MutationEffect,
+}
+
+/// What a fired [`Mutation`] changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutationEffect {
+    /// Replace the `ETag`, as a representation changing under the client would.
+    SetEtag(String),
 }
 
 /// A request the server received, as it arrived.
@@ -271,6 +306,10 @@ impl RecordedRequest {
 struct TransientBudget {
     body: AtomicU32,
     status: AtomicU32,
+    /// Body bytes served so far, across every connection. Mid-transfer mutations trigger on it.
+    bytes_served: std::sync::atomic::AtomicU64,
+    /// The `ETag` as it stands now, which a mutation may have replaced.
+    etag: Mutex<Option<String>>,
 }
 
 impl TransientBudget {
@@ -278,6 +317,36 @@ impl TransientBudget {
         Self {
             body: AtomicU32::new(spec.transient_body_failures),
             status: AtomicU32::new(spec.transient_status_failures),
+            bytes_served: std::sync::atomic::AtomicU64::new(0),
+            etag: Mutex::new(spec.etag.clone()),
+        }
+    }
+
+    /// The `ETag` a response should carry right now.
+    fn current_etag(&self) -> Option<String> {
+        self.etag.lock().ok().and_then(|held| held.clone())
+    }
+
+    /// Account for bytes served and apply every mutation the new total reaches.
+    ///
+    /// Applied after the response is planned, never during: a mutation that changed the
+    /// representation half way through building one response would make the headers describe
+    /// something the body is not.
+    fn serve(&self, spec: &ServerSpec, bytes: u64) {
+        let total = self
+            .bytes_served
+            .fetch_add(bytes, Ordering::SeqCst)
+            .saturating_add(bytes);
+        for mutation in &spec.behaviour {
+            if total >= mutation.at_bytes_served {
+                match &mutation.then {
+                    MutationEffect::SetEtag(value) => {
+                        if let Ok(mut held) = self.etag.lock() {
+                            *held = Some(value.clone());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -483,7 +552,35 @@ struct Plan {
     literal_body: Option<Vec<u8>>,
 }
 
-fn plan(spec: &ServerSpec, path: &str, range_header: Option<&str>) -> Plan {
+/// Whether a resume's `If-Range` still matches, and therefore whether the range may be served.
+///
+/// RFC 9110 §13.1.5: when the validator no longer matches, the server answers the *whole*
+/// representation with `200`. That is a conforming server telling the client its bytes are
+/// stale — and it is the exact response a client must never take as permission to continue.
+fn if_range_permits(spec: &ServerSpec, if_range: Option<&str>, current_etag: Option<&str>) -> bool {
+    let Some(sent) = if_range else {
+        return true;
+    };
+    match spec.if_range {
+        IfRangeBehaviour::Ignored => false,
+        IfRangeBehaviour::Honoured => current_etag.is_some_and(|etag| etag == sent),
+    }
+}
+
+fn plan(
+    spec: &ServerSpec,
+    path: &str,
+    range_header: Option<&str>,
+    if_range: Option<&str>,
+    current_etag: Option<&str>,
+) -> Plan {
+    // A resume whose validator no longer matches is answered with the whole representation, so
+    // the range is discarded before anything else looks at it.
+    let range_header = if if_range_permits(spec, if_range, current_etag) {
+        range_header
+    } else {
+        None
+    };
     // Redirects first: a hop never looks at Range or serves content.
     if path == LOOP_PATH {
         return Plan {
@@ -633,8 +730,8 @@ fn plan(spec: &ServerSpec, path: &str, range_header: Option<&str>) -> Plan {
         }
     }
 
-    if let Some(etag) = &spec.etag {
-        headers.push(("ETag".to_owned(), etag.clone()));
+    if let Some(etag) = current_etag {
+        headers.push(("ETag".to_owned(), etag.to_owned()));
     }
     if let Some(last_modified) = &spec.last_modified {
         headers.push(("Last-Modified".to_owned(), last_modified.clone()));
@@ -775,7 +872,19 @@ async fn serve_http11(
             });
         }
 
-        let mut plan = plan(spec, &path, range_header.as_deref());
+        let if_range = headers
+            .iter()
+            .find(|(name, _)| name == "if-range")
+            .map(|(_, value)| value.clone());
+        let current_etag = budget.current_etag();
+        let mut plan = plan(
+            spec,
+            &path,
+            range_header.as_deref(),
+            if_range.as_deref(),
+            current_etag.as_deref(),
+        );
+        budget.serve(spec, bytes_to_write(spec, &plan));
         let mut full_len = planned_body_len(spec, &plan);
         let mut send_len = bytes_to_write(spec, &plan);
 
@@ -1105,7 +1214,19 @@ async fn serve_h2c(
                     .find(|(name, _)| name == "range")
                     .map(|(_, value)| value.clone());
 
-                let mut plan = plan(&spec, &path, range_header.as_deref());
+                let if_range = headers
+                    .iter()
+                    .find(|(name, _)| name == "if-range")
+                    .map(|(_, value)| value.clone());
+                let current_etag = budget.current_etag();
+                let mut plan = plan(
+                    &spec,
+                    &path,
+                    range_header.as_deref(),
+                    if_range.as_deref(),
+                    current_etag.as_deref(),
+                );
+                budget.serve(&spec, bytes_to_write(&spec, &plan));
                 let mut send_len = bytes_to_write(&spec, &plan);
 
                 if spec.transient_status_failures > 0 && TransientBudget::claim(&budget.status) {

@@ -1,0 +1,21 @@
+id: no-validator-never-resumes
+category: validators
+description: >
+  The server offers neither an ETag nor a Last-Modified, so there is nothing to condition a
+  resume on at all. Same requirement as weak-etag-only, reached by a different route: no
+  validator means no `If-Range`, which means no resume. The transfer still has to complete, by
+  starting over.
+
+  Distinct from `ranges/no-validator`, which checks that the *probe* records the absence
+  independently of range support. This one checks what the absence then forbids at resume time,
+  which is the half that can actually corrupt a file.
+references: ["RFC 9110 §13.1.5", "INVARIANTS.md#i-3"]
+
+server:
+  content: { size: 64KiB, seed: 14 }
+  transient_body_failures: 1
+
+expect:
+  final_state: completed
+  file_renamed: true
+  forbids_if_range: true

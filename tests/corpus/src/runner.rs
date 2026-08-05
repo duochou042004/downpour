@@ -292,6 +292,29 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         }
     }
 
+    // ---- expectation: no resume was attempted (I-3)
+    if case.expect.forbids_if_range == Some(true) {
+        let conditioned: Vec<String> = server
+            .requests()
+            .iter()
+            .filter(|request| {
+                request
+                    .headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case("if-range"))
+            })
+            .map(|request| request.path.clone())
+            .collect();
+        if !conditioned.is_empty() {
+            failures.push(format!(
+                "the engine sent {} request(s) carrying If-Range ({conditioned:?}), but this \
+                 representation offers no validator usable for one, so no resume may be \
+                 attempted at all (I-3)",
+                conditioned.len()
+            ));
+        }
+    }
+
     // ---- unconditional: I-4. The final name exists if and only if the case says so.
     let entries = directory_entries(scratch);
     let renamed = entries.iter().any(|name| !name.ends_with(".dppart"));
