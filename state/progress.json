@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T02:23:10Z",
+  "updated_at": "2026-08-05T04:20:04Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -864,14 +864,17 @@
         {
           "id": "S2-T10",
           "title": "Apply all four capability re-probe triggers before resumed work is planned",
-          "status": "todo",
-          "proof": "crates/downpour-http/tests/reprobe.rs::each_spec_trigger_forces_a_probe_and_an_unrelated_resume_does_not",
+          "status": "done",
+          "proof": "crates/downpour-http/tests/reprobe.rs::each_spec_trigger_forces_a_probe_and_an_unrelated_resume_does_not, plus a_transient_status_is_not_a_capability_contradiction, each_contradicting_status_is_recognised_for_its_own_reason, every_applicable_trigger_is_reported, a_probe_timestamp_in_the_future_is_treated_as_stale, a_refreshed_url_identical_to_the_recorded_one_still_invalidates_the_evidence, the_freshness_window_is_configurable_and_its_boundary_is_exact, and the wiring module's an_elapsed_freshness_window_makes_the_resume_re_probe, a_fresh_window_makes_the_resume_reuse_its_recorded_evidence and a_re_probe_that_finds_a_changed_validator_refuses_to_resume. Eleven mutations were checked and each was caught by the test naming the behaviour, including one per trigger, one that treats every status as a contradiction, one that assumes zero elapsed on clock skew, one that short-circuits after the first trigger, and three on the wiring — never consulting the policy, re-probing unconditionally, and letting a re-probe refresh the validator. just gate 261 tests, 2 skipped.",
           "files": [
             "crates/downpour-http/src/probe.rs",
-            "crates/downpour-http/tests/reprobe.rs"
+            "crates/downpour-http/tests/reprobe.rs",
+            "crates/downpour-http/src/download.rs",
+            "crates/downpour-http/src/lib.rs",
+            "docs/03-transfer-engine-spec.md"
           ],
           "blocked_by": "S2-T9",
-          "notes": "Closes B-16 at the decision layer: final URL changed, observed status contradicts capabilities, freshness window elapsed, and user supplied a refreshed URL. The S8 credential/URL-refresh workflow remains out of scope; S2 only guarantees that a supplied refresh invalidates cached capability evidence.",
+          "notes": "Closes B-16. The policy is a pure function of what is known when a resume is planned, so all four triggers are testable exhaustively rather than through a server that happens to misbehave. It is consumed by SingleStream::resume rather than left as a well-tested function nobody calls, which is precisely what B-16 recorded about probed_at. A re-probe refreshes capabilities — final URL, range evidence, length — and deliberately never the validator: one fetched now would match whatever the server is serving now, which is the I-3 check S2-T9 exists to make. A re-probe that finds a different validator or length is a hard stop, catching I-3 one request earlier than If-Range would. docs/03 section 2.3 requires a freshness window but section 9 never gave it a value; CAPABILITY_FRESHNESS is now recorded there at 15 minutes, with the reasoning that bounds it from both sides. The refreshed-URL trigger is fully implemented and unit-tested but has no S2 caller, because the workflow that obtains a refreshed URL is S8 — recorded as B-26 rather than left to look like an oversight.",
           "invariants": [
             "I-3",
             "I-6",
@@ -1758,6 +1761,13 @@
       "found_in_stage": "S2",
       "target_stage": "S2",
       "rationale": "The distinction between in-call and cross-process resume is invisible from the corpus, which never restarts a process, so it needs recording rather than rediscovering"
+    },
+    {
+      "id": "B-26",
+      "text": "ReprobeTrigger::RefreshedUrlSupplied is implemented and unit-tested, but SingleStream::resume passes refreshed_url: None because nothing in S2 can supply one. The credential and signed-URL refresh workflow of docs/03 section 5.2 is S8; when it lands, the refreshed URL must reach ResumePlan::refreshed_url rather than a second re-probe path being written beside this one.",
+      "found_in_stage": "S2",
+      "target_stage": "S8",
+      "rationale": "One of the four triggers having no caller is exactly the shape B-16 recorded about probed_at, so it is written down rather than left to be rediscovered as dead weight"
     }
   ],
   "session_log": [
@@ -2453,6 +2463,24 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2-C4 is now met with named evidence. S2-T9 unblocks S2-T10. Resume is in-call only; cross-process resume is B-25, waiting on S2-T14. S2-C6 remains unmet: the rename still happens after a length check but before gap and digest verification, which is S2-T11."
+    },
+    {
+      "at": "2026-08-05T04:20:04Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Deleted every branch merged into develop on both remotes, and two stale S2-T4 mutation-experiment branches whose remotes were already gone (a7b97cd, ef458e8) — those were not merged, so it was a judgement call rather than the literal instruction. Then implemented S2-T10, closing B-16. crates/downpour-http/src/probe.rs decides whether cached capability evidence must be re-established before resumed work is planned, implementing all four of docs/03 section 2.3's triggers as a pure function so they can be tested exhaustively. The negative half is load-bearing and tested: a 408, 429 or 5xx is a transient failure, not a statement about capabilities, and treating it as one would re-probe on every back-off. Wired into SingleStream::resume so the policy is consumed rather than merely defined; a re-probe refreshes the final URL and range evidence but never the validator, and one that finds a changed validator or length is a hard stop that catches I-3 one request earlier than If-Range would. Added CAPABILITY_FRESHNESS to docs/03 section 9, which referenced a freshness window without ever defining one. just gate 261 tests, 2 skipped; eleven mutations checked, all caught.",
+      "tasks_touched": [
+        "S2-T10"
+      ],
+      "files_touched": [
+        "crates/downpour-http/src/probe.rs",
+        "crates/downpour-http/tests/reprobe.rs",
+        "crates/downpour-http/src/download.rs",
+        "crates/downpour-http/src/lib.rs",
+        "docs/03-transfer-engine-spec.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2-T10 is complete. No exit criterion changed: S2-C1, C5, C6 and C7 remain unmet, and T10 touches none of them directly. S2-T11 (verify length, coverage and digest before sealing and rename) is the next unblocked task and is what S2-C6 waits on. New backlog B-26: the refreshed-URL trigger has no S2 caller because the refresh workflow is S8."
     }
   ],
   "metrics": {

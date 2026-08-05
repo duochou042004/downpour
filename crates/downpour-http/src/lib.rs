@@ -29,6 +29,7 @@
 pub mod download;
 pub mod error;
 pub mod h1h2;
+pub mod probe;
 pub mod protocol;
 pub mod retry;
 pub mod sink;
@@ -37,6 +38,7 @@ pub mod storage_sink;
 pub use download::{DownloadError, SingleStream, StorageLayout};
 pub use error::{ProbeError, TransferError};
 pub use h1h2::{H1H2Backend, TransportMode};
+pub use probe::{CAPABILITY_FRESHNESS, ReprobePolicy, ReprobeTrigger, ResumePlan};
 pub use protocol::{
     BackendCapabilities, ProbeRequest, RangeOutcome, RangeRequest, TransferProtocol,
 };
