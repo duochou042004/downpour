@@ -16,6 +16,7 @@
     )
 )]
 
+pub mod completion;
 pub mod journal;
 pub mod metadata;
 pub mod part_file;

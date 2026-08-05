@@ -385,6 +385,30 @@ impl<D: DurableData, J: DurableJournal> DurableWriter<D, J> {
         Ok(completed)
     }
 
+    /// The sequence the next journal append must carry.
+    ///
+    /// Exposed so the completion sequence can append its `Sealed` record contiguously; the
+    /// writer stays the only thing that assigns sequences during a transfer.
+    #[must_use]
+    pub const fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    /// Borrow the journal so the completion sequence can seal it.
+    ///
+    /// Only safe once every staged block has been flushed: the writer's own invariant is that
+    /// nothing appends between its records, and sealing a journal with work still staged would
+    /// place the seal before the blocks it claims to cover.
+    pub const fn journal_mut(&mut self) -> &mut J {
+        &mut self.journal
+    }
+
+    /// Whether any block is staged but not yet durable.
+    #[must_use]
+    pub fn has_staged_work(&self) -> bool {
+        !self.staged.is_empty()
+    }
+
     fn ensure_usable(&self) -> Result<(), WriterError> {
         if self.poisoned {
             Err(WriterError::Poisoned)

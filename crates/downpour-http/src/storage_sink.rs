@@ -18,9 +18,11 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use downpour_intervals::{Interval, IntervalMap, IntervalState, WorkerId};
+use downpour_storage::completion::{CompletionError, Sealed, verify_and_rename};
 use downpour_storage::journal::FileHeader;
 use downpour_storage::part_file::{PartFile, PartFileError};
 use downpour_storage::writer::{DurableWriter, JournalFile, WriterError};
+use downpour_types::ContentDigest;
 
 use crate::sink::{SinkError, SinkTarget};
 
@@ -55,6 +57,50 @@ enum Backing {
 }
 
 impl Backing {
+    /// Run docs/04 §6 against this download's own artifacts.
+    ///
+    /// A lengthless representation cannot be verified this way: with no stated length there is
+    /// no length to check, no interval map to prove gap-free, and no journal to seal. Such a
+    /// download is renamed on the strength of the transfer having ended, which is the honest
+    /// limit of what can be known about it — and is why it is also non-resumable.
+    fn complete(
+        &mut self,
+        part_path: &Path,
+        final_path: &Path,
+        digest: Option<&ContentDigest>,
+    ) -> Result<Option<Sealed>, SinkError> {
+        match self {
+            Self::Journalled { writer, intervals } => {
+                if writer.has_staged_work() {
+                    return Err(SinkError::Io {
+                        offset: 0,
+                        source: std::io::Error::other(
+                            "cannot seal a journal with work still staged; flush first",
+                        ),
+                    });
+                }
+                let total = intervals.total_length();
+                let next_sequence = writer.next_sequence();
+                verify_and_rename(
+                    part_path,
+                    final_path,
+                    total,
+                    intervals,
+                    digest,
+                    writer.journal_mut(),
+                    next_sequence,
+                )
+                .map(Some)
+                .map_err(completion_error)
+            }
+            Self::Lengthless { .. } => {
+                std::fs::rename(part_path, final_path)
+                    .map_err(|source| SinkError::Io { offset: 0, source })?;
+                Ok(None)
+            }
+        }
+    }
+
     fn write(&mut self, offset: u64, bytes: &[u8], now: Duration) -> Result<(), SinkError> {
         match self {
             Self::Journalled { writer, intervals } => writer
@@ -93,6 +139,8 @@ pub struct StorageSink {
     backing: Option<Backing>,
     started: Instant,
     artifacts: Artifacts,
+    /// The server's RFC 9530 evidence, checked before the rename (I-4).
+    digest: Option<ContentDigest>,
 }
 
 impl StorageSink {
@@ -111,6 +159,7 @@ impl StorageSink {
         total_length: Option<u64>,
         transfer_id: [u8; 16],
         validator_hash: [u8; 32],
+        digest: Option<ContentDigest>,
     ) -> Result<Self, SinkError> {
         let (backing, artifacts) = match total_length {
             Some(total_length) => {
@@ -166,6 +215,7 @@ impl StorageSink {
             backing: Some(backing),
             started: Instant::now(),
             artifacts,
+            digest,
         })
     }
 
@@ -176,6 +226,27 @@ impl StorageSink {
     }
 
     /// Run one blocking operation on the writer, moving it out and back.
+    /// Verify this download and give it its final name, or fail without renaming (I-4).
+    pub async fn complete(&mut self, final_path: PathBuf) -> Result<Option<Sealed>, SinkError> {
+        let part_path = self.artifacts.part_path.clone();
+        let digest = self.digest.clone();
+        let mut backing = self.backing.take().ok_or(SinkError::Io {
+            offset: 0,
+            source: std::io::Error::other("storage sink was left without its writer"),
+        })?;
+        let (backing, result) = tokio::task::spawn_blocking(move || {
+            let result = backing.complete(&part_path, &final_path, digest.as_ref());
+            (backing, result)
+        })
+        .await
+        .map_err(|error| SinkError::Io {
+            offset: 0,
+            source: std::io::Error::other(error.to_string()),
+        })?;
+        self.backing = Some(backing);
+        result
+    }
+
     async fn on_writer<F>(&mut self, operation: F) -> Result<(), SinkError>
     where
         F: FnOnce(&mut Backing) -> Result<(), SinkError> + Send + 'static,
@@ -200,6 +271,10 @@ impl StorageSink {
 
 #[async_trait]
 impl SinkTarget for StorageSink {
+    async fn verify_and_rename(&mut self, final_path: PathBuf) -> Result<(), SinkError> {
+        self.complete(final_path).await.map(|_| ())
+    }
+
     /// Read from the interval map, which only reaches `Complete` past the writer's commit
     /// point — so this can never name a byte that is merely staged. A representation with no
     /// stated length has no map and reports zero: it cannot be resumed anyway, since we only
@@ -294,5 +369,17 @@ fn classify_io(offset: u64, error: std::io::Error) -> SinkError {
             offset,
             source: error,
         },
+    }
+}
+
+/// Map a completion failure onto the sink's vocabulary.
+///
+/// Every variant is a refusal to name the file, so they all become I/O errors carrying the
+/// reason. The distinction the caller needs is preserved in the message, and `DownloadError`
+/// gives the whole thing a stable kind.
+fn completion_error(error: CompletionError) -> SinkError {
+    SinkError::Io {
+        offset: 0,
+        source: std::io::Error::other(error.to_string()),
     }
 }

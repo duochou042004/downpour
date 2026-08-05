@@ -231,6 +231,7 @@ impl<B: TransferProtocol> SingleStream<B> {
         let total_length = remote.total_length;
         let transfer_id = transfer_id_for(&remote.final_url);
         let validator_hash = validator_hash_of(&remote.validator);
+        let digest = remote.digest.clone();
         let target = tokio::task::spawn_blocking(move || {
             StorageSink::create(
                 &target_for_sink,
@@ -238,6 +239,7 @@ impl<B: TransferProtocol> SingleStream<B> {
                 total_length,
                 transfer_id,
                 validator_hash,
+                digest,
             )
         })
         .await
@@ -407,15 +409,18 @@ impl<B: TransferProtocol> SingleStream<B> {
             });
         }
 
-        // Only now. Rename is atomic within a directory on every platform we target, so there is
-        // no window in which the final name refers to an incomplete file.
+        // Only now, and only through the full sequence: length on disk, gap-free coverage, the
+        // server's digest when one was offered, then the seal, then the rename (docs/04 §6).
+        // A byte counter agreeing is not verification — it cannot see a hole, and it cannot see
+        // that the bytes are a different representation from the one the server meant to send.
         let final_path = held.final_path.clone();
-        tokio::fs::rename(&part_path, &final_path)
-            .await
-            .map_err(|source| DownloadError::Io {
-                path: final_path.clone(),
-                source,
-            })?;
+        if let Err(source) = held.sink.verify_and_rename(final_path.clone()).await {
+            // Nothing is deleted. The part file and journal are evidence, and the user may want
+            // to retry rather than start over (docs/04 §6).
+            let path = part_path.clone();
+            *session = Some(held);
+            return Err(DownloadError::Unverified { path, source });
+        }
 
         tracing::info!(
             path = %final_path.display(),
@@ -530,6 +535,19 @@ pub enum DownloadError {
         #[source]
         source: SinkError,
     },
+    /// Verification refused to give the file its final name (I-4).
+    ///
+    /// Distinct from [`Self::Incomplete`], which is a byte count disagreeing. This is one of the
+    /// checks that a byte count cannot make: a hole the journal never covered, or bytes the
+    /// server's own digest disowns.
+    #[error("{path} did not pass verification and was not renamed: {source}")]
+    Unverified {
+        /// The `.dppart`, kept as evidence.
+        path: PathBuf,
+        /// Which check refused.
+        #[source]
+        source: SinkError,
+    },
     /// A filesystem operation around the transfer failed.
     #[error("{path}: {source}")]
     Io {
@@ -555,6 +573,7 @@ impl DownloadError {
             Self::Incomplete { .. } => "incomplete",
             Self::TargetExists { .. } => "target_exists",
             Self::Sink { .. } => "sink",
+            Self::Unverified { .. } => "unverified",
             Self::Io { .. } => "io",
         }
     }

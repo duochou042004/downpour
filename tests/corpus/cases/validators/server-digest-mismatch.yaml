@@ -1,0 +1,23 @@
+id: server-digest-mismatch
+category: validators
+description: >
+  The transfer completes: the right number of bytes arrive, the length matches, and the journal
+  covers every one of them. Only the server's own RFC 9530 digest disagrees. This is the one
+  failure no amount of local checking can find — the bytes are self-consistent and exactly the
+  expected size, and only end-to-end evidence from the sender can say they are the wrong bytes.
+  The file must not get its final name, and both the part file and the journal must survive as
+  evidence (docs/04 §6).
+
+  B-6 forbade any case from supplying a digest while the engine captured one and ignored it,
+  because a case that passed would have proved the opposite of what it looked like. S2-T11 lifts
+  that, and this is the case that makes the lifting real.
+references: ["RFC 9530", "INVARIANTS.md#i-4", "ADR-0017"]
+
+server:
+  content: { size: 64KiB, seed: 21 }
+  digest: "sha-256=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:"
+
+expect:
+  final_state: failed
+  error_kind: unverified
+  file_renamed: false
