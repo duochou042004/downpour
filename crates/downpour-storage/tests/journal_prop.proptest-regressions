@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fa8b503965b39801b317f206bd54bce35b4e9fca7b41eb50cf92b69e30f79145 # shrinks to records = [Checkpoint { covered_bytes: 0, wall_clock: 0 }, BlockComplete { offset: 0, len: 1, blake3: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }], damage_selector = false, damage_index = 1204468750089877830
