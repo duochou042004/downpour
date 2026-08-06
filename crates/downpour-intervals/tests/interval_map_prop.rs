@@ -57,12 +57,54 @@ fn arb_operation_sequence() -> impl Strategy<Value = Vec<Operation>> {
     proptest::collection::vec(arb_operation(), 0..80)
 }
 
+/// Whether every byte of `range` is unowned, read through the public API only.
+///
+/// The predicate `grant` applies internally. Stated here independently rather than by calling
+/// into the map, so the test would notice if the map's own notion of "grantable" drifted.
+fn wholly_pending(map: &IntervalMap, range: &Range<u64>) -> bool {
+    map.intervals()
+        .iter()
+        .filter(|interval| interval.start() < range.end && range.start < interval.end())
+        .all(|interval| matches!(interval.state(), IntervalState::Pending))
+}
+
+/// Whether every byte of `range` is held in progress by `worker`, read through the public API.
+fn wholly_owned_by(map: &IntervalMap, range: &Range<u64>, worker: WorkerId) -> bool {
+    map.intervals()
+        .iter()
+        .filter(|interval| interval.start() < range.end && range.start < interval.end())
+        .all(|interval| *interval.state() == IntervalState::InProgress { worker })
+}
+
 fn apply(map: &mut IntervalMap, operation: Operation) -> TestCaseResult {
     let before = map.clone();
     match operation {
         Operation::Grant { range, worker } => {
-            if map.grant(range, worker).is_err() {
-                prop_assert_eq!(map, &before, "a rejected grant mutated the map");
+            // Decided from the map *before* the call, so this mirrors `grant`'s precondition
+            // instead of reading its result back. Checking only that a rejected grant left the
+            // map alone cannot see the failure that matters: `replace_range` keeps the partition
+            // canonical whatever it is handed, so a grant wrongly accepted over a range another
+            // worker already holds silently transfers those bytes and every law below still
+            // passes. That is I-2 — two workers believing they own the same offsets — and it is
+            // invisible to a structural check. Deleting the `Pending` guard in `grant` used to
+            // pass this entire suite.
+            let grantable =
+                range.start < range.end && range.end <= TOTAL && wholly_pending(&before, &range);
+            match map.grant(range.clone(), worker) {
+                Ok(()) => prop_assert!(
+                    grantable,
+                    "grant({:?}) was accepted over a range that was not wholly pending, so two \
+                     workers now hold the same bytes (I-2)",
+                    range
+                ),
+                Err(_) => {
+                    prop_assert!(
+                        !grantable,
+                        "grant({:?}) was refused although the range was wholly pending",
+                        range
+                    );
+                    prop_assert_eq!(map, &before, "a rejected grant mutated the map");
+                }
             }
         }
         Operation::Split {
@@ -75,8 +117,27 @@ fn apply(map: &mut IntervalMap, operation: Operation) -> TestCaseResult {
             }
         }
         Operation::Complete { range, worker } => {
-            if map.complete(range, worker).is_err() {
-                prop_assert_eq!(map, &before, "a rejected completion mutated the map");
+            // The same only-if contract as `Grant`, for the same reason. Marking a range complete
+            // that this worker does not hold is how bytes get recorded durable on the strength of
+            // another worker's grant, and the partition stays canonical either way.
+            let completable = range.start < range.end
+                && range.end <= TOTAL
+                && wholly_owned_by(&before, &range, worker);
+            match map.complete(range.clone(), worker) {
+                Ok(()) => prop_assert!(
+                    completable,
+                    "complete({:?}) was accepted for a worker that did not hold the whole range \
+                     (I-2)",
+                    range
+                ),
+                Err(_) => {
+                    prop_assert!(
+                        !completable,
+                        "complete({:?}) was refused although the worker held the whole range",
+                        range
+                    );
+                    prop_assert_eq!(map, &before, "a rejected completion mutated the map");
+                }
             }
         }
         Operation::Abandon { worker } => {

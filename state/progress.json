@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-05T16:48:48Z",
+  "updated_at": "2026-08-06T03:04:24Z",
   "updated_by": "claude-code",
   "current_stage": "S2",
   "stages": [
@@ -603,7 +603,7 @@
           "id": "S2-C1",
           "text": "Crash injection at every write boundary yields a byte-correct file after resume",
           "met": true,
-          "evidence": "tests/sim/tests/crash_matrix.rs injects a failure at each of the six boundaries in write, data sync, journal append, journal sync and Complete, then rebuilds state from the durable artifacts alone. crash_at_every_write_boundary_recovers_byte_exact asserts a pre-crash block always survives, that a range past the journal sync is never lost, that nothing is claimed when nothing was written, that every claimed byte matches downpour_corpus::content::Content — an oracle that knows nothing about how we wrote them — and that the in-memory interval map never claims a range the journal cannot support. resuming_after_a_crash_at_any_boundary_produces_the_whole_file then resumes from the recovered prefix and compares the finished file byte for byte. The reordering that moves the map before the journal sync makes the first of these go red, which is the specific corruption this criterion exists to catch. just gate 283 tests (3 skipped) and just sim 8/8 across 3 fixed seeds, re-run 2026-08-05 after the symlink work. The crash matrix also runs on Windows: tests/sim is a workspace member, so CI's windows job executes it under `cargo nextest run --workspace`, which is what makes G2's 'on Linux and Windows' a checked claim rather than an assumed one.",
+          "evidence": "tests/sim/tests/crash_matrix.rs injects a failure at each of the six boundaries in write, data sync, journal append, journal sync and Complete, then rebuilds state from the durable artifacts alone. crash_at_every_write_boundary_recovers_byte_exact asserts a pre-crash block always survives, that a range past the journal sync is never lost, that nothing is claimed when nothing was written, that every claimed byte matches downpour_corpus::content::Content — an oracle that knows nothing about how we wrote them — and that the in-memory interval map never claims a range the journal cannot support. resuming_after_a_crash_at_any_boundary_produces_the_whole_file then resumes from the recovered prefix and compares the finished file byte for byte. The reordering that moves the map before the journal sync makes the first of these go red, which is the specific corruption this criterion exists to catch. just gate 283 tests (3 skipped) and just sim 8/8 across 3 fixed seeds, re-run 2026-08-05 after the symlink work. The crash matrix also runs on Windows: tests/sim is a workspace member, so CI's windows job executes it under `cargo nextest run --workspace`, which is what makes G2's 'on Linux and Windows' a checked claim rather than an assumed one. HARDENED 2026-08-05 (S2-T16), and the criterion did not previously hold in the way this field implied. The proof of I-1's ORDERING is DurableWriter's own sequence test, completion_is_never_observable_before_data_and_journal_are_durable; the crash matrix proves RECOVERY is byte-exact given that ordering. Until this change the matrix could not tell the two apart, because CrashingData wrote straight through and so never lost an unsynced byte: inverting the two syncs in flush passed all 8 simulations. CrashingData now buffers like CrashingJournal, and Boundary::DataSyncIssued adds the crash point in the window between the syncs. The inversion now fails with \"DataSyncIssued: claimed range [8192, 16384) does not match the generator\".",
           "invariants": [
             "I-1"
           ]
@@ -621,7 +621,7 @@
           "id": "S2-C3",
           "text": "Interval map property tests pass over 10000 generated operation sequences",
           "met": true,
-          "evidence": "crates/downpour-intervals/tests/interval_map_prop.rs::intervals_stay_disjoint_and_total runs with ProptestConfig cases=10000 and asserts disjointness, exact [0,total) coverage, non-zero intervals, canonical merging, and atomic rejection after every generated operation. Verified under `just gate` 2026-08-04; its canonical-merge and rejected-operation mutations each made that exact test fail. Companion algebraic proofs completing_both_split_halves_equals_completing_the_whole and disjoint_completions_are_order_independent were independently mutation-checked.",
+          "evidence": "crates/downpour-intervals/tests/interval_map_prop.rs::intervals_stay_disjoint_and_total runs with ProptestConfig cases=10000 and asserts disjointness, exact [0,total) coverage, non-zero intervals, canonical merging, and atomic rejection after every generated operation. Verified under `just gate` 2026-08-04; its canonical-merge and rejected-operation mutations each made that exact test fail. Companion algebraic proofs completing_both_split_halves_equals_completing_the_whole and disjoint_completions_are_order_independent were independently mutation-checked. HARDENED 2026-08-05 (S2-T16). The property this test asserted was weaker than the invariant it is cited for: it checked that a rejected operation left the map unchanged, never that an accepted one was permitted, and because replace_range keeps the partition canonical whatever it is handed, removing the Pending guard from IntervalMap::grant passed all 283 tests while letting two workers hold the same bytes. RangeNotPending had no test in the repository at all. The only-if contract is now asserted for both grant and complete, computed from the map before the call, and removing either guard reddens this test with a shrunk counterexample.",
           "invariants": [
             "I-2"
           ]
@@ -985,6 +985,19 @@
             "I-9",
             "I-10"
           ]
+        },
+        {
+          "id": "S2-T16",
+          "title": "Make the S2 exit proofs able to fail in the direction they claim",
+          "status": "done",
+          "proof": "tests/sim/tests/crash_matrix.rs::crash_at_every_write_boundary_recovers_byte_exact now goes red on an I-1 ordering inversion (\"DataSyncIssued: claimed range [8192, 16384) does not match the generator\"), and crates/downpour-intervals/tests/interval_map_prop.rs::intervals_stay_disjoint_and_total now goes red on removal of either guard in IntervalMap::grant or ::complete. Both verified by applying the mutation, observing the failure, restoring, and re-running green",
+          "files": [
+            "tests/sim/src/lib.rs",
+            "crates/downpour-intervals/tests/interval_map_prop.rs",
+            "state/progress.json"
+          ],
+          "blocked_by": null,
+          "notes": "A gate review that only re-ran the suites would have passed S2. This task exists because the suites were asked the harder question — can each exit proof fail in the direction it claims? — and two could not. THE ENGINE WAS CORRECT IN BOTH CASES. What was wrong was the evidence, which is the more dangerous defect: a green proof that cannot go red is indistinguishable from a proof, right up until a refactor removes the behaviour and nothing says so. (1) S2-C1/I-1. Inverting the durability ordering in DurableWriter::flush — syncing the journal before the data, the exact reordering docs/agent/INVARIANTS.md and .claude/rules/engine.md call non-negotiable — passed all 8 simulations. The cause was an asymmetry in the harness: CrashingJournal buffers unsynced appends and loses them on a crash, and its doc comment explains precisely why that is what makes the simulation faithful, but CrashingData wrote straight through to the real part file. So the part file always held every byte ever passed to write_all_at, whether or not a sync followed, and the byte comparison could never fail. Fixed by buffering data writes the same way, and by adding Boundary::DataSyncIssued — the crash point in the window between the two syncs, symmetric with the existing JournalSync. Only that pair can observe an ordering, as opposed to bookkeeping. The inversion now fails with a byte mismatch on the claimed range. (2) S2-C3/I-2. Deleting the Pending guard from IntervalMap::grant — the check that stops the same byte range being handed to two workers — passed all 283 tests, and RangeNotPending had no test anywhere in the repository. The property test asserted only that a REJECTED grant left the map unchanged, never that an ACCEPTED one should have been, and replace_range keeps the partition canonical whatever it is handed: a double grant silently transfers the bytes and disjoint-and-total still holds. So the tested property was strictly weaker than I-2, which is about exclusive ownership rather than structure. Fixed by asserting the only-if contract for both grant and complete, computed from the map before the call. Not yet live — there is one writer until S3's allocator — which is exactly why it was worth closing now, before the stage that makes it live. Checked and found genuinely well-guarded, so no change: S2-C2 (disabling both journal CRC checks reddens 3 tests including the named one), S2-C5 (a one-byte over-claim in durable_bytes_after_disk_full reddens both disk-full tests; an earlier staged-bytes mutation passed only because that state is unreachable, a no-op mutation rather than a gap), S2-C6 (neutering check_coverage reddens no_incomplete_map_is_ever_renamed), and IntervalMap::complete's ownership guard, which two durable_writer tests already caught."
         }
       ]
     },
@@ -2979,6 +2992,21 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2 is 15/15 tasks and 7/7 criteria with every ADR accepted, so the stage gate is proposable. current_stage deliberately NOT advanced: HARNESS.md §2 Gate B reserves that for a human, and nothing in this session's delegation covered it."
+    },
+    {
+      "at": "2026-08-06T03:04:24Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "Adversarial QA pass before proposing the S2 gate, asked as: can each exit proof FAIL in the direction it claims? Re-running the suites would have passed the stage. Two proofs could not fail, and in both cases the engine was correct — the evidence was not, which is the more dangerous defect, because a green proof that cannot go red is indistinguishable from a proof until a refactor quietly removes the behaviour. I-1: inverting the durability ordering in DurableWriter::flush, syncing the journal before the data, passed all 8 simulations. CrashingJournal buffers unsynced appends and its doc comment explains that this is what makes the simulation faithful; CrashingData wrote straight through, so the part file always held every byte ever written and the byte comparison could never fail. Fixed by buffering data writes the same way and adding Boundary::DataSyncIssued, the crash point in the window between the two syncs. The inversion now fails on a byte mismatch. I-1's ordering was in fact protected all along, by DurableWriter's own sequence test — S2-C1's evidence field implied the crash matrix did that work and now says which test does what. I-2: deleting the Pending guard from IntervalMap::grant passed all 283 tests, and RangeNotPending had no test anywhere in the repository. The property test asserted only that a rejected operation left the map unchanged, and replace_range keeps the partition canonical whatever it is handed, so a double grant silently transfers bytes between workers while disjoint-and-total still holds. The tested property was structural; I-2 is about exclusive ownership. Added the only-if contract for grant and complete. Not live until S3's allocator, which is why it was worth closing before that stage rather than after. Checked and found genuinely well-guarded, no change needed: S2-C2, S2-C5, S2-C6, and complete's ownership guard. One S2-C5 mutation passed and was a no-op rather than a gap — the state it perturbed is unreachable — which a one-byte over-claim then confirmed by reddening both disk-full tests. Also audited and clean: no unwrap/expect/panic in production paths (all 13 sites are inside mod tests), zero TODO/FIXME, all six roadmap deliverables present including the daemon crate's startup recovery.",
+      "tasks_touched": [
+        "S2-T16"
+      ],
+      "files_touched": [
+        "tests/sim/src/lib.rs",
+        "crates/downpour-intervals/tests/interval_map_prop.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S2 is 16/16 tasks and 7/7 criteria, and the criteria are now mutation-verified rather than merely passing. current_stage still NOT advanced: HARNESS.md §2 Gate B reserves that for a human."
     }
   ],
   "metrics": {

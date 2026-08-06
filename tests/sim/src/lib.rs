@@ -45,6 +45,15 @@ pub enum Boundary {
     BeforeWrite,
     /// After `pwrite`, before the data reached stable storage.
     Write,
+    /// The data sync was issued and did not complete, so nothing it carried is durable.
+    ///
+    /// Symmetric with [`Self::JournalSync`], and the pair is what lets this simulation observe
+    /// I-1's *ordering* rather than only its bookkeeping. With the writer's real ordering a crash
+    /// here loses the block and no journal record was ever appended, so nothing is claimed and
+    /// the two agree. Invert the ordering — sync the journal before the data — and this is the
+    /// window that opens: the record is durable and claims a range whose bytes never reached the
+    /// platter, which the byte comparison in `crash_matrix.rs` then catches.
+    DataSyncIssued,
     /// After the data sync, before the journal record was appended.
     DataSync,
     /// After the journal append, before the journal reached stable storage.
@@ -58,10 +67,11 @@ pub enum Boundary {
 impl Boundary {
     /// Every boundary, in the order the writer crosses them.
     #[must_use]
-    pub const fn all() -> [Self; 6] {
+    pub const fn all() -> [Self; 7] {
         [
             Self::BeforeWrite,
             Self::Write,
+            Self::DataSyncIssued,
             Self::DataSync,
             Self::JournalAppend,
             Self::JournalSync,
@@ -134,17 +144,32 @@ impl CrashPoint {
     }
 }
 
-/// A part file that can be made to fail at a chosen boundary.
+/// A part file that can be made to fail at a chosen boundary, and that loses unsynced writes.
+///
+/// Buffering until `sync_data` is what makes the simulation faithful, for exactly the reason
+/// [`CrashingJournal`] gives about the journal. A data file that wrote straight through always
+/// holds every byte that was ever passed to `write_all_at`, whether or not a sync followed — so
+/// the byte comparison in `crash_matrix.rs` can never fail, and a writer that let the journal
+/// claim a range *before* the data reached the platter looks identical to one that did not.
+///
+/// That is I-1, and it was invisible here until this buffered: inverting the two syncs in
+/// `DurableWriter::flush` passed all eight simulations. A real crash loses what never reached
+/// the platter; so does this.
 pub struct CrashingData<'a> {
     inner: PartFile,
     crash: &'a CrashPoint,
+    unsynced: Vec<(u64, Vec<u8>)>,
 }
 
 impl<'a> CrashingData<'a> {
     /// Wrap a real part file.
     #[must_use]
     pub const fn new(inner: PartFile, crash: &'a CrashPoint) -> Self {
-        Self { inner, crash }
+        Self {
+            inner,
+            crash,
+            unsynced: Vec::new(),
+        }
     }
 }
 
@@ -157,7 +182,7 @@ impl DurableData for CrashingData<'_> {
         if self.crash.should_fail(Boundary::BeforeWrite) {
             return Err(CrashPoint::injected(Boundary::BeforeWrite));
         }
-        PartFile::write_all_at(&self.inner, offset, bytes).map_err(WriterError::from)?;
+        self.unsynced.push((offset, bytes.to_vec()));
         if self.crash.should_fail(Boundary::Write) {
             return Err(CrashPoint::injected(Boundary::Write));
         }
@@ -165,6 +190,14 @@ impl DurableData for CrashingData<'_> {
     }
 
     fn sync_data(&mut self) -> Result<(), WriterError> {
+        // Checked *before* the buffer reaches the file, matching `CrashingJournal::sync_data`:
+        // the sync was issued and did not complete, so nothing it was carrying is durable.
+        if self.crash.should_fail(Boundary::DataSyncIssued) {
+            return Err(CrashPoint::injected(Boundary::DataSyncIssued));
+        }
+        for (offset, bytes) in std::mem::take(&mut self.unsynced) {
+            PartFile::write_all_at(&self.inner, offset, &bytes).map_err(WriterError::from)?;
+        }
         PartFile::sync_data(&self.inner).map_err(WriterError::from)?;
         if self.crash.should_fail(Boundary::DataSync) {
             return Err(CrashPoint::injected(Boundary::DataSync));
