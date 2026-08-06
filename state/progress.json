@@ -2,9 +2,9 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-06T03:04:24Z",
+  "updated_at": "2026-08-06T12:10:02Z",
   "updated_by": "claude-code",
-  "current_stage": "S2",
+  "current_stage": "S3",
   "stages": [
     {
       "id": "S0",
@@ -594,7 +594,7 @@
     {
       "id": "S2",
       "name": "Range, resume, validators, crash-safe storage",
-      "status": "active",
+      "status": "complete",
       "started_at": "2026-08-04T03:40:00Z",
       "completed_at": null,
       "spec": "docs/04-storage-and-recovery-spec.md",
@@ -1004,7 +1004,7 @@
     {
       "id": "S3",
       "name": "Dynamic segmentation over HTTP/1.1",
-      "status": "planned",
+      "status": "active",
       "started_at": null,
       "completed_at": null,
       "spec": "docs/03-transfer-engine-spec.md",
@@ -3007,6 +3007,17 @@
         "state/progress.json"
       ],
       "left_in_progress": "S2 is 16/16 tasks and 7/7 criteria, and the criteria are now mutation-verified rather than merely passing. current_stage still NOT advanced: HARNESS.md §2 Gate B reserves that for a human."
+    },
+    {
+      "at": "2026-08-06T12:10:02Z",
+      "agent": "claude-code",
+      "stage": "S2",
+      "summary": "S2 CLOSED. The maintainer reviewed the gate table and the adversarial QA pass across three sessions and gave the decision to close, which is Gate B's human step in HARNESS.md §2 — an agent proposes and does not advance this field on its own. 16/16 tasks, 7/7 exit criteria, and every criterion mutation-verified rather than merely green: each one had the behaviour it names deliberately removed and its own named test observed going red, then restored and re-run. Two of the seven could not fail when first asked and were fixed in S2-T16 before this decision, not after it. current_stage moves to S3 with zero S3 work done, so the next session starts that stage clean. What S2 does NOT deliver, recorded here so closing the stage is not read as more than it is: resume is in-call only (B-25), so a download interrupted by a process exit keeps its durable bytes and its reconciliation but nothing continues it; URL refresh does not exist (B-26, S8); the corpus stands at 76 of docs/09's 159 with proxies, protocols and media at zero; and scorecard rows 3, 5 and 6 are still zero for want of evidence, total 29.25 of 100.",
+      "tasks_touched": [],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is active and empty. Its first task is the segment allocator; B-37 becomes live the moment cross-process resume lands and should be fixed in the same change, not after it."
     }
   ],
   "metrics": {
