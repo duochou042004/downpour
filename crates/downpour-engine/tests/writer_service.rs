@@ -2,6 +2,7 @@
 
 use std::io;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use downpour_engine::writer_service::{
     GrantWriter, MAX_WRITE_BLOCK_BYTES, WriterService, WriterServiceError,
@@ -88,7 +89,8 @@ impl WriteGate {
 struct FakeData {
     total_length: u64,
     state: Arc<Mutex<FakeState>>,
-    gate: Arc<WriteGate>,
+    write_gate: Arc<WriteGate>,
+    drop_gate: Arc<WriteGate>,
 }
 
 #[derive(Clone, Debug)]
@@ -113,13 +115,19 @@ impl DurableData for FakeData {
                 return Err(injected_error("write fake part file"));
             }
         }
-        self.gate.block_if_enabled();
+        self.write_gate.block_if_enabled();
         Ok(())
     }
 
     fn sync_data(&mut self) -> Result<(), WriterError> {
         self.state.lock().unwrap().events.push(Event::DataSync);
         Ok(())
+    }
+}
+
+impl Drop for FakeData {
+    fn drop(&mut self) {
+        self.drop_gate.block_if_enabled();
     }
 }
 
@@ -156,16 +164,23 @@ fn service(
     total_length: u64,
     minimum_split: u64,
     capacity: usize,
-) -> (WriterService, Arc<Mutex<FakeState>>, Arc<WriteGate>) {
+) -> (
+    WriterService,
+    Arc<Mutex<FakeState>>,
+    Arc<WriteGate>,
+    Arc<WriteGate>,
+) {
     let state = Arc::new(Mutex::new(FakeState {
         events: Vec::new(),
         fail_write: false,
     }));
-    let gate = Arc::new(WriteGate::new());
+    let write_gate = Arc::new(WriteGate::new());
+    let drop_gate = Arc::new(WriteGate::new());
     let data = FakeData {
         total_length,
         state: Arc::clone(&state),
-        gate: Arc::clone(&gate),
+        write_gate: Arc::clone(&write_gate),
+        drop_gate: Arc::clone(&drop_gate),
     };
     let journal = FakeJournal {
         total_length,
@@ -174,7 +189,7 @@ fn service(
     let writer = DurableWriter::try_new(data, journal, 0).unwrap();
     let allocator = SegmentAllocator::new(total_length, minimum_split).unwrap();
     let service = WriterService::start(writer, allocator, capacity).unwrap();
-    (service, state, gate)
+    (service, state, write_gate, drop_gate)
 }
 
 fn allocation(receipt: &downpour_engine::writer_service::AllocationReceipt) -> &Allocation {
@@ -200,7 +215,7 @@ fn assert_interval(
 #[tokio::test]
 async fn receipts_claim_completion_only_after_the_journal_sync_boundary() {
     let worker = WorkerId::new(1);
-    let (service, state, _) = service(8, 1, 4);
+    let (service, state, _, _) = service(8, 1, 4);
     let assigned = service.allocate(worker).await.unwrap();
     assert!(assigned.durable().is_empty());
     let mut writer = service.writer_for(&grant(&assigned));
@@ -241,7 +256,7 @@ async fn receipts_claim_completion_only_after_the_journal_sync_boundary() {
 async fn split_is_a_durability_fence_and_stale_bytes_never_reach_storage() {
     let first = WorkerId::new(11);
     let second = WorkerId::new(12);
-    let (service, state, _) = service(64, 16, 4);
+    let (service, state, _, _) = service(64, 16, 4);
     let first_assignment = service.allocate(first).await.unwrap();
     let mut stale_writer = service.writer_for(&grant(&first_assignment));
     stale_writer.write(vec![0xA1; 8]).await.unwrap();
@@ -299,7 +314,7 @@ async fn split_is_a_durability_fence_and_stale_bytes_never_reach_storage() {
 #[tokio::test]
 async fn abandon_flushes_staged_bytes_before_reclaiming_only_the_remainder() {
     let worker = WorkerId::new(21);
-    let (service, state, _) = service(16, 1, 4);
+    let (service, state, _, _) = service(16, 1, 4);
     let assigned = service.allocate(worker).await.unwrap();
     let mut writer = service.writer_for(&grant(&assigned));
     writer.write(b"kept".to_vec()).await.unwrap();
@@ -337,7 +352,7 @@ async fn abandon_flushes_staged_bytes_before_reclaiming_only_the_remainder() {
 async fn the_owned_command_queue_reaches_its_exact_configured_bound() {
     let first = WorkerId::new(31);
     let second = WorkerId::new(32);
-    let (service, _, gate) = service(64, 16, 1);
+    let (service, _, gate, _) = service(64, 16, 1);
     let first_assignment = service.allocate(first).await.unwrap();
     let second_assignment = service.allocate(second).await.unwrap();
     let mut first_writer = service.writer_for(&grant(&first_assignment));
@@ -351,12 +366,13 @@ async fn the_owned_command_queue_reaches_its_exact_configured_bound() {
         .unwrap();
     let second_write = tokio::spawn(async move { second_writer.write(vec![0x32; 4]).await });
 
-    for _ in 0..100 {
-        if service.remaining_capacity() == 0 {
-            break;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while service.remaining_capacity() != 0 {
+            tokio::task::yield_now().await;
         }
-        tokio::task::yield_now().await;
-    }
+    })
+    .await
+    .expect("the second writer must reach the bounded queue");
     assert_eq!(
         service.remaining_capacity(),
         0,
@@ -380,7 +396,7 @@ async fn the_owned_command_queue_reaches_its_exact_configured_bound() {
 #[tokio::test]
 async fn worker_handles_advance_sequentially_and_payload_limits_fail_before_io() {
     let worker = WorkerId::new(41);
-    let (service, state, _) = service(16, 1, 2);
+    let (service, state, _, _) = service(16, 1, 2);
     let assigned = service.allocate(worker).await.unwrap();
     let mut writer: GrantWriter = service.writer_for(&grant(&assigned));
     assert_eq!(writer.next_offset(), 0);
@@ -412,12 +428,23 @@ async fn worker_handles_advance_sequentially_and_payload_limits_fail_before_io()
 #[tokio::test]
 async fn shutdown_flushes_before_exit_and_cloned_worker_handles_observe_the_stop() {
     let worker = WorkerId::new(51);
-    let (service, _, _) = service(8, 1, 2);
+    let (service, _, _, drop_gate) = service(8, 1, 2);
     let assigned = service.allocate(worker).await.unwrap();
     let mut writer = service.writer_for(&grant(&assigned));
     writer.write(b"done".to_vec()).await.unwrap();
 
-    let snapshot = service.shutdown().await.unwrap();
+    drop_gate.enable();
+    let shutdown = tokio::spawn(async move { service.shutdown().await });
+    let wait_gate = Arc::clone(&drop_gate);
+    tokio::task::spawn_blocking(move || wait_gate.wait_until_entered())
+        .await
+        .unwrap();
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown must not return before the actor releases its backends"
+    );
+    drop_gate.release();
+    let snapshot = shutdown.await.unwrap().unwrap();
     assert_interval(&snapshot, 0, 0, 4, &IntervalState::Complete);
     let error = writer.write(b"nope".to_vec()).await.unwrap_err();
     assert!(matches!(error, WriterServiceError::ActorStopped));
@@ -434,7 +461,8 @@ async fn backend_failures_are_returned_and_zero_capacity_is_refused() {
     let data = FakeData {
         total_length,
         state: Arc::clone(&state),
-        gate,
+        write_gate: gate,
+        drop_gate: Arc::new(WriteGate::new()),
     };
     let journal = FakeJournal {
         total_length,
@@ -470,7 +498,8 @@ async fn backend_failures_are_returned_and_zero_capacity_is_refused() {
     let data = FakeData {
         total_length,
         state: Arc::clone(&state),
-        gate: Arc::new(WriteGate::new()),
+        write_gate: Arc::new(WriteGate::new()),
+        drop_gate: Arc::new(WriteGate::new()),
     };
     let journal = FakeJournal {
         total_length,

@@ -1,12 +1,14 @@
 //! Bounded asynchronous access to one download's blocking durable state.
 //!
-//! The service protocol follows ADR-0019. One actor will own the [`SegmentAllocator`] and
+//! The service protocol follows ADR-0019. One actor owns the [`SegmentAllocator`] and
 //! [`DurableWriter`]; workers receive [`GrantWriter`] handles that append from an allocator-fixed
-//! cursor and expose no absolute-offset operation. This first commit is a behavioral proof
-//! scaffold: it creates the bounded channel but deliberately starts no receiver, so every command
-//! fails until the actor implementation lands.
+//! cursor and expose no absolute-offset operation. Blocking file and journal operations stay on
+//! the actor's dedicated thread, while the bounded channel provides explicit back-pressure to
+//! asynchronous workers.
 
+use std::io;
 use std::ops::Range;
+use std::time::Instant;
 
 use downpour_intervals::WorkerId;
 use downpour_storage::writer::{
@@ -135,6 +137,23 @@ pub enum WriterServiceError {
     /// The actor accepted the command but stopped before replying.
     #[error("download-state actor stopped without replying")]
     ReplyDropped,
+    /// The operating system refused to create the dedicated state-owner thread.
+    #[error("could not start download-state actor: {source}")]
+    ActorStart {
+        /// Thread-creation failure.
+        #[source]
+        source: io::Error,
+    },
+    /// Tokio could not run the blocking thread-join operation to completion.
+    #[error("could not join download-state actor: {source}")]
+    ActorJoin {
+        /// Blocking-task failure.
+        #[source]
+        source: tokio::task::JoinError,
+    },
+    /// The dedicated actor thread panicked instead of shutting down cleanly.
+    #[error("download-state actor panicked during shutdown")]
+    ActorPanicked,
     /// The canonical allocator rejected a control mutation.
     #[error("allocator command failed: {0}")]
     Allocator(#[from] AllocatorError),
@@ -146,10 +165,6 @@ pub enum WriterServiceError {
 type ServiceResult<T> = Result<T, WriterServiceError>;
 type Reply<T> = oneshot::Sender<ServiceResult<T>>;
 
-#[allow(
-    dead_code,
-    reason = "the red proof commit intentionally starts no actor"
-)]
 enum Command {
     Allocate {
         worker: WorkerId,
@@ -179,6 +194,7 @@ enum Command {
 /// Exclusive control handle for one download-state actor.
 pub struct WriterService {
     sender: mpsc::Sender<Command>,
+    actor: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WriterService {
@@ -188,8 +204,8 @@ impl WriterService {
     ///
     /// When `capacity` is zero.
     pub fn start<D, J>(
-        _writer: DurableWriter<D, J>,
-        _allocator: SegmentAllocator,
+        writer: DurableWriter<D, J>,
+        allocator: SegmentAllocator,
         capacity: usize,
     ) -> ServiceResult<Self>
     where
@@ -200,8 +216,14 @@ impl WriterService {
             return Err(WriterServiceError::ZeroQueueCapacity);
         }
         let (sender, receiver) = mpsc::channel(capacity);
-        drop(receiver);
-        Ok(Self { sender })
+        let actor = std::thread::Builder::new()
+            .name("downpour-download-state".to_owned())
+            .spawn(move || StateActor::new(writer, allocator).run(receiver))
+            .map_err(|source| WriterServiceError::ActorStart { source })?;
+        Ok(Self {
+            sender,
+            actor: Some(actor),
+        })
     }
 
     /// Number of additional commands the bounded queue can currently accept.
@@ -247,9 +269,15 @@ impl WriterService {
     }
 
     /// Flush, snapshot, and stop the actor.
-    pub async fn shutdown(self) -> ServiceResult<WriterSnapshot> {
+    pub async fn shutdown(mut self) -> ServiceResult<WriterSnapshot> {
         let (reply, receiver) = oneshot::channel();
-        self.send(Command::Shutdown { reply }, receiver).await
+        let result = self.send(Command::Shutdown { reply }, receiver).await;
+        let actor = self.actor.take().ok_or(WriterServiceError::ActorStopped)?;
+        tokio::task::spawn_blocking(move || actor.join())
+            .await
+            .map_err(|source| WriterServiceError::ActorJoin { source })?
+            .map_err(|_| WriterServiceError::ActorPanicked)?;
+        result
     }
 
     async fn send<T>(
@@ -264,6 +292,118 @@ impl WriterService {
         receiver
             .await
             .map_err(|_| WriterServiceError::ReplyDropped)?
+    }
+}
+
+struct StateActor<D, J> {
+    writer: DurableWriter<D, J>,
+    allocator: SegmentAllocator,
+    started_at: Instant,
+}
+
+impl<D: DurableData, J: DurableJournal> StateActor<D, J> {
+    fn new(writer: DurableWriter<D, J>, allocator: SegmentAllocator) -> Self {
+        Self {
+            writer,
+            allocator,
+            started_at: Instant::now(),
+        }
+    }
+
+    fn run(mut self, mut receiver: mpsc::Receiver<Command>) {
+        while let Some(command) = receiver.blocking_recv() {
+            match command {
+                Command::Allocate { worker, reply } => {
+                    drop(reply.send(self.allocate(worker)));
+                }
+                Command::Write {
+                    worker,
+                    offset,
+                    bytes,
+                    reply,
+                } => {
+                    drop(reply.send(self.write(worker, offset, &bytes)));
+                }
+                Command::Flush { reply } => {
+                    drop(reply.send(self.flush()));
+                }
+                Command::Abandon { worker, reply } => {
+                    drop(reply.send(self.abandon(worker)));
+                }
+                Command::Snapshot { reply } => {
+                    drop(reply.send(Ok(self.snapshot())));
+                }
+                Command::Shutdown { reply } => {
+                    let result = self.shutdown();
+                    receiver.close();
+                    drop(reply.send(result));
+                    break;
+                }
+            }
+        }
+    }
+
+    fn allocate(&mut self, worker: WorkerId) -> ServiceResult<AllocationReceipt> {
+        let durable = self.flush()?;
+        let allocation = self.allocator.allocate(worker)?;
+        Ok(AllocationReceipt {
+            allocation,
+            durable,
+        })
+    }
+
+    fn write(
+        &mut self,
+        worker: WorkerId,
+        offset: u64,
+        bytes: &[u8],
+    ) -> ServiceResult<WriteReceipt> {
+        let length = u64::try_from(bytes.len()).map_err(|_| WriterServiceError::CursorOverflow)?;
+        let end = offset
+            .checked_add(length)
+            .ok_or(WriterServiceError::CursorOverflow)?;
+        let range = offset..end;
+
+        // DurableWriter deliberately fires a debug assertion on an ownership breach. An old
+        // GrantWriter is ordinary concurrent input to this actor after a split or abandon, so
+        // reject it as a value before entering that lower-level invariant tripwire or doing I/O.
+        let mut candidate = self.allocator.interval_map_mut().clone();
+        candidate
+            .complete(range.clone(), worker)
+            .map_err(WriterError::Interval)?;
+
+        let now = self.started_at.elapsed();
+        let durable = self.writer.stage(
+            self.allocator.interval_map_mut(),
+            worker,
+            offset,
+            bytes,
+            now,
+        )?;
+        Ok(WriteReceipt { range, durable })
+    }
+
+    fn flush(&mut self) -> ServiceResult<Vec<DurableBlock>> {
+        self.writer
+            .flush(self.allocator.interval_map_mut())
+            .map_err(WriterServiceError::from)
+    }
+
+    fn abandon(&mut self, worker: WorkerId) -> ServiceResult<AbandonReceipt> {
+        let durable = self.flush()?;
+        let released = self.allocator.abandon(worker);
+        Ok(AbandonReceipt { released, durable })
+    }
+
+    fn snapshot(&self) -> WriterSnapshot {
+        WriterSnapshot {
+            allocator: self.allocator.clone(),
+        }
+    }
+
+    fn shutdown(&mut self) -> ServiceResult<WriterSnapshot> {
+        self.flush()?;
+        Ok(self.snapshot())
     }
 }
 

@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T16:20:33Z",
+  "updated_at": "2026-08-09T16:33:39Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1070,14 +1070,14 @@
         {
           "id": "S3-T2",
           "title": "Move durable writes behind one bounded per-download writer service",
-          "status": "in_progress",
-          "proof": null,
+          "status": "done",
+          "proof": "ADR-0019 plus crates/downpour-engine/tests/writer_service.rs: receipts_claim_completion_only_after_the_journal_sync_boundary, split_is_a_durability_fence_and_stale_bytes_never_reach_storage, abandon_flushes_staged_bytes_before_reclaiming_only_the_remainder, the_owned_command_queue_reaches_its_exact_configured_bound, worker_handles_advance_sequentially_and_payload_limits_fail_before_io, shutdown_flushes_before_exit_and_cloned_worker_handles_observe_the_stop, and backend_failures_are_returned_and_zero_capacity_is_refused",
           "files": [
             "crates/downpour-engine/",
             "crates/downpour-storage/"
           ],
           "blocked_by": "S3-T1",
-          "notes": "DESIGN recorded in proposed ADR-0019 before code: one per-download state actor owns the sole SegmentAllocator and DurableWriter; the async supervisor owns only its control handle and worker lifecycle; workers get narrower sequential grant-writer handles over one bounded FIFO. Split and abandon commands flush staged work before ownership changes, and stale writes ordered after the fence are rejected against the one canonical map. PROVE is now behaviorally red: crates/downpour-engine/tests/writer_service.rs compiles seven proofs, and all seven fail at the first service operation with ActorStopped because the bounded-channel scaffold deliberately starts no receiver. The proofs cover exact write/data-sync/journal-append/journal-sync receipts, split and abandon durability fences, stale-grant rejection before I/O, exact queue saturation while the actor is blocked, sequential worker cursors and payload bounds, clean shutdown, backend error propagation, and zero-capacity refusal.",
+          "notes": "DESIGN was recorded first in proposed ADR-0019. PROVE was isolated in commit 080c708: all seven tests compiled and failed behaviorally with ActorStopped because the scaffold deliberately started no receiver. BUILD runs one dedicated blocking state actor that alone owns SegmentAllocator and DurableWriter; workers get sequential GrantWriter handles over a bounded Tokio FIFO and cannot supply an absolute offset. Allocation and abandon flush before ownership mutation; stale writes are revalidated against the canonical map before DurableWriter or storage I/O; shutdown closes the receiver, flushes, and joins the actor before returning. Eleven reachable mutations went red and were restored with a touched source and green rerun: allocation fence removed, actor stale-grant prevalidation removed, abandon fence removed, queue capacity increased by one, cursor advancement removed, payload bound weakened by one, shutdown flush removed, shutdown join removed, backend error replaced, zero-capacity guard removed, and data/journal sync order inverted. The first queue rerun exposed a scheduler-race in the proof's fixed yield count; it was replaced with a bounded wait for the observable enqueue state and the capacity mutation was rerun before being counted. The gate review also caught the initial missing actor join before commit; the shutdown proof now blocks backend destruction and proves the call cannot return until the actor releases it, and removing the join turns that proof red. Final exact gates after that correction: engine 14/14; just gate 297/297 with 3 skipped and doctests 7/7; just sim release 8/8. Gate C: I-1 is covered by the exact event order and inversion; I-2 by one canonical map, fence snapshots, and stale writes rejected before I/O; I-10 by exact channel saturation plus the 256 KiB per-command payload cap. I-3 through I-9 and I-11 through I-14 are not affected because this increment has no response validation, completion naming, recovery, deletion, IPC, secrets, or controller path.",
           "invariants": [
             "I-1",
             "I-2",
@@ -3386,6 +3386,22 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T2 remains in progress at BUILD. The red proof is ready to commit; the service has no receiver and no state actor. Next: run one dedicated blocking actor that owns the allocator and DurableWriter, then make only these behavioral proofs green before mutation-auditing every claimed direction."
+    },
+    {
+      "at": "2026-08-09T16:28:58Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Completed S3-T2's bounded per-download writer service. One dedicated blocking actor now owns the sole SegmentAllocator and DurableWriter. The async control surface sends allocation, sequential writes, flush, abandon, snapshot and shutdown commands through a bounded Tokio FIFO; GrantWriter exposes only an allocator-fixed cursor and caps each queued payload at 256 KiB. Allocation and abandon flush staged work before changing ownership, stale handles are rejected against the canonical map before lower-level debug assertions or data I/O, and shutdown closes the receiver, flushes, and joins the actor before returning its snapshot. The seven-test proof was red first in commit 080c708. Eleven reachable mutations all turned their named proof red and were restored with a touched rebuild: both ownership fences, stale prevalidation, exact queue size, cursor advancement, payload bound, shutdown flush, shutdown join, backend error propagation, zero-capacity refusal, and I-1 data-before-journal ordering. A fixed-yield scheduler guess in the queue proof failed its restoration audit; it was replaced with a bounded wait for actual queue occupancy and the mutation was rerun before being counted. The gate review then caught that the first green implementation had not joined the actor as ADR-0019 requires; a backend-drop barrier now proves that direction, and removing the join turns the named shutdown test red. Final exact local gates after that correction: engine 14/14, workspace 297/297 with 3 skipped, doctests 7/7, release simulation 8/8.",
+      "tasks_touched": [
+        "S3-T2"
+      ],
+      "files_touched": [
+        "crates/downpour-engine/src/lib.rs",
+        "crates/downpour-engine/src/writer_service.rs",
+        "crates/downpour-engine/tests/writer_service.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 2/15 tasks and 0/5 exit criteria. Next is S3-T3 PROVE: fixed HTTP/1.1 workers must receive only actor-issued sequential grants, use multiple workers only after proven range support with a known addressable length, and execute exactly one whole-representation stream otherwise. current_stage remains S3."
     }
   ],
   "metrics": {

@@ -1,8 +1,8 @@
 //! Download scheduling and the sole allocator of worker-owned byte ranges.
 //!
-//! Stage 3 starts with the pure segment allocator. Network workers and durable storage are
-//! deliberately absent from this first proof commit: the allocator contract must be able to fail
-//! before either caller exists.
+//! Stage 3 builds dynamic HTTP/1.1 segmentation around one canonical allocator. Blocking durable
+//! writes are serialized with allocation through the bounded state actor in [`writer_service`];
+//! network workers remain a later increment and may only write through allocator-issued grants.
 
 #![cfg_attr(
     not(test),
@@ -207,10 +207,6 @@ impl SegmentAllocator {
             .map(|(interval, worker)| (interval.start()..interval.end(), worker))
     }
 
-    #[allow(
-        dead_code,
-        reason = "used by the actor added after the red proof commit"
-    )]
     pub(crate) fn interval_map_mut(&mut self) -> &mut IntervalMap {
         &mut self.intervals
     }
