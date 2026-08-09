@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 5f281141985c404e15eaa113726efca5b47f2623dae6f67791a3e6958fb7b2fe # shrinks to operations = [Allocate(WorkerId(0))]
+cc da00ec70f159649add0a921160caa963949940e98b0a62d5381729d12e302c55 # shrinks to operations = [Allocate(WorkerId(5)), Allocate(WorkerId(0)), Allocate(WorkerId(1))]

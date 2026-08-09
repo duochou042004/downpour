@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T15:52:52Z",
+  "updated_at": "2026-08-09T16:06:36Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1055,13 +1055,14 @@
         {
           "id": "S3-T1",
           "title": "Build the sole segment allocator with largest-remainder splitting and semantic ownership proofs",
-          "status": "in_progress",
-          "proof": null,
+          "status": "done",
+          "proof": "crates/downpour-engine/tests/segment_allocator_prop.rs::every_decision_matches_the_semantic_oracle over 10000 arbitrary sequences, plus forced_sequence_reaches_split_death_reclaim_and_stale_completion, neither_half_may_fall_below_the_minimum_split_size, the_largest_active_remainder_is_split_before_a_smaller_one, equal_active_remainders_choose_the_lowest_offset, the_largest_pending_remainder_is_granted_before_any_active_split and a_zero_minimum_split_is_rejected",
           "files": [
+            "Cargo.lock",
             "crates/downpour-engine/"
           ],
           "blocked_by": null,
-          "notes": "PROVE commit prepared. downpour-engine compiles and clippy is clean, while all three allocator proofs fail behaviorally against the no-grant scaffold: the forced sequence cannot obtain its initial grant, the minimum-split test cannot obtain its initial grant, and the 10000-case semantic oracle shrinks to Allocate(worker 0), expected [0,64), actual None. Next: commit this red proof, implement the smallest allocator policy, then mutation-check every guard and scheduling decision before marking the task done.",
+          "notes": "Proven red before build in commit 6609cb8: all three initial proofs compiled and failed because the no-grant scaffold returned None, with the property shrinking to Allocate(worker 0), expected [0,64). The implementation grants the largest pending interval, otherwise halves the largest active remainder when both halves meet MIN_SPLIT_BYTES, refuses a busy worker, reports the shortened source grant, completes only current ownership, and reclaims on abandon. Twelve mutation runs went red and were restored with a touched source and green rerun: returned grant without installing ownership, busy-worker guard removed, split floor weakened, quarter split, abandon no-op, completion always accepted, completion always rejected, smallest active selection, smallest pending selection, active-before-pending priority, zero-floor acceptance, and reversed equal-size tie-breaking. The first smallest-active counterexample used a tie, so an unequal 48-vs-16 reachable case was added and the mutation rerun against it before counting the largest-remainder claim. just gate: workspace 290 passed / 3 skipped; doctests 7 passed; just sim release 8 passed. Gate C: I-2 covered by the named tests; every other invariant not affected because no I/O, protocol, persistence, IPC, completion, or controller path exists in this crate yet.",
           "invariants": [
             "I-2"
           ]
@@ -3329,6 +3330,22 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T1 remains in progress. The failing proof is ready to commit; no allocator policy exists yet. After that red commit, implement largest pending, largest active half-split, busy-worker refusal, MIN_SPLIT_BYTES and reclaim, then mutation-verify each direction before changing task status."
+    },
+    {
+      "at": "2026-08-09T16:06:36Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Completed S3-T1, the pure segment allocator. The red proof was already isolated in commit 6609cb8. Implemented the smallest S3 policy: pending work first, largest candidate with deterministic lowest-offset ties, otherwise half of the largest active remainder only when both halves meet MIN_SPLIT_BYTES; busy workers are refused; splits report the shortened source grant; durable completion delegates to the canonical interval map; abandon reclaims every owned byte. Strengthened the property after the first green so a returned grant or accepted completion must actually change canonical ownership/state, not merely report the expected result. Added forced unequal-active, multiple-pending, tie, valid-completion, stale-completion, worker-death and zero-floor states. Twelve mutation runs all went red in the direction claimed and were restored with a touched rebuild. Exact local gates: engine 7/7, workspace 290/290 with 3 skipped, doctests 7/7, release simulation 8/8. Invariant check: I-2 covered; I-1 and I-3 through I-14 not affected by this pure crate increment. No S3 exit criterion is marked met: end-to-end workers, writes and network behavior do not exist yet.",
+      "tasks_touched": [
+        "S3-T1"
+      ],
+      "files_touched": [
+        "crates/downpour-engine/src/lib.rs",
+        "crates/downpour-engine/tests/segment_allocator_prop.rs",
+        "crates/downpour-engine/tests/segment_allocator_prop.proptest-regressions",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 stands at 1/15 tasks and 0/5 exit criteria. Next is S3-T2 DESIGN: pin the single canonical allocator versus blocking writer ownership/acknowledgement boundary before writing the bounded-channel proof."
     }
   ],
   "metrics": {

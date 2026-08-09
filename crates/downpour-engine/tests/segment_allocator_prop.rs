@@ -146,6 +146,15 @@ fn wholly_owned(intervals: &[Interval], range: &Range<u64>, worker: WorkerId) ->
             .all(|interval| *interval.state() == IntervalState::InProgress { worker })
 }
 
+fn wholly_complete(intervals: &[Interval], range: &Range<u64>) -> bool {
+    range.start < range.end
+        && range.end <= TOTAL
+        && intervals
+            .iter()
+            .filter(|interval| interval.start() < range.end && range.start < interval.end())
+            .all(|interval| *interval.state() == IntervalState::Complete)
+}
+
 fn assert_partition(intervals: &[Interval]) -> TestCaseResult {
     let mut cursor = 0;
     let mut previous = None;
@@ -175,9 +184,43 @@ fn apply(allocator: &mut SegmentAllocator, operation: Operation) -> TestCaseResu
             let actual = allocator.allocate(worker);
             match (expected, actual) {
                 (Ok(expected), Ok(actual)) => {
-                    prop_assert_eq!(actual.as_ref().map(actual_allocation), expected);
+                    prop_assert_eq!(actual.as_ref().map(actual_allocation), expected.clone());
+                    match expected {
+                        Some(expected) => {
+                            prop_assert!(
+                                wholly_owned(
+                                    allocator.intervals(),
+                                    &expected.grant.range,
+                                    expected.grant.worker
+                                ),
+                                "returned grant was not installed in the canonical map"
+                            );
+                            if let Some(shortened) = expected.shortened {
+                                prop_assert!(
+                                    wholly_owned(
+                                        allocator.intervals(),
+                                        &shortened.range,
+                                        shortened.worker
+                                    ),
+                                    "shortened source grant was not installed in the canonical map"
+                                );
+                            }
+                        }
+                        None => prop_assert_eq!(
+                            &*allocator,
+                            &before,
+                            "an allocation reporting no work mutated the map"
+                        ),
+                    }
                 }
-                (Err(expected), Err(actual)) => prop_assert_eq!(actual, expected),
+                (Err(expected), Err(actual)) => {
+                    prop_assert_eq!(actual, expected);
+                    prop_assert_eq!(
+                        &*allocator,
+                        &before,
+                        "a rejected allocation mutated the map"
+                    );
+                }
                 (expected, actual) => prop_assert!(
                     false,
                     "allocation result disagreed with independent permission oracle: expected \
@@ -196,6 +239,11 @@ fn apply(allocator: &mut SegmentAllocator, operation: Operation) -> TestCaseResu
             );
             if !permitted {
                 prop_assert_eq!(&*allocator, &before, "rejected completion mutated the map");
+            } else {
+                prop_assert!(
+                    wholly_complete(allocator.intervals(), &range),
+                    "accepted completion did not mark the whole range complete"
+                );
             }
         }
         Operation::Abandon(worker) => {
@@ -240,6 +288,14 @@ fn forced_sequence_reaches_split_death_reclaim_and_stale_completion() {
         "the original worker must learn its grant was shortened"
     );
 
+    allocator
+        .complete_durable(second, 32..64)
+        .expect("the recipient may complete exactly the grant it owns");
+    assert!(
+        wholly_complete(allocator.intervals(), &(32..64)),
+        "accepted completion must change the canonical state"
+    );
+
     assert_eq!(allocator.abandon(first), 32, "worker death reclaimed bytes");
     let reclaimed = allocator
         .allocate(replacement)
@@ -270,6 +326,103 @@ fn neither_half_may_fall_below_the_minimum_split_size() {
             .expect("allocation is valid"),
         None
     );
+}
+
+#[test]
+fn a_zero_minimum_split_is_rejected() {
+    assert_eq!(
+        SegmentAllocator::new(TOTAL, 0),
+        Err(AllocatorError::ZeroMinimumSplit)
+    );
+}
+
+#[test]
+fn the_largest_active_remainder_is_split_before_a_smaller_one() {
+    let first = WorkerId::new(1);
+    let second = WorkerId::new(2);
+    let third = WorkerId::new(3);
+    let mut allocator = SegmentAllocator::new(96, MIN_SPLIT).expect("valid allocator");
+
+    allocator
+        .allocate(first)
+        .expect("allocation is valid")
+        .expect("pending bytes exist");
+    allocator
+        .allocate(second)
+        .expect("allocation is valid")
+        .expect("the initial grant is splittable");
+    allocator
+        .complete_durable(second, 48..80)
+        .expect("the second worker owns this prefix of its grant");
+
+    let split = allocator
+        .allocate(third)
+        .expect("allocation is valid")
+        .expect("the 48-byte remainder is splittable");
+    assert_eq!(
+        split.grant().range(),
+        &(24..48),
+        "the 48-byte first-worker remainder must win over the 16-byte second-worker remainder"
+    );
+    assert_eq!(split.shortened().map(Grant::worker), Some(first));
+}
+
+#[test]
+fn equal_active_remainders_choose_the_lowest_offset() {
+    let mut allocator = SegmentAllocator::new(TOTAL, MIN_SPLIT).expect("valid allocator");
+    allocator
+        .allocate(WorkerId::new(1))
+        .expect("allocation is valid")
+        .expect("pending bytes exist");
+    allocator
+        .allocate(WorkerId::new(2))
+        .expect("allocation is valid")
+        .expect("the initial grant is splittable");
+
+    let allocation = allocator
+        .allocate(WorkerId::new(3))
+        .expect("allocation is valid")
+        .expect("both equal remainders are splittable");
+    assert_eq!(
+        allocation.grant().range(),
+        &(16..32),
+        "equal-sized candidates must resolve toward the lowest offset"
+    );
+}
+
+#[test]
+fn the_largest_pending_remainder_is_granted_before_any_active_split() {
+    let first = WorkerId::new(1);
+    let second = WorkerId::new(2);
+    let separator = WorkerId::new(3);
+    let recipient = WorkerId::new(4);
+    let mut allocator = SegmentAllocator::new(96, MIN_SPLIT).expect("valid allocator");
+
+    allocator
+        .allocate(first)
+        .expect("allocation is valid")
+        .expect("pending bytes exist");
+    allocator
+        .allocate(second)
+        .expect("allocation is valid")
+        .expect("the initial grant is splittable");
+    allocator
+        .allocate(separator)
+        .expect("allocation is valid")
+        .expect("one active half is splittable");
+
+    assert_eq!(allocator.abandon(first), 24);
+    assert_eq!(allocator.abandon(second), 48);
+    let allocation = allocator
+        .allocate(recipient)
+        .expect("allocation is valid")
+        .expect("pending bytes exist");
+    assert_eq!(
+        allocation.grant().range(),
+        &(48..96),
+        "the 48-byte pending range must win over the 24-byte pending range and active work"
+    );
+    assert_eq!(allocation.shortened(), None, "pending work is not a split");
 }
 
 proptest! {

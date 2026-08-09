@@ -18,7 +18,7 @@
 
 use std::ops::Range;
 
-use downpour_intervals::{Interval, IntervalMap, IntervalMapError, WorkerId};
+use downpour_intervals::{Interval, IntervalMap, IntervalMapError, IntervalState, WorkerId};
 use thiserror::Error;
 
 /// Default lower bound for either half of a split grant.
@@ -84,9 +84,6 @@ pub enum AllocatorError {
 }
 
 /// Sole allocator for one download's byte space.
-///
-/// This proof scaffold intentionally issues no grants yet. The first S3 commit establishes a
-/// behavioral red test; the following implementation commit supplies the policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SegmentAllocator {
     intervals: IntervalMap,
@@ -117,11 +114,51 @@ impl SegmentAllocator {
         self.min_split_bytes
     }
 
-    /// Allocate work to an idle worker.
+    /// Allocate work to an idle worker using Stage 3's deterministic policy.
     ///
-    /// The proof commit returns no work so the behavior test is red for the intended reason.
-    pub fn allocate(&mut self, _worker: WorkerId) -> Result<Option<Allocation>, AllocatorError> {
-        Ok(None)
+    /// Pending work wins. When no pending interval remains, the largest active interval is split
+    /// in half if both resulting grants meet [`Self::min_split_bytes`]. Equal-sized candidates are
+    /// resolved toward the lowest offset so replaying the same state produces the same decision.
+    pub fn allocate(&mut self, worker: WorkerId) -> Result<Option<Allocation>, AllocatorError> {
+        if self.intervals.intervals().iter().any(|interval| {
+            matches!(
+                interval.state(),
+                IntervalState::InProgress { worker: owner } if *owner == worker
+            )
+        }) {
+            return Err(AllocatorError::WorkerAlreadyActive { worker });
+        }
+
+        if let Some(range) = self.preferred_range(|state| matches!(state, IntervalState::Pending)) {
+            self.intervals.grant(range.clone(), worker)?;
+            return Ok(Some(Allocation {
+                grant: Grant { worker, range },
+                shortened: None,
+            }));
+        }
+
+        let Some(required) = self.min_split_bytes.checked_mul(2) else {
+            return Ok(None);
+        };
+        let Some((range, source)) = self.preferred_active() else {
+            return Ok(None);
+        };
+        if range.end - range.start < required {
+            return Ok(None);
+        }
+
+        let split_at = range.start + (range.end - range.start) / 2;
+        self.intervals.split_in_progress(split_at, source, worker)?;
+        Ok(Some(Allocation {
+            grant: Grant {
+                worker,
+                range: split_at..range.end,
+            },
+            shortened: Some(Grant {
+                worker: source,
+                range: range.start..split_at,
+            }),
+        }))
     }
 
     /// Mark a durably committed sub-range complete for its owning worker.
@@ -137,5 +174,34 @@ impl SegmentAllocator {
     /// Return every active grant of a dead or retiring worker to pending state.
     pub fn abandon(&mut self, worker: WorkerId) -> u64 {
         self.intervals.abandon(worker)
+    }
+
+    fn preferred_range(&self, predicate: impl Fn(&IntervalState) -> bool) -> Option<Range<u64>> {
+        self.intervals
+            .intervals()
+            .iter()
+            .filter(|interval| predicate(interval.state()))
+            .max_by(|left, right| {
+                left.len()
+                    .cmp(&right.len())
+                    .then_with(|| right.start().cmp(&left.start()))
+            })
+            .map(|interval| interval.start()..interval.end())
+    }
+
+    fn preferred_active(&self) -> Option<(Range<u64>, WorkerId)> {
+        self.intervals
+            .intervals()
+            .iter()
+            .filter_map(|interval| match interval.state() {
+                IntervalState::InProgress { worker } => Some((interval, *worker)),
+                _ => None,
+            })
+            .max_by(|(left, _), (right, _)| {
+                left.len()
+                    .cmp(&right.len())
+                    .then_with(|| right.start().cmp(&left.start()))
+            })
+            .map(|(interval, worker)| (interval.start()..interval.end(), worker))
     }
 }
