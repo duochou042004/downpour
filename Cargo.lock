@@ -492,6 +492,7 @@ dependencies = [
  "proptest",
  "thiserror",
  "tokio",
+ "url",
 ]
 
 [[package]]

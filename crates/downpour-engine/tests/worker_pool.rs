@@ -238,6 +238,7 @@ impl DurableData for MemoryData {
 #[derive(Clone, Debug)]
 struct MemoryJournal {
     total_length: u64,
+    synced: Arc<Semaphore>,
 }
 
 impl DurableJournal for MemoryJournal {
@@ -250,19 +251,31 @@ impl DurableJournal for MemoryJournal {
     }
 
     fn sync_data(&mut self) -> Result<(), WriterError> {
+        self.synced.add_permits(1);
         Ok(())
     }
 }
 
-fn writer_service(total_length: u64, minimum_split: u64) -> (WriterService, Arc<Mutex<Vec<u8>>>) {
+fn writer_service(
+    total_length: u64,
+    minimum_split: u64,
+) -> (WriterService, Arc<Mutex<Vec<u8>>>, Arc<Semaphore>) {
     let bytes = Arc::new(Mutex::new(vec![0; usize::try_from(total_length).unwrap()]));
+    let synced = Arc::new(Semaphore::new(0));
     let data = MemoryData {
         bytes: Arc::clone(&bytes),
     };
-    let journal = MemoryJournal { total_length };
+    let journal = MemoryJournal {
+        total_length,
+        synced: Arc::clone(&synced),
+    };
     let writer = DurableWriter::try_new(data, journal, 0).unwrap();
     let allocator = SegmentAllocator::new(total_length, minimum_split).unwrap();
-    (WriterService::start(writer, allocator, 8).unwrap(), bytes)
+    (
+        WriterService::start(writer, allocator, 8).unwrap(),
+        bytes,
+        synced,
+    )
 }
 
 #[derive(Debug)]
@@ -364,7 +377,7 @@ async fn proven_ranges_run_concurrently_inside_disjoint_allocator_grants() {
     let remote = proven_remote(64, NegotiatedProtocol::Http11);
     let backend = Arc::new(FakeProtocol::new(remote.clone(), body.clone()).with_rendezvous(4));
     let pool = FixedWorkerPool::new(Arc::clone(&backend), 4).unwrap();
-    let (writer, stored) = writer_service(64, 16);
+    let (writer, stored, _) = writer_service(64, 16);
 
     let report = tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -476,8 +489,9 @@ async fn a_slow_open_range_flushes_at_the_exact_journal_interval() {
         FakeProtocol::new(remote.clone(), body.clone()).with_mid_transfer_pause(Arc::clone(&pause)),
     );
     let pool = FixedWorkerPool::new(backend, 1).unwrap();
-    let (writer, stored) = writer_service(4, 1);
+    let (writer, stored, journal_synced) = writer_service(4, 1);
     let writer = Arc::new(writer);
+    let test_started = tokio::time::Instant::now();
     let task_writer = Arc::clone(&writer);
     let mut transfer =
         tokio::spawn(async move { pool.execute_segmented(&remote, task_writer.as_ref()).await });
@@ -486,16 +500,18 @@ async fn a_slow_open_range_flushes_at_the_exact_journal_interval() {
         permit = pause.accepted.acquire() => permit.unwrap().forget(),
         result = &mut transfer => panic!("worker stopped before staging bytes: {result:?}"),
     }
-    let before = writer.snapshot().await.unwrap();
+    let permit = tokio::time::timeout(
+        downpour_storage::writer::JOURNAL_FLUSH_INTERVAL + std::time::Duration::from_secs(1),
+        journal_synced.acquire(),
+    )
+    .await
+    .expect("the pool must drive the due journal flush while the response stays open")
+    .unwrap();
+    permit.forget();
     assert_eq!(
-        before.allocator().intervals()[0].state(),
-        &downpour_intervals::IntervalState::InProgress {
-            worker: downpour_intervals::WorkerId::new(0),
-        }
+        test_started.elapsed(),
+        downpour_storage::writer::JOURNAL_FLUSH_INTERVAL
     );
-
-    tokio::time::advance(downpour_storage::writer::JOURNAL_FLUSH_INTERVAL).await;
-    tokio::task::yield_now().await;
     let after = writer.snapshot().await.unwrap();
     assert_eq!(
         (

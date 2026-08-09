@@ -8,7 +8,7 @@
 
 use std::io;
 use std::ops::Range;
-use std::time::Instant;
+use std::time::Duration;
 
 use downpour_intervals::WorkerId;
 use downpour_storage::writer::{
@@ -174,9 +174,14 @@ enum Command {
         worker: WorkerId,
         offset: u64,
         bytes: Vec<u8>,
+        now: Duration,
         reply: Reply<WriteReceipt>,
     },
     Flush {
+        reply: Reply<Vec<DurableBlock>>,
+    },
+    FlushIfDue {
+        now: Duration,
         reply: Reply<Vec<DurableBlock>>,
     },
     Abandon {
@@ -195,6 +200,7 @@ enum Command {
 pub struct WriterService {
     sender: mpsc::Sender<Command>,
     actor: Option<std::thread::JoinHandle<()>>,
+    started_at: tokio::time::Instant,
 }
 
 impl WriterService {
@@ -223,6 +229,7 @@ impl WriterService {
         Ok(Self {
             sender,
             actor: Some(actor),
+            started_at: tokio::time::Instant::now(),
         })
     }
 
@@ -246,6 +253,7 @@ impl WriterService {
             sender: self.sender.clone(),
             grant: grant.clone(),
             next_offset: grant.range().start,
+            started_at: self.started_at,
         }
     }
 
@@ -253,6 +261,19 @@ impl WriterService {
     pub async fn flush(&self) -> ServiceResult<Vec<DurableBlock>> {
         let (reply, receiver) = oneshot::channel();
         self.send(Command::Flush { reply }, receiver).await
+    }
+
+    /// Commit a staged batch once its normative age bound has elapsed.
+    pub async fn flush_if_due(&self) -> ServiceResult<Vec<DurableBlock>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(
+            Command::FlushIfDue {
+                now: self.started_at.elapsed(),
+                reply,
+            },
+            receiver,
+        )
+        .await
     }
 
     /// Durably fence and reclaim every grant owned by `worker`.
@@ -298,16 +319,11 @@ impl WriterService {
 struct StateActor<D, J> {
     writer: DurableWriter<D, J>,
     allocator: SegmentAllocator,
-    started_at: Instant,
 }
 
 impl<D: DurableData, J: DurableJournal> StateActor<D, J> {
     fn new(writer: DurableWriter<D, J>, allocator: SegmentAllocator) -> Self {
-        Self {
-            writer,
-            allocator,
-            started_at: Instant::now(),
-        }
+        Self { writer, allocator }
     }
 
     fn run(mut self, mut receiver: mpsc::Receiver<Command>) {
@@ -320,12 +336,16 @@ impl<D: DurableData, J: DurableJournal> StateActor<D, J> {
                     worker,
                     offset,
                     bytes,
+                    now,
                     reply,
                 } => {
-                    drop(reply.send(self.write(worker, offset, &bytes)));
+                    drop(reply.send(self.write(worker, offset, &bytes, now)));
                 }
                 Command::Flush { reply } => {
                     drop(reply.send(self.flush()));
+                }
+                Command::FlushIfDue { now, reply } => {
+                    drop(reply.send(self.flush_if_due(now)));
                 }
                 Command::Abandon { worker, reply } => {
                     drop(reply.send(self.abandon(worker)));
@@ -357,6 +377,7 @@ impl<D: DurableData, J: DurableJournal> StateActor<D, J> {
         worker: WorkerId,
         offset: u64,
         bytes: &[u8],
+        now: Duration,
     ) -> ServiceResult<WriteReceipt> {
         let length = u64::try_from(bytes.len()).map_err(|_| WriterServiceError::CursorOverflow)?;
         let end = offset
@@ -372,7 +393,6 @@ impl<D: DurableData, J: DurableJournal> StateActor<D, J> {
             .complete(range.clone(), worker)
             .map_err(WriterError::Interval)?;
 
-        let now = self.started_at.elapsed();
         let durable = self.writer.stage(
             self.allocator.interval_map_mut(),
             worker,
@@ -386,6 +406,12 @@ impl<D: DurableData, J: DurableJournal> StateActor<D, J> {
     fn flush(&mut self) -> ServiceResult<Vec<DurableBlock>> {
         self.writer
             .flush(self.allocator.interval_map_mut())
+            .map_err(WriterServiceError::from)
+    }
+
+    fn flush_if_due(&mut self, now: Duration) -> ServiceResult<Vec<DurableBlock>> {
+        self.writer
+            .flush_if_due(self.allocator.interval_map_mut(), now)
             .map_err(WriterServiceError::from)
     }
 
@@ -415,6 +441,7 @@ pub struct GrantWriter {
     sender: mpsc::Sender<Command>,
     grant: Grant,
     next_offset: u64,
+    started_at: tokio::time::Instant,
 }
 
 impl GrantWriter {
@@ -452,6 +479,7 @@ impl GrantWriter {
                 worker: self.grant.worker(),
                 offset: self.next_offset,
                 bytes,
+                now: self.started_at.elapsed(),
                 reply,
             })
             .await
@@ -461,5 +489,17 @@ impl GrantWriter {
             .map_err(|_| WriterServiceError::ReplyDropped)??;
         self.next_offset = end;
         Ok(receipt)
+    }
+
+    /// Force all currently staged blocks for this download through the durability boundary.
+    pub async fn flush(&self) -> ServiceResult<Vec<DurableBlock>> {
+        let (reply, receiver) = oneshot::channel();
+        self.sender
+            .send(Command::Flush { reply })
+            .await
+            .map_err(|_| WriterServiceError::ActorStopped)?;
+        receiver
+            .await
+            .map_err(|_| WriterServiceError::ReplyDropped)?
     }
 }

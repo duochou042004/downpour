@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T16:43:59Z",
+  "updated_at": "2026-08-09T16:59:19Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1087,15 +1087,16 @@
         {
           "id": "S3-T3",
           "title": "Run a fixed HTTP/1.1 worker pool with grant-only offsets and single-stream fallback",
-          "status": "in_progress",
-          "proof": null,
+          "status": "done",
+          "proof": "crates/downpour-engine/tests/worker_pool.rs: segmentation_is_selected_only_from_proven_addressable_http11_evidence, proven_ranges_run_concurrently_inside_disjoint_allocator_grants, absent_range_support_executes_one_whole_request_and_one_sync, and a_slow_open_range_flushes_at_the_exact_journal_interval",
           "files": [
             "crates/downpour-engine/",
             "crates/downpour-http/"
           ],
           "blocked_by": "S3-T2",
-          "notes": "S3 uses a configured fixed worker count and records per-worker throughput; it does not adapt concurrency or use ETA splitting. Only proven range support with a known length may open multiple workers. Absent, unknown, or unaddressable range support must execute exactly one whole-representation stream. PROVE is behaviorally red: crates/downpour-engine/tests/worker_pool.rs compiles four tests and all four fail on the deliberate scaffold. Validated HTTP/1.1 evidence is wrongly planned as SingleStream, while segmented and fallback execution return NotRunning. The proofs require an only-if planning table (protocol, backend capability, proof, known consistent length, signed local addressability), four concurrent exact disjoint ranges whose bytes become one Complete map, grant requests with no If-Range on a fresh transfer, per-worker byte/time records, and exactly one whole request plus one sync for absent range support. A paused-time fourth proof holds a one-worker response open after two bytes, advances the exact JOURNAL_FLUSH_INTERVAL, and requires that prefix to become Complete before the response ends; it currently fails because the scaffold exits before staging. Segment-end sync and the writer's eight-MiB threshold alone do not cover a slow long-lived segment.",
+          "notes": "PROVE was split into commits fe944a5 and 9dcb160 before BUILD: the first three tests compiled and failed on SingleStream/NotRunning, and the fourth paused-time interval proof compiled and failed before staging. BUILD keeps the engine above the object-safe TransferProtocol boundary. The fail-closed planner segments only observed HTTP/1.1 when the backend can express ranges, RangeSupport carries a validated proof, the remote total is present and matches that proof, and the total fits the signed local part-file length. It otherwise selects one whole request. Segmented execution obtains every range from the sole actor allocator, updates shortened pre-start grants, wraps each GrantWriter in an append-only RangeSink, launches the fixed initial set concurrently, validates exact 206 outcomes, syncs through the actor, and records bytes plus elapsed time per worker. While responses remain open it drives DurableWriter::flush_if_due every JOURNAL_FLUSH_INTERVAL. The interval proof found a real first implementation bug: staged writes used std::time::Instant on the actor thread while the scheduler used Tokio time, so deterministic time never aged the batch. Timestamps now cross the async command boundary from one virtualizable Tokio clock. Fifteen reachable mutations went red and were restored with touched rebuilds: zero-worker acceptance; removal of the HTTP/1.1, backend-range, validated-proof, known-length, consistent-length, and addressability guards; launching only one configured worker; adding If-Range to a fresh request; requesting every grant from offset zero; using a ranged fallback; skipping fallback sync; delaying the interval tick by one second; zeroing the async due timestamp; erasing per-worker byte counts; and the exact-range mutation. Final exact gates: engine 18/18; just gate 301/301 with 3 skipped and doctests 7/7; just sim release 8/8. Gate C: I-1 is covered by the open-response exact interval proof; I-2 by disjoint allocator requests, append-only grant sinks, byte-exact storage, and one Complete map; I-6 by the planner's only-if table. I-3 and I-5 remain owned by the existing protocol backend—the pool passes no If-Range on fresh work and never bypasses the backend's response validation. I-4 and I-7 through I-14 are not affected because this increment does not rename, adapt concurrency, persist, recover, delete, expose IPC, or handle secrets.",
           "invariants": [
+            "I-1",
             "I-2",
             "I-3",
             "I-5",
@@ -3435,6 +3436,24 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T3 has four behaviorally red proofs and remains at BUILD. The implementation must drive DurableWriter::flush_if_due on virtual Tokio time while ranged workers are still active; a final sync is necessary but is not evidence for the interval bound."
+    },
+    {
+      "at": "2026-08-09T16:59:19Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Completed S3-T3's fixed HTTP/1.1 worker pool and one-stream fallback. The planner fails closed unless it has observed HTTP/1.1, backend range capability, a validated RangeProof, a matching known total, and a locally addressable signed length. Segmented execution obtains all offsets from the sole actor allocator, updates shortened grants before launch, gives each protocol worker only an append-only RangeSink, runs the configured initial workers concurrently, validates exact outcomes, syncs through the actor, and records per-worker bytes and elapsed time. Absent/unknown/unsafe evidence executes one whole request and one sync. A paused-time proof found and fixed a real clock-domain bug: the actor's std::time timestamps could not age under Tokio virtual time, so elapsed durations now travel with write and due-flush commands from a shared Tokio clock. Fifteen reachable mutations all turned their named proof red and were restored with a touched rebuild, covering every planner guard, zero concurrency, actual four-way concurrency, exact requests, fresh If-Range absence, fallback shape/sync, interval timing/clock handoff, and worker accounting. Final exact gates: engine 18/18, workspace 301/301 with 3 skipped, doctests 7/7, release simulation 8/8.",
+      "tasks_touched": [
+        "S3-T3"
+      ],
+      "files_touched": [
+        "Cargo.lock",
+        "crates/downpour-engine/Cargo.toml",
+        "crates/downpour-engine/src/worker_pool.rs",
+        "crates/downpour-engine/src/writer_service.rs",
+        "crates/downpour-engine/tests/worker_pool.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 3/15 tasks and 0/5 exit criteria. Next is S3-T4 PROVE: instrument the corpus server with connection identities and handshake/request counts, then require a completed fast worker to receive another split over its existing HTTP/1.1 connection. current_stage remains S3."
     }
   ],
   "metrics": {
