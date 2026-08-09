@@ -58,6 +58,11 @@ async fn native_endpoint_proof() {
 
     let server = tokio::spawn(async move {
         let mut handler = CountingHandler::default();
+        #[cfg(windows)]
+        {
+            let inspection = listener.accept().await.unwrap();
+            drop(inspection);
+        }
         let mut rejected = listener.accept().await.unwrap();
         let payload = rejected.receive().await.unwrap();
         let mut rejected_session = Session::new(token.clone());
@@ -81,6 +86,10 @@ async fn native_endpoint_proof() {
         }
         handler.calls
     });
+
+    #[cfg(windows)]
+    tokio::task::yield_now().await;
+    assert_native_pipe_permissions(&paths);
 
     let mut rejected = LocalStream::connect(&paths).await.unwrap();
     rejected
@@ -258,11 +267,60 @@ fn assert_native_permissions(paths: &downpour_ipc::EndpointPaths) {
     // SAFETY: the successful query initialized TOKEN_USER at the buffer start; user_buffer lives
     // through every descriptor comparison below.
     let expected_sid = unsafe { (*user_buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
-    let pipe_path = std::path::PathBuf::from(format!(r"\\.\pipe\{}", paths.pipe_name()));
-
-    for path in [paths.runtime_dir(), paths.token_file(), pipe_path.as_path()] {
+    for path in [paths.runtime_dir(), paths.token_file()] {
         assert_single_current_user_ace(path, expected_sid);
     }
+}
+
+#[cfg(unix)]
+fn assert_native_pipe_permissions(_paths: &downpour_ipc::EndpointPaths) {}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn assert_native_pipe_permissions(paths: &downpour_ipc::EndpointPaths) {
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle, RawHandle};
+    use std::ptr;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut raw_token = ptr::null_mut();
+    // SAFETY: GetCurrentProcess returns a pseudo-handle; raw_token is writable HANDLE storage.
+    assert_ne!(
+        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw_token) },
+        0
+    );
+    // SAFETY: OpenProcessToken returned one owned handle, closed once by OwnedHandle.
+    let token = unsafe { OwnedHandle::from_raw_handle(raw_token as RawHandle) };
+    let mut required = 0_u32;
+    // SAFETY: null plus zero length is the documented size query and required is writable.
+    unsafe {
+        GetTokenInformation(
+            token.as_raw_handle() as _,
+            TokenUser,
+            ptr::null_mut(),
+            0,
+            &mut required,
+        )
+    };
+    assert!(required > 0);
+    let mut user_buffer = vec![0_u8; usize::try_from(required).unwrap()];
+    // SAFETY: the buffer has exactly the requested capacity and token remains open.
+    assert_ne!(
+        unsafe {
+            GetTokenInformation(
+                token.as_raw_handle() as _,
+                TokenUser,
+                user_buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        },
+        0
+    );
+    // SAFETY: the successful query initialized TOKEN_USER and the buffer remains live below.
+    let expected_sid = unsafe { (*user_buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let pipe_path = std::path::PathBuf::from(format!(r"\\.\pipe\{}", paths.pipe_name()));
+    assert_single_current_user_ace(&pipe_path, expected_sid);
 }
 
 #[cfg(windows)]
@@ -284,20 +342,17 @@ fn assert_single_current_user_ace(
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let requested = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
     let mut required = 0_u32;
-    // SAFETY: wide is NUL-terminated, the null descriptor with length zero is the documented
-    // size-query form, and required points to writable storage.
-    unsafe { GetFileSecurityW(wide.as_ptr(), requested, ptr::null_mut(), 0, &mut required) };
-    assert!(required > 0, "{:?}", std::io::Error::last_os_error());
-    let mut descriptor = vec![0_u8; usize::try_from(required).unwrap()];
-    // SAFETY: descriptor has the exact writable length Windows requested and all pointers remain
-    // live for the call.
+    let mut descriptor = vec![0_u8; 4096];
+    // SAFETY: descriptor is a 4096-byte writable buffer, wide is NUL-terminated, and required is
+    // writable. This test's one-owner/one-ACE descriptor is independently asserted below and is
+    // far smaller than the fixed buffer, avoiding a second named-pipe connection for size query.
     assert_ne!(
         unsafe {
             GetFileSecurityW(
                 wide.as_ptr(),
                 requested,
                 descriptor.as_mut_ptr().cast(),
-                required,
+                u32::try_from(descriptor.len()).unwrap(),
                 &mut required,
             )
         },
