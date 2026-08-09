@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T17:21:36Z",
+  "updated_at": "2026-08-09T17:36:48Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1028,8 +1028,8 @@
         {
           "id": "S3-C3",
           "text": "Connections are reused after a segment completes, verified by handshake count",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "crates/downpour-engine/tests/worker_pool.rs::a_finished_worker_reuses_its_http11_connection_for_a_new_split, backed by tests/corpus/tests/pathology_server.rs::connection_observation_distinguishes_reuse_from_new_handshakes. The real H1H2Backend completes worker 0's 0-31 grant while 32-63 is held, reassigns 48-63 to stable worker 0, and the server records the same connection ID with the accepted-handshake count fixed at two. Rebuilding the reqwest client per request, forcing Connection: close, starting the shortened source before the recipient, or disabling reassignment each makes the named proof red.",
           "invariants": []
         },
         {
@@ -1106,16 +1106,19 @@
         {
           "id": "S3-T4",
           "title": "Prove finished HTTP/1.1 connections are reused by counting handshakes",
-          "status": "in_progress",
-          "proof": null,
+          "status": "done",
+          "proof": "tests/corpus/tests/pathology_server.rs::connection_observation_distinguishes_reuse_from_new_handshakes; crates/downpour-engine/tests/worker_pool.rs::a_finished_worker_reuses_its_http11_connection_for_a_new_split and a_split_fences_partial_source_bytes_before_reassigning_its_remainder",
           "files": [
             "tests/corpus/src/server.rs",
             "tests/corpus/cases/connections/",
             "crates/downpour-engine/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "PROVE began with the observer itself so the later engine proof cannot rely on unverified handshake evidence. Commit 337e9ba compiled and failed behaviorally at the first checkpoint because the inert scaffold reported zero held requests. The observer now assigns one nonzero stable ID per accepted socket, counts total/current/maximum connections, decrements current count through a serving-task lifetime guard, records the connection ID on every HTTP/1.1 and h2 request, counts requests by connection, and offers a deterministic one-shot gate keyed by range start. The reference-client proof holds one request, accepts a second idle socket, observes exactly two live connections, proves the drop decrement, repeats the gated range without blocking, and sends two requests over one keep-alive connection. Nine valid mutations went red and were restored with touched rebuilds: missing range match, repeatable gate, constant IDs, missing accepted count, missing active increment, missing active decrement, missing maximum tracking, unfiltered per-connection counts, and IDs that changed per request. An initial per-request mutation did not compile and was rejected before a behaviorally valid replacement was run. Exact observer gates: pathology_server 30/30 and strict corpus clippy clean. The separate engine proof is now behaviorally red: against the real H1H2Backend and pathology server, it holds initial range 32-63, observes range 0-31 become durably Complete and exactly two accepted handshakes, then requires stable worker 0 to receive 48-63 before the peer is released, on the same connection ID and without a third handshake. The current fixed pool times out at that allocation checkpoint because it retires the completed worker. The reached-state assertions passed first, so the red is not a no-op or an unreachable setup.",
-          "invariants": []
+          "notes": "PROVE was isolated twice before BUILD: commit 337e9ba made the connection observer fail behaviorally with zero held requests, and commit d360f10 reached a durably completed fast grant plus a held slow grant before timing out because no new split was issued. BUILD assigns one stable nonzero ID per accepted socket and tracks total/current/maximum connections plus requests per connection. The scheduler never splits underneath a live response: after one worker finishes it cooperatively cancels remaining fetch futures, drains them, flushes queued actor writes, asks the sole allocator for work, runs the recipient first on the retained H1H2Backend/client, then restarts shortened sources from canonical InProgress remainders. Task identity derives only from Grant::worker. The real-server proof observes initial 0-31 and held 32-63, then 48-63 on worker 0's original socket with exactly two accepted handshakes; the partial-source proof stages an asymmetric 8-byte prefix, then requires canonical 40-51/52-63 remainders, exact per-worker byte accounting, and a byte-exact final file. Nine engine mutations went red and were restored with touched rebuilds: no reassignment, forced Connection: close, a rebuilt client per request, shortened source launched before recipient, allocation to a different worker, no source restart, a stale restart offset, discarded canceled-attempt bytes, and counting InProgress rather than Complete bytes. The last accounting mutation initially passed because the fixture used equal halves; the proof was hardened to an 8/24 asymmetry and rerun red before being counted. A post-cancellation flush mutation passed only because that reached schedule was already globally synced; the distinct queued-after-sync interleaving is retained for S3-T6 and was not counted. Both new proofs passed 20 consecutive runs. Final exact gates: workspace 304/304 with 3 skipped, doctests 7/7, release simulation 8/8. Gate C: I-1 and I-2 are affected and preserved by cancellation-before-split, actor flush/allocation fences, canonical restart ranges, durable-only accounting and byte-exact completion. S3-C3 is met; current_stage remains S3.",
+          "invariants": [
+            "I-1",
+            "I-2"
+          ]
         },
         {
           "id": "S3-T5",
@@ -3500,6 +3503,21 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T4 remains in progress at BUILD. Commit the red proof, then implement safe dynamic reassignment: stop the source fetch before splitting its live grant, fence queued writes through the actor, issue the right half to the idle worker, restart the shortened source, and preserve the backend/client across worker grants so the named connection-ID and handshake assertions turn green. No S3 exit criterion is met yet."
+    },
+    {
+      "at": "2026-08-09T17:36:48Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Completed S3-T4 and met S3-C3 with independently mutation-checked handshake evidence. The fixed-concurrency scheduler now reuses idle workers dynamically without splitting under a live response: it cancels and drains active fetch futures, flushes the actor, obtains the allocator's next grant, runs the recipient first on the retained backend/client, and restarts paused sources only from canonical remainders. Task identity is derived solely from the Grant. The real HTTP/1.1 proof holds 32-63 while worker 0 durably completes 0-31, then observes worker 0 request 48-63 on the exact same connection ID with the accepted count unchanged at two. A second proof stages an asymmetric 8-byte source prefix and requires 40-51/52-63 restart/split ranges, durable-only canceled-attempt accounting, exact per-worker totals, byte-exact storage and one final Complete interval. Nine valid engine mutations went red; an equal-half proof defect was found by a passing Complete-to-InProgress mutation, hardened to 8/24, and rerun red. A different flush mutation was confirmed to be a no-op in the reached schedule and reserved for T6's queued-after-sync interleaving rather than falsely counted. Both new proofs passed 20 consecutive runs. Exact final gates: workspace 304/304 with 3 skipped, doctests 7/7, release simulation 8/8.",
+      "tasks_touched": [
+        "S3-T4"
+      ],
+      "files_touched": [
+        "crates/downpour-engine/src/worker_pool.rs",
+        "crates/downpour-engine/tests/worker_pool.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 4/15 tasks and 1/5 exit criteria. current_stage remains S3. Next are S3-T5's virtual-time fixed-connection throughput proof and S3-T6's worker-death/interleaving simulation, including the queued-after-sync cancellation schedule that T4 deliberately did not claim."
     }
   ],
   "metrics": {

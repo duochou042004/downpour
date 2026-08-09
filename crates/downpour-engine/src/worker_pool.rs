@@ -18,6 +18,7 @@ use downpour_intervals::{IntervalState, WorkerId};
 use downpour_storage::writer::{JOURNAL_FLUSH_INTERVAL, WriterError};
 use downpour_types::{ByteRangeSpec, ContentRange, NegotiatedProtocol, RemoteObject};
 use thiserror::Error;
+use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinSet};
 use tokio::time::MissedTickBehavior;
 
@@ -174,6 +175,22 @@ pub struct FixedWorkerPool<B> {
     workers: usize,
 }
 
+struct RunningWorker {
+    cancel: Option<oneshot::Sender<()>>,
+    grant: Grant,
+    started: Instant,
+}
+
+enum WorkerEvent {
+    Finished {
+        worker: WorkerId,
+        result: Result<WorkerReport, PoolError>,
+    },
+    Cancelled {
+        worker: WorkerId,
+    },
+}
+
 impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
     /// Bind one reusable protocol backend and a fixed worker ceiling.
     pub fn new(backend: Arc<B>, workers: usize) -> Result<Self, PoolError> {
@@ -245,39 +262,125 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
 
         let allocated_workers = grants.keys().copied().collect::<Vec<_>>();
         let mut tasks = JoinSet::new();
-        for (worker, grant) in grants {
-            let backend = Arc::clone(&self.backend);
-            let url = remote.final_url.clone();
-            let grant_writer = writer.writer_for(&grant);
-            tasks.spawn(run_ranged_worker(
-                backend,
-                worker,
+        let mut running = BTreeMap::new();
+        for grant in grants.into_values() {
+            spawn_ranged_worker(
+                &mut tasks,
+                &mut running,
+                Arc::clone(&self.backend),
                 grant,
-                grant_writer,
-                url,
+                writer,
+                remote.final_url.clone(),
                 total_length,
-            ));
+            );
         }
 
         let mut ticker = tokio::time::interval(JOURNAL_FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ticker.tick().await;
         let mut reports = Vec::with_capacity(allocated_workers.len());
-        while !tasks.is_empty() {
+        let mut candidate_idle = None;
+        let mut draining_for_reassignment = false;
+        let mut cancelled_attempts: Vec<RunningWorker> = Vec::new();
+
+        loop {
+            if tasks.is_empty() {
+                writer.flush().await?;
+                let snapshot = writer.snapshot().await?;
+                for attempt in cancelled_attempts.drain(..) {
+                    let bytes = completed_bytes_inside(snapshot.allocator(), attempt.grant.range());
+                    if bytes > 0 {
+                        reports.push(WorkerReport {
+                            worker: attempt.grant.worker(),
+                            bytes,
+                            elapsed: attempt.started.elapsed(),
+                        });
+                    }
+                }
+
+                if snapshot
+                    .allocator()
+                    .intervals()
+                    .iter()
+                    .all(|interval| interval.state() == &IntervalState::Complete)
+                {
+                    break;
+                }
+
+                let Some(idle) = candidate_idle.take() else {
+                    return Err(PoolError::IncompleteCoverage);
+                };
+                draining_for_reassignment = false;
+                let receipt = writer.allocate(idle).await?;
+                if let Some(allocation) = receipt.allocation() {
+                    // Run the recipient before restarting a shortened source. Besides avoiding a
+                    // second writer on the source's old response, this gives the idle HTTP/1.1
+                    // worker first use of the keep-alive connection it just finished on.
+                    spawn_ranged_worker(
+                        &mut tasks,
+                        &mut running,
+                        Arc::clone(&self.backend),
+                        allocation.grant().clone(),
+                        writer,
+                        remote.final_url.clone(),
+                        total_length,
+                    );
+                    continue;
+                }
+
+                let snapshot = writer.snapshot().await?;
+                for grant in active_grants(snapshot.allocator()) {
+                    spawn_ranged_worker(
+                        &mut tasks,
+                        &mut running,
+                        Arc::clone(&self.backend),
+                        grant,
+                        writer,
+                        remote.final_url.clone(),
+                        total_length,
+                    );
+                }
+                if tasks.is_empty() {
+                    return Err(PoolError::IncompleteCoverage);
+                }
+            }
+
             tokio::select! {
                 joined = tasks.join_next() => {
                     let Some(joined) = joined else {
-                        self.reclaim_after_failure(&mut tasks, writer, &allocated_workers).await?;
+                        self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
                         return Err(PoolError::IncompleteCoverage);
                     };
                     match joined {
-                        Ok(Ok(report)) => reports.push(report),
-                        Ok(Err(error)) => {
-                            self.reclaim_after_failure(&mut tasks, writer, &allocated_workers).await?;
+                        Ok(WorkerEvent::Finished { worker, result: Ok(report) }) => {
+                            running.remove(&worker);
+                            reports.push(report);
+                            if candidate_idle.is_none() {
+                                candidate_idle = Some(worker);
+                            }
+                            if !running.is_empty() && !draining_for_reassignment {
+                                draining_for_reassignment = true;
+                                for active in running.values_mut() {
+                                    if let Some(cancel) = active.cancel.take() {
+                                        let _cancelled_before_completion = cancel.send(()).is_ok();
+                                    }
+                                }
+                            }
+                        }
+                        Ok(WorkerEvent::Finished { worker, result: Err(error) }) => {
+                            running.remove(&worker);
+                            self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
                             return Err(error);
                         }
+                        Ok(WorkerEvent::Cancelled { worker }) => {
+                            let Some(attempt) = running.remove(&worker) else {
+                                self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
+                                return Err(PoolError::IncompleteCoverage);
+                            };
+                            cancelled_attempts.push(attempt);
+                        }
                         Err(source) => {
-                            self.reclaim_after_failure(&mut tasks, writer, &allocated_workers).await?;
+                            self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
                             return Err(PoolError::WorkerJoin { source });
                         }
                     }
@@ -366,17 +469,88 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
 
     async fn reclaim_after_failure(
         &self,
-        tasks: &mut JoinSet<Result<WorkerReport, PoolError>>,
+        tasks: &mut JoinSet<WorkerEvent>,
+        running: &mut BTreeMap<WorkerId, RunningWorker>,
         writer: &WriterService,
         workers: &[WorkerId],
     ) -> Result<(), PoolError> {
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
+        running.clear();
         for worker in workers {
             writer.abandon(*worker).await?;
         }
         Ok(())
     }
+}
+
+fn spawn_ranged_worker<B: TransferProtocol + 'static>(
+    tasks: &mut JoinSet<WorkerEvent>,
+    running: &mut BTreeMap<WorkerId, RunningWorker>,
+    backend: Arc<B>,
+    grant: Grant,
+    writer: &WriterService,
+    url: url::Url,
+    total_length: u64,
+) {
+    let worker = grant.worker();
+    let grant_writer = writer.writer_for(&grant);
+    let (cancel, cancelled) = oneshot::channel();
+    let started = Instant::now();
+    let task_grant = grant.clone();
+    tasks.spawn(async move {
+        tokio::select! {
+            biased;
+            result = run_ranged_worker(
+                backend,
+                worker,
+                task_grant,
+                grant_writer,
+                url,
+                total_length,
+            ) => WorkerEvent::Finished { worker, result },
+            _ = cancelled => WorkerEvent::Cancelled { worker },
+        }
+    });
+    running.insert(
+        worker,
+        RunningWorker {
+            cancel: Some(cancel),
+            grant,
+            started,
+        },
+    );
+}
+
+fn active_grants(allocator: &crate::SegmentAllocator) -> Vec<Grant> {
+    allocator
+        .intervals()
+        .iter()
+        .filter_map(|interval| match interval.state() {
+            IntervalState::InProgress { worker } => Some(Grant {
+                worker: *worker,
+                range: interval.start()..interval.end(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn completed_bytes_inside(
+    allocator: &crate::SegmentAllocator,
+    grant: &std::ops::Range<u64>,
+) -> u64 {
+    allocator
+        .intervals()
+        .iter()
+        .filter(|interval| interval.state() == &IntervalState::Complete)
+        .map(|interval| {
+            interval
+                .end()
+                .min(grant.end)
+                .saturating_sub(interval.start().max(grant.start))
+        })
+        .sum()
 }
 
 fn single(reason: SingleStreamReason) -> PoolPlan {

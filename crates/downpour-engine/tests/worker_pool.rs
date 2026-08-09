@@ -48,6 +48,8 @@ struct FakeProtocol {
 
 #[derive(Debug)]
 struct TransferPause {
+    first: u64,
+    prefix: usize,
     accepted: Semaphore,
     release: Semaphore,
 }
@@ -123,8 +125,14 @@ impl TransferProtocol for FakeProtocol {
 
         let (start, end) = requested_window(request.range, self.body.len());
         let bytes = &self.body[start..end];
-        let accepted = if let Some(pause) = &self.pause {
-            let middle = bytes.len() / 2;
+        let accepted = if let Some(pause) = &self.pause
+            && request.range.is_some_and(|range| match range {
+                ByteRangeSpec::FromTo { first, .. } | ByteRangeSpec::From { first } => {
+                    first == pause.first
+                }
+                ByteRangeSpec::Suffix { .. } => false,
+            }) {
+            let middle = pause.prefix.min(bytes.len());
             sink.accept(&bytes[..middle])
                 .await
                 .map_err(|source| TransferError::Sink {
@@ -485,6 +493,8 @@ async fn a_slow_open_range_flushes_at_the_exact_journal_interval() {
     let body = b"slow".to_vec();
     let remote = proven_remote(4, NegotiatedProtocol::Http11);
     let pause = Arc::new(TransferPause {
+        first: 0,
+        prefix: 2,
         accepted: Semaphore::new(0),
         release: Semaphore::new(0),
     });
@@ -536,6 +546,84 @@ async fn a_slow_open_range_flushes_at_the_exact_journal_interval() {
         Err(_) => panic!("transfer retained the writer control handle"),
     };
     writer.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_split_fences_partial_source_bytes_before_reassigning_its_remainder() {
+    let body = (0_u8..64).collect::<Vec<_>>();
+    let remote = proven_remote(64, NegotiatedProtocol::Http11);
+    let pause = Arc::new(TransferPause {
+        first: 32,
+        prefix: 8,
+        accepted: Semaphore::new(0),
+        release: Semaphore::new(0),
+    });
+    let backend = Arc::new(
+        FakeProtocol::new(remote.clone(), body.clone()).with_mid_transfer_pause(Arc::clone(&pause)),
+    );
+    let pool = FixedWorkerPool::new(Arc::clone(&backend), 2).unwrap();
+    let (writer, stored, _) = writer_service(64, 8);
+    let writer = Arc::new(writer);
+    let transfer_writer = Arc::clone(&writer);
+    let mut transfer = tokio::spawn(async move {
+        pool.execute_segmented(&remote, transfer_writer.as_ref())
+            .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), pause.accepted.acquire())
+        .await
+        .expect("the source must stage its first half before cancellation")
+        .unwrap()
+        .forget();
+    let report = tokio::time::timeout(std::time::Duration::from_secs(1), &mut transfer)
+        .await
+        .expect("the pool must cancel the source rather than wait for its held old response")
+        .unwrap()
+        .unwrap();
+    assert_eq!(pause.release.available_permits(), 0);
+
+    let (mut requests, maximum_active) = backend.observed();
+    requests.sort_by_key(|request| match request.range {
+        Some(ByteRangeSpec::FromTo { first, .. }) => first,
+        _ => u64::MAX,
+    });
+    assert_eq!(maximum_active, 2);
+    assert_eq!(
+        requests,
+        vec![
+            observed_range(0, 31),
+            observed_range(32, 63),
+            observed_range(40, 51),
+            observed_range(52, 63),
+        ]
+    );
+    assert_eq!(
+        report
+            .workers()
+            .iter()
+            .filter(|record| record.worker() == WorkerId::new(0))
+            .map(|record| record.bytes())
+            .sum::<u64>(),
+        44
+    );
+    assert_eq!(
+        report
+            .workers()
+            .iter()
+            .filter(|record| record.worker() == WorkerId::new(1))
+            .map(|record| record.bytes())
+            .sum::<u64>(),
+        20
+    );
+    assert_eq!(*stored.lock().unwrap(), body);
+
+    let writer = Arc::try_unwrap(writer).unwrap_or_else(|_| panic!("transfer retained writer"));
+    let snapshot = writer.shutdown().await.unwrap();
+    assert_eq!(snapshot.allocator().intervals().len(), 1);
+    assert_eq!(
+        snapshot.allocator().intervals()[0].state(),
+        &IntervalState::Complete
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
