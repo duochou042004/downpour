@@ -140,6 +140,17 @@ async fn malformed_client_token_file_is_refused() {
     ));
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn distinct_runtime_roots_can_bind_concurrently_without_pipe_name_collision() {
+    let first_root = TestDirectory::new();
+    let second_root = TestDirectory::new();
+    let first = LocalListener::bind(&first_root.0).unwrap();
+    let second = LocalListener::bind(&second_root.0).unwrap();
+
+    assert_ne!(first.paths().pipe_name(), second.paths().pipe_name());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn existing_broad_or_symlink_runtime_directory_is_refused() {

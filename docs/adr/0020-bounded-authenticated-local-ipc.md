@@ -60,11 +60,14 @@ daemon owns conversion to its internal identifiers.
 
 `interprocess` 2.4.3 with its Tokio feature provides the byte-stream local socket. Unix binds the
 normative filesystem path with mode `0600` inside a mode-`0700` runtime directory. Windows binds a
-local-only `\\.\pipe\downpour-<user-sid>` named pipe with an explicit DACL containing the current
-user SID; the library or OS default descriptor is never accepted as proof. Platform-specific code
-may use `interprocess`'s safe security-descriptor wrapper around a user-SID SDDL string. Any
-first-party Windows FFI needed to obtain that SID stays in one module, has a `SAFETY` argument at
-each call, and is covered by native Windows tests.
+local-only `\\.\pipe\downpour-<user-sid>-<runtime-id>` named pipe with an explicit DACL containing
+the current user SID; the library or OS default descriptor is never accepted as proof. The runtime
+ID is the first 128 bits of BLAKE3 over the canonical UTF-16 runtime-directory path. It preserves
+single-daemon exclusion within one runtime root while allowing isolated roots to coexist in tests
+and embedded use without a per-user global pipe-name collision. Platform-specific code may use
+`interprocess`'s safe security-descriptor wrapper around a user-SID SDDL string. Any first-party
+Windows FFI needed to obtain that SID stays in one module, has a `SAFETY` argument at each call, and
+is covered by native Windows tests.
 
 Each daemon start obtains 32 bytes from `getrandom` 0.4.3 and renders them as 64 lowercase hex
 characters. The token type redacts `Debug` and `Display`. The daemon writes it with exclusive

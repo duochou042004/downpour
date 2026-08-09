@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T19:50:38Z",
+  "updated_at": "2026-08-09T19:55:56Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1172,7 +1172,7 @@
           "id": "S3-T8",
           "title": "Make the daemon own transfers and move the CLI behind IPC",
           "status": "in_progress",
-          "proof": "crates/downpour-cli/tests/daemon_ownership.rs::killing_cli_after_submission_does_not_stop_daemon_progress; crates/downpour-cli/tests/dependency_boundary.rs::cli_production_dependencies_cannot_reach_transfer_or_storage_crates; crates/downpour-http/tests/dependency_boundary.rs::http_production_dependencies_cannot_reach_allocator_or_storage_crates; crates/downpour-daemon/tests/server.rs::an_unwired_multi_connection_request_is_refused_instead_of_silently_running_single; crates/downpour-cli/tests/dp_add.rs daemon-backed end-to-end suite; the first four were deliberately red before their BUILD increments",
+          "proof": "crates/downpour-cli/tests/daemon_ownership.rs::killing_cli_after_submission_does_not_stop_daemon_progress; crates/downpour-cli/tests/dependency_boundary.rs::cli_production_dependencies_cannot_reach_transfer_or_storage_crates; crates/downpour-http/tests/dependency_boundary.rs::http_production_dependencies_cannot_reach_allocator_or_storage_crates; crates/downpour-daemon/tests/server.rs::an_unwired_multi_connection_request_is_refused_instead_of_silently_running_single; crates/downpour-ipc/tests/native_transport.rs::distinct_runtime_roots_can_bind_concurrently_without_pipe_name_collision; crates/downpour-cli/tests/dp_add.rs daemon-backed end-to-end suite; each new behavior proof was deliberately red before its BUILD increment",
           "files": [
             "crates/downpour-daemon/",
             "crates/downpour-cli/",
@@ -1180,7 +1180,7 @@
             "crates/downpour-http/"
           ],
           "blocked_by": "S3-T7",
-          "notes": "Kill the CLI after submission and prove progress continues. Move orchestration and the storage adapter out of downpour-http, remove downpour-http's storage and interval dependencies, and mechanically prevent the CLI from linking engine or storage. Closes B-4 and B-21 and completes ADR-0016's expected reversal. PROVE prepared 2026-08-09: the lifetime fixture binds the real user-scoped native endpoint, starts a real dp subprocess, and holds the origin's first range request so the transfer cannot race to completion. A test-only handler wrapper signals only after the production daemon registry accepts download.add, then holds the response while the test kills that still-live CLI. Releasing both gates produces a byte-exact 8 MiB final file. The proof initially failed after three seconds because Stage-1 dp never submitted to IPC; the two independent dependency proofs failed on downpour-cli -> downpour-http and downpour-http -> downpour-intervals respectively. BUILD moves SingleStream and StorageSink together into downpour-engine, adds a detached daemon-owned transfer registry and authenticated framed connection loop, makes dp an IPC-only client with the specified unreachable/download-failed exit codes, preserves stable error kinds across the wire, and adds the thin downpourd process loop. The seven existing dp tests now run through the production daemon/session/engine path. The high-level completion path still consumes only the retained single-stream fallback, so download.add accepts only an omitted connection count or one and returns segmented_execution_not_ready for larger values rather than silently ignoring the requested concurrency. That separate proof first failed because four was accepted, then caught both deleting the refusal and broadening it to reject the wired value one. Four other reachable task mutations went red and were restored with touched rebuilds: synchronous client-bound execution, post-completion byte corruption, a CLI-to-engine production edge, and an HTTP-to-storage production edge. Erasing the stable failure kind also made the pre-existing content-encoding refusal proof red. The lifetime proof passed 20/20 process runs. Windows GNU all-target clippy is clean. Final local gates: workspace 324/324 with 3 skipped, doctests 7/7, release simulation 14/14. Native Windows CI remains before completion.",
+          "notes": "Kill the CLI after submission and prove progress continues. Move orchestration and the storage adapter out of downpour-http, remove downpour-http's storage and interval dependencies, and mechanically prevent the CLI from linking engine or storage. Closes B-4 and B-21 and completes ADR-0016's expected reversal. PROVE prepared 2026-08-09: the lifetime fixture binds the real user-scoped native endpoint, starts a real dp subprocess, and holds the origin's first range request so the transfer cannot race to completion. A test-only handler wrapper signals only after the production daemon registry accepts download.add, then holds the response while the test kills that still-live CLI. Releasing both gates produces a byte-exact 8 MiB final file. The proof initially failed after three seconds because Stage-1 dp never submitted to IPC; the two independent dependency proofs failed on downpour-cli -> downpour-http and downpour-http -> downpour-intervals respectively. BUILD moves SingleStream and StorageSink together into downpour-engine, adds a detached daemon-owned transfer registry and authenticated framed connection loop, makes dp an IPC-only client with the specified unreachable/download-failed exit codes, preserves stable error kinds across the wire, and adds the thin downpourd process loop. The seven existing dp tests now run through the production daemon/session/engine path. The high-level completion path still consumes only the retained single-stream fallback, so download.add accepts only an omitted connection count or one and returns segmented_execution_not_ready for larger values rather than silently ignoring the requested concurrency. That separate proof first failed because four was accepted, then caught both deleting the refusal and broadening it to reject the wired value one. Four other reachable task mutations went red and were restored with touched rebuilds: synchronous client-bound execution, post-completion byte corruption, a CLI-to-engine production edge, and an HTTP-to-storage production edge. Erasing the stable failure kind also made the pre-existing content-encoding refusal proof red. The lifetime proof passed 20/20 process runs. Windows GNU all-target clippy is clean. Local gates before native CI: workspace 324/324 with 3 skipped, doctests 7/7, release simulation 14/14. GitHub run 31332752817 passed harness, rust and security but native Windows exposed a per-user global named-pipe collision: parallel daemon fixtures with distinct runtime roots all bound downpour-<SID> and failed with AccessDenied. ADR-0020 now specifies a canonical-runtime-derived pipe suffix, and a focused Windows-only proof is red before that BUILD.",
           "invariants": [
             "I-11",
             "I-12",
@@ -3808,6 +3808,21 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T8 remains in progress pending all four native GitHub jobs on the green BUILD commits. Do not mark done or start S3-T9 until those are green. The segmented worker pool's high-level daemon completion wiring remains later S3 work; until then multi-connection requests are refused explicitly rather than misrepresented. current_stage remains S3."
+    },
+    {
+      "at": "2026-08-09T19:55:56Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "GitHub run 31332752817 passed harness, rust and security but failed native Windows. The failure is a real T8 platform integration defect rather than an unstable oracle: all daemon-backed CLI fixtures independently create unique runtime roots, yet the Windows endpoint implementation collapses them to one per-user downpour-<SID> pipe. Parallel listeners therefore fail bind with AccessDenied; the lifetime proof and six of seven daemon-backed CLI cases were among the failures. Amended proposed ADR-0020 to derive a 128-bit BLAKE3 runtime ID from the canonical UTF-16 runtime-directory path, retaining same-root exclusion and current-user DACLs while allowing isolated roots. Added a focused Windows-only concurrent-root binding proof before production code.",
+      "tasks_touched": [
+        "S3-T8"
+      ],
+      "files_touched": [
+        "crates/downpour-ipc/tests/native_transport.rs",
+        "docs/adr/0020-bounded-authenticated-local-ipc.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "Commit and push this design-plus-proof increment, observe distinct_runtime_roots_can_bind_concurrently_without_pipe_name_collision red on native Windows, then add only the runtime-derived name BUILD. Mutation-delete the runtime suffix, require the named proof red, restore with a forced rebuild, rerun local gates and all four GitHub jobs. S3-T8 and current_stage remain unchanged."
     }
   ],
   "metrics": {
