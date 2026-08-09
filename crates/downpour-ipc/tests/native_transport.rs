@@ -211,38 +211,75 @@ fn assert_native_permissions(paths: &downpour_ipc::EndpointPaths) {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn assert_native_permissions(paths: &downpour_ipc::EndpointPaths) {
-    let sid = paths
-        .pipe_name()
-        .strip_prefix("downpour-")
-        .expect("pipe name must carry the independently inspectable current-user SID");
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle, RawHandle};
+    use std::ptr;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut raw_token = ptr::null_mut();
+    // SAFETY: GetCurrentProcess returns a pseudo-handle; raw_token is writable HANDLE storage and
+    // the test requests only query access.
+    assert_ne!(
+        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw_token) },
+        0,
+        "{:?}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: OpenProcessToken returned one owned handle, closed once by OwnedHandle.
+    let token = unsafe { OwnedHandle::from_raw_handle(raw_token as RawHandle) };
+    let mut required = 0_u32;
+    // SAFETY: null plus zero length is the documented size query and required is writable.
+    unsafe {
+        GetTokenInformation(
+            token.as_raw_handle() as _,
+            TokenUser,
+            ptr::null_mut(),
+            0,
+            &mut required,
+        )
+    };
+    assert!(required > 0, "{:?}", std::io::Error::last_os_error());
+    let mut user_buffer = vec![0_u8; usize::try_from(required).unwrap()];
+    // SAFETY: the buffer has exactly the requested writable capacity and the token remains open.
+    assert_ne!(
+        unsafe {
+            GetTokenInformation(
+                token.as_raw_handle() as _,
+                TokenUser,
+                user_buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        },
+        0,
+        "{:?}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: the successful query initialized TOKEN_USER at the buffer start; user_buffer lives
+    // through every descriptor comparison below.
+    let expected_sid = unsafe { (*user_buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
     let pipe_path = std::path::PathBuf::from(format!(r"\\.\pipe\{}", paths.pipe_name()));
 
     for path in [paths.runtime_dir(), paths.token_file(), pipe_path.as_path()] {
-        let sddl = security_sddl(path);
-        assert!(sddl.starts_with(&format!("O:{sid}")), "{path:?}: {sddl}");
-        assert!(
-            sddl.contains(&format!("D:P(A;;GA;;;{sid})")),
-            "{path:?}: {sddl}"
-        );
-        assert_eq!(sddl.matches("(A;").count(), 1, "{path:?}: {sddl}");
-        for broad in [";;;WD)", ";;;AU)", ";;;BU)", ";;;BG)", ";;;AN)"] {
-            assert!(!sddl.contains(broad), "{path:?}: {sddl}");
-        }
+        assert_single_current_user_ace(path, expected_sid);
     }
 }
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn security_sddl(path: &std::path::Path) -> String {
+fn assert_single_current_user_ace(
+    path: &std::path::Path,
+    expected_sid: windows_sys::Win32::Security::PSID,
+) {
     use std::os::windows::ffi::OsStrExt as _;
     use std::ptr;
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
-    };
     use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, GetFileSecurityW, OWNER_SECURITY_INFORMATION,
+        ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION,
+        EqualSid, GetAce, GetAclInformation, GetFileSecurityW, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, OWNER_SECURITY_INFORMATION,
+        SE_DACL_PROTECTED,
     };
+    use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let requested = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
@@ -268,28 +305,79 @@ fn security_sddl(path: &std::path::Path) -> String {
         "{:?}",
         std::io::Error::last_os_error()
     );
-    let mut text = ptr::null_mut();
-    let mut text_len = 0_u32;
-    // SAFETY: descriptor was initialized by GetFileSecurityW and the two output pointers are
-    // writable. Windows allocates text with LocalAlloc on success.
+    let descriptor_ptr = descriptor.as_mut_ptr().cast();
+    let mut owner = ptr::null_mut();
+    let mut owner_defaulted = 0;
+    // SAFETY: descriptor_ptr references the initialized descriptor buffer and outputs are writable.
+    assert_ne!(
+        unsafe { GetSecurityDescriptorOwner(descriptor_ptr, &mut owner, &mut owner_defaulted) },
+        0,
+        "{:?}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: both SIDs are live and validated by their respective successful Windows queries.
+    assert_ne!(unsafe { EqualSid(owner, expected_sid) }, 0, "{path:?}");
+
+    let mut dacl_present = 0;
+    let mut dacl = ptr::null_mut();
+    let mut dacl_defaulted = 0;
+    // SAFETY: descriptor_ptr is valid and all output pointers are writable.
     assert_ne!(
         unsafe {
-            ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                descriptor.as_mut_ptr().cast(),
-                SDDL_REVISION_1,
-                requested,
-                &mut text,
-                &mut text_len,
+            GetSecurityDescriptorDacl(
+                descriptor_ptr,
+                &mut dacl_present,
+                &mut dacl,
+                &mut dacl_defaulted,
             )
         },
         0,
         "{:?}",
         std::io::Error::last_os_error()
     );
-    // SAFETY: conversion returned text_len readable UTF-16 code units.
-    let slice = unsafe { std::slice::from_raw_parts(text, usize::try_from(text_len).unwrap()) };
-    let rendered = String::from_utf16(slice).unwrap();
-    // SAFETY: the successful conversion allocated text with LocalAlloc.
-    assert!(unsafe { LocalFree(text.cast()) }.is_null());
-    rendered.trim_end_matches('\0').to_owned()
+    assert_ne!(dacl_present, 0, "{path:?}");
+    assert!(!dacl.is_null(), "{path:?}");
+    let mut size = ACL_SIZE_INFORMATION::default();
+    // SAFETY: dacl points inside the live descriptor and size is writable at its exact type size.
+    assert_ne!(
+        unsafe {
+            GetAclInformation(
+                dacl,
+                (&mut size as *mut ACL_SIZE_INFORMATION).cast(),
+                u32::try_from(std::mem::size_of::<ACL_SIZE_INFORMATION>()).unwrap(),
+                AclSizeInformation,
+            )
+        },
+        0,
+        "{:?}",
+        std::io::Error::last_os_error()
+    );
+    assert_eq!(size.AceCount, 1, "{path:?}");
+    let mut ace = ptr::null_mut();
+    // SAFETY: the ACL reports exactly one ACE, so index zero exists and ace is writable output.
+    assert_ne!(
+        unsafe { GetAce(dacl, 0, &mut ace) },
+        0,
+        "{:?}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: GetAce returned a pointer to an ACCESS_ALLOWED_ACE-sized entry; the type check below
+    // occurs before reading its SidStart field.
+    let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+    assert_eq!(u32::from(allowed.Header.AceType), ACCESS_ALLOWED_ACE_TYPE);
+    let ace_sid = std::ptr::addr_of!(allowed.SidStart).cast_mut().cast();
+    // SAFETY: ACCESS_ALLOWED_ACE stores its variable-length SID starting at SidStart; both SIDs
+    // remain live for this comparison.
+    assert_ne!(unsafe { EqualSid(ace_sid, expected_sid) }, 0, "{path:?}");
+
+    let mut control = 0_u16;
+    let mut revision = 0_u32;
+    // SAFETY: descriptor_ptr is valid and both scalar outputs are writable.
+    assert_ne!(
+        unsafe { GetSecurityDescriptorControl(descriptor_ptr, &mut control, &mut revision) },
+        0,
+        "{:?}",
+        std::io::Error::last_os_error()
+    );
+    assert_ne!(control & SE_DACL_PROTECTED, 0, "{path:?}");
 }
