@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use downpour_ipc::{
     CommandHandler, HelloParams, LocalListener, LocalStream, PROTOCOL_VERSION, Request, Response,
-    ResponseKind, SecretString, Session, StateResult, SystemStatus, VersionParams, WireState,
-    decode_response, encode_request, encode_response, read_client_token,
+    ResponseKind, SecretString, Session, StateResult, SystemStatus, TransportError, VersionParams,
+    WireState, decode_response, encode_request, encode_response, read_client_token,
 };
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -34,6 +34,12 @@ impl Drop for TestDirectory {
 
 #[tokio::test]
 async fn native_endpoint_is_user_scoped_and_authenticates_before_dispatch() {
+    tokio::time::timeout(std::time::Duration::from_secs(2), native_endpoint_proof())
+        .await
+        .expect("native endpoint proof timed out");
+}
+
+async fn native_endpoint_proof() {
     let root = TestDirectory::new();
     let listener = LocalListener::bind(&root.0).unwrap();
     let paths = listener.paths().clone();
@@ -113,6 +119,39 @@ async fn native_endpoint_is_user_scoped_and_authenticates_before_dispatch() {
     assert_eq!(server.await.unwrap(), 1);
 }
 
+#[tokio::test]
+async fn malformed_client_token_file_is_refused() {
+    let root = TestDirectory::new();
+    let listener = LocalListener::bind(&root.0).unwrap();
+    std::fs::write(listener.paths().token_file(), "AA-not-canonical").unwrap();
+
+    assert!(matches!(
+        read_client_token(listener.paths()),
+        Err(TransportError::InvalidTokenFile)
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn existing_broad_or_symlink_runtime_directory_is_refused() {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _, symlink};
+
+    let broad_root = TestDirectory::new();
+    std::fs::DirBuilder::new()
+        .mode(0o755)
+        .create(broad_root.0.join("downpour"))
+        .unwrap();
+    assert!(LocalListener::bind(&broad_root.0).is_err());
+
+    let linked_root = TestDirectory::new();
+    let victim = TestDirectory::new();
+    std::fs::set_permissions(&victim.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    symlink(&victim.0, linked_root.0.join("downpour")).unwrap();
+    assert!(LocalListener::bind(&linked_root.0).is_err());
+    assert!(!victim.0.join("session.token").exists());
+    assert!(!victim.0.join("daemon.sock").exists());
+}
+
 fn hello(token: &str) -> Request {
     Request::Hello(HelloParams {
         protocol_version: PROTOCOL_VERSION,
@@ -170,6 +209,87 @@ fn assert_native_permissions(paths: &downpour_ipc::EndpointPaths) {
 }
 
 #[cfg(windows)]
-fn assert_native_permissions(_paths: &downpour_ipc::EndpointPaths) {
-    todo!("native current-user SID DACL assertion is added with the Windows implementation")
+#[allow(unsafe_code)]
+fn assert_native_permissions(paths: &downpour_ipc::EndpointPaths) {
+    let sid = paths
+        .pipe_name()
+        .strip_prefix("downpour-")
+        .expect("pipe name must carry the independently inspectable current-user SID");
+    let pipe_path = std::path::PathBuf::from(format!(r"\\.\pipe\{}", paths.pipe_name()));
+
+    for path in [paths.runtime_dir(), paths.token_file(), pipe_path.as_path()] {
+        let sddl = security_sddl(path);
+        assert!(sddl.starts_with(&format!("O:{sid}")), "{path:?}: {sddl}");
+        assert!(
+            sddl.contains(&format!("D:P(A;;GA;;;{sid})")),
+            "{path:?}: {sddl}"
+        );
+        assert_eq!(sddl.matches("(A;").count(), 1, "{path:?}: {sddl}");
+        for broad in [";;;WD)", ";;;AU)", ";;;BU)", ";;;BG)", ";;;AN)"] {
+            assert!(!sddl.contains(broad), "{path:?}: {sddl}");
+        }
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn security_sddl(path: &std::path::Path) -> String {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::ptr;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, GetFileSecurityW, OWNER_SECURITY_INFORMATION,
+    };
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let requested = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    let mut required = 0_u32;
+    // SAFETY: wide is NUL-terminated, the null descriptor with length zero is the documented
+    // size-query form, and required points to writable storage.
+    unsafe { GetFileSecurityW(wide.as_ptr(), requested, ptr::null_mut(), 0, &mut required) };
+    assert!(required > 0, "{:?}", std::io::Error::last_os_error());
+    let mut descriptor = vec![0_u8; usize::try_from(required).unwrap()];
+    // SAFETY: descriptor has the exact writable length Windows requested and all pointers remain
+    // live for the call.
+    assert_ne!(
+        unsafe {
+            GetFileSecurityW(
+                wide.as_ptr(),
+                requested,
+                descriptor.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        },
+        0,
+        "{:?}",
+        std::io::Error::last_os_error()
+    );
+    let mut text = ptr::null_mut();
+    let mut text_len = 0_u32;
+    // SAFETY: descriptor was initialized by GetFileSecurityW and the two output pointers are
+    // writable. Windows allocates text with LocalAlloc on success.
+    assert_ne!(
+        unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.as_mut_ptr().cast(),
+                SDDL_REVISION_1,
+                requested,
+                &mut text,
+                &mut text_len,
+            )
+        },
+        0,
+        "{:?}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: conversion returned text_len readable UTF-16 code units.
+    let slice = unsafe { std::slice::from_raw_parts(text, usize::try_from(text_len).unwrap()) };
+    let rendered = String::from_utf16(slice).unwrap();
+    // SAFETY: the successful conversion allocated text with LocalAlloc.
+    assert!(unsafe { LocalFree(text.cast()) }.is_null());
+    rendered.trim_end_matches('\0').to_owned()
 }

@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T18:37:05Z",
+  "updated_at": "2026-08-09T18:53:19Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1154,13 +1154,13 @@
           "id": "S3-T7",
           "title": "Create the versioned authenticated IPC foundation needed by the S3 daemon",
           "status": "in_progress",
-          "proof": "crates/downpour-ipc/tests/contract.rs::{every_s3_request_result_and_error_round_trips_with_its_version,oversized_length_is_rejected_after_only_the_four_byte_header,exact_maximum_length_is_accepted,hello_authenticates_once_then_each_s3_command_reaches_the_typed_dispatcher,malformed_unauthenticated_and_newer_messages_never_dispatch,generated_tokens_are_distinct_and_all_formatting_is_redacted,secret_bearing_message_debug_never_reveals_wire_values}; crates/downpour-ipc/tests/native_transport.rs::native_endpoint_is_user_scoped_and_authenticates_before_dispatch; contract's initial six and native transport deliberately red before their BUILD increments",
+          "proof": "crates/downpour-ipc/tests/contract.rs::{every_s3_request_result_and_error_round_trips_with_its_version,oversized_length_is_rejected_after_only_the_four_byte_header,exact_maximum_length_is_accepted,hello_authenticates_once_then_each_s3_command_reaches_the_typed_dispatcher,malformed_unauthenticated_and_newer_messages_never_dispatch,generated_tokens_are_distinct_and_all_formatting_is_redacted,secret_bearing_message_debug_never_reveals_wire_values}; crates/downpour-ipc/tests/native_transport.rs::{native_endpoint_is_user_scoped_and_authenticates_before_dispatch,malformed_client_token_file_is_refused,existing_broad_or_symlink_runtime_directory_is_refused}; contract's initial six and native endpoint flow deliberately red before their BUILD increments",
           "files": [
             "crates/downpour-ipc/",
             "crates/downpour-daemon/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "DESIGN is recorded first in proposed ADR-0020 because the normative IPC spec leaves byte framing and session-token provisioning open. The decision uses a four-byte little-endian length plus at most 1 MiB of strict typed JSON, a hello-first version/auth state machine, interprocess 2.4.3 local sockets, explicit mode 0600/current-user SID endpoint restrictions, and a redacted 256-bit OS-random per-daemon token. The S3 schema is limited to hello, download.add, download.get, download.resume and system.status. The pure codec/session/token BUILD is green: typed request/result/error framing, an inclusive 1 MiB pre-allocation ceiling, strict envelopes and method DTOs, validated download IDs, hello-only authentication, per-message version refusal, internal hello handling, OS-random 256-bit lowercase tokens, and redacted token/URL formatting. Seventeen reachable mutations turned a named proof red and were restored: rejecting the exact maximum, consuming an oversized body byte, exposing secrets, fixed token generation, unconditional token acceptance, pre-auth dispatch, accepting a newer hello, repeated hello, dispatching hello, permissive hello params, unvalidated IDs, non-2.0 JSON-RPC, permissive envelopes, accepting a newer post-auth command, uppercase tokens, corrupt token serialization, and wrong method mapping. The forced green rebuild caught and corrected a reversed-nibble restoration. Exact targeted gates: clippy clean; 7/7 tests; 0 doctests. The separate native transport PROVE is now isolated against an Unavailable scaffold: it requires an actual connection, Unix 0700 runtime directory plus 0600 token/socket, exclusive token provisioning without overwrite, a rejected bad-token connection with zero dispatch, then a valid hello and status response with exactly one dispatch. Its single native test compiles and fails at bind as intended before interprocess is added; Windows DACL implementation and native assertion remain part of this BUILD increment. T7 stays in progress.",
+          "notes": "DESIGN is recorded first in proposed ADR-0020 because the normative IPC spec leaves byte framing and session-token provisioning open. The decision uses a four-byte little-endian length plus at most 1 MiB of strict typed JSON, a hello-first version/auth state machine, interprocess 2.4.3 local sockets, explicit mode 0600/current-user SID endpoint restrictions, and a redacted 256-bit OS-random per-daemon token. The S3 schema is limited to hello, download.add, download.get, download.resume and system.status. The pure codec/session/token BUILD is green: typed request/result/error framing, an inclusive 1 MiB pre-allocation ceiling, strict envelopes and method DTOs, validated download IDs, hello-only authentication, per-message version refusal, internal hello handling, OS-random 256-bit lowercase tokens, and redacted token/URL formatting. Seventeen reachable mutations turned a named proof red and were restored: rejecting the exact maximum, consuming an oversized body byte, exposing secrets, fixed token generation, unconditional token acceptance, pre-auth dispatch, accepting a newer hello, repeated hello, dispatching hello, permissive hello params, unvalidated IDs, non-2.0 JSON-RPC, permissive envelopes, accepting a newer post-auth command, uppercase tokens, corrupt token serialization, and wrong method mapping. The forced green rebuild caught and corrected a reversed-nibble restoration. The native transport BUILD now uses interprocess 2.4.3 Tokio streams. Unix atomically creates mode-0700 runtime state, binds a mode-0600 UDS before atomically replacing a mode-0600 token, and refuses broad or symlink runtime directories. Windows gets the current process-token SID, applies one protected current-user GenericAll ACE to the runtime directory, token and named pipe, uses FILE_FLAG_FIRST_PIPE_INSTANCE through interprocess, refuses reparse runtime paths, and atomically replaces the token with MoveFileExW. The Windows test independently reads each live security descriptor and requires exactly one allow ACE for the pipe-name SID with no Everyone, Authenticated Users, Builtin Users/Guests or Anonymous trustee. Eight reachable Linux transport mutations went red and were restored: directory/socket/token permissions, token replacement before listener exclusivity, erased frame send, malformed-token acceptance, broad-directory acceptance, and following a reachable mode-0700 symlink victim. Exact targeted gates after a forced rebuild: Linux clippy clean and 10/10 tests; Windows GNU all-target clippy clean. Full local gates: workspace 320/320 with 3 skipped, doctests 7/7, release simulation 14/14. Native Windows execution is still required before T7 is marked done.",
           "invariants": [
             "I-11",
             "I-12",
@@ -3675,6 +3675,39 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T7 remains at native transport BUILD. Commit this red proof, add interprocess 2.4.3 with Tokio, implement protected runtime/token/socket creation and framed streams, then add the independent native Windows current-user SID DACL assertion before mutation verification."
+    },
+    {
+      "at": "2026-08-09T18:51:28Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Built and locally mutation-verified S3-T7's native transport. Linux now uses a real interprocess Tokio UDS with 0700/0600/0600 runtime, socket and atomic token permissions, rejects broad and symlink runtime paths, preserves the live token on a conflicting bind, refuses malformed client token files, rejects a bad-token connection with zero dispatch, then completes a framed hello/status exchange. Windows cross-compiles with current-process SID lookup, a protected single-user SDDL applied to directory/token/named pipe, first-pipe-instance exclusivity, reparse refusal and atomic MoveFileExW token replacement; the native test independently queries all three security descriptors and rejects any broad trustee. Eight reachable Linux transport mutations turned named proofs red and were restored. Forced targeted gates: Linux clippy clean and 10/10 tests; Windows GNU all-target clippy clean.",
+      "tasks_touched": [
+        "S3-T7"
+      ],
+      "files_touched": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "crates/downpour-ipc/Cargo.toml",
+        "crates/downpour-ipc/src/transport.rs",
+        "crates/downpour-ipc/src/transport/windows.rs",
+        "crates/downpour-ipc/tests/native_transport.rs",
+        "docs/14-tech-radar-2026.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3-T7 remains in progress pending the full local workspace gates and native Windows CI execution. Do not mark its platform security proof complete from cross-compilation alone; current_stage remains S3."
+    },
+    {
+      "at": "2026-08-09T18:53:19Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Ran S3-T7's post-mutation repository gates after the forced targeted rebuild. just gate passed with workspace 320/320 and 3 skipped plus doctests 7/7; just sim passed release 14/14. The progress validator and agent-asset checks are clean. The task remains in progress because the independently inspecting Windows DACL test has cross-compiled and linted but has not yet executed on native Windows CI.",
+      "tasks_touched": [
+        "S3-T7"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "Commit the transport BUILD, push it to GitHub CI and the GitLab mirror, require native Windows plus harness/rust/security green, then mark S3-T7 done without advancing current_stage."
     }
   ],
   "metrics": {

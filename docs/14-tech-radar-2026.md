@@ -30,6 +30,7 @@ here without checking it against §5 and recording it.
 | `directories` | 6.0 | Platform paths | Never hard-code paths |
 | `keyring` | 4.1 | Credential storage | Secret Service / kwallet / Credential Manager |
 | `interprocess` | 2.4.3 | UDS + named pipes | ADR-0020. One Tokio API for both platforms; endpoint permissions are configured explicitly. |
+| `widestring` | 1.2.1 | Windows IPC SDDL construction | ADR-0020. Windows-only direct edge already resolved by `interprocess`; Rust 1.71 MSRV, MIT/Apache-2.0; converts current-user SID SDDL to the checked `U16CStr` accepted by `interprocess::SecurityDescriptor`. |
 | `getrandom` | 0.4.3 | IPC session-token entropy | ADR-0020. Direct OS CSPRNG access; Rust 1.85 MSRV, MIT/Apache-2.0. |
 | `governor` | 0.10 | Rate limiting | Token bucket |
 | `proptest` | 1.11 | Property testing | The interval map and journal depend on this |

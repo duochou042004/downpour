@@ -59,6 +59,8 @@ rusqlite = { version = "0.40.1", default-features = false, features = ["bundled-
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 getrandom = "0.4.3"
+interprocess = { version = "2.4.3", features = ["tokio"] }
+widestring = "1.2.1"
 # ADR-0017. The server states a SHA-2 digest under RFC 9530, so verifying it means computing that
 # same algorithm; blake3 is ours, for per-block journal evidence, and cannot stand in for it.
 sha2 = "0.11.0"
@@ -76,9 +78,13 @@ tracing-subscriber = "0.3.23"
 url = "2.5.8"
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
   "Win32_System_IO",
   "Win32_System_Ioctl",
+  "Win32_System_Memory",
+  "Win32_System_Threading",
 ] }
 
 # Lints that encode .claude/rules/rust.md mechanically, so the rule is enforced by
