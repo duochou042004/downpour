@@ -4,12 +4,14 @@ use std::fmt;
 
 use thiserror::Error;
 
+use crate::SecretString;
+
 /// Token generation or wire-decoding failure.
 #[derive(Debug, Error)]
 pub enum TokenError {
-    /// The deliberate pre-build scaffold has no generator yet.
-    #[error("IPC token generation is not implemented")]
-    Unavailable,
+    /// The operating system could not provide secure entropy.
+    #[error("the operating system could not generate an IPC session token")]
+    Entropy,
 }
 
 /// A 256-bit per-daemon secret. Formatting never reveals it.
@@ -25,13 +27,49 @@ impl SessionToken {
 
     /// Generate a fresh token from the operating-system CSPRNG.
     pub fn generate() -> Result<Self, TokenError> {
-        Err(TokenError::Unavailable)
+        let mut bytes = [0_u8; 32];
+        getrandom::fill(&mut bytes).map_err(|_| TokenError::Entropy)?;
+        Ok(Self(bytes))
     }
 
     /// Compare one 64-character wire token without exposing this token through formatting.
     #[must_use]
-    pub fn matches_wire(&self, _candidate: &str) -> bool {
-        false
+    pub fn matches_wire(&self, candidate: &str) -> bool {
+        let bytes = candidate.as_bytes();
+        if bytes.len() != 64 {
+            return false;
+        }
+        let mut difference = 0_u8;
+        for (index, expected) in self.0.iter().copied().enumerate() {
+            let Some(high) = decode_lower_hex(bytes[index * 2]) else {
+                return false;
+            };
+            let Some(low) = decode_lower_hex(bytes[index * 2 + 1]) else {
+                return false;
+            };
+            difference |= expected ^ (high << 4 | low);
+        }
+        difference == 0
+    }
+
+    /// Render the token for the protected runtime file or hello payload.
+    #[must_use]
+    pub fn to_wire(&self) -> SecretString {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut wire = String::with_capacity(64);
+        for byte in self.0 {
+            wire.push(char::from(HEX[usize::from(byte >> 4)]));
+            wire.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        SecretString::new(wire)
+    }
+}
+
+fn decode_lower_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
     }
 }
 

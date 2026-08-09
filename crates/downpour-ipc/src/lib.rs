@@ -29,6 +29,6 @@ pub use session::{CommandHandler, Session, SessionError};
 pub use token::{SessionToken, TokenError};
 pub use types::{
     AddOptions, AddParams, DownloadId, DownloadView, ErrorData, HelloParams, HelloResult, IdParams,
-    PROTOCOL_VERSION, Request, Response, ResponseKind, RpcError, StateResult, SystemStatus,
-    VersionParams, WireState,
+    PROTOCOL_VERSION, Request, Response, ResponseKind, RpcError, SecretString, StateResult,
+    SystemStatus, VersionParams, WireState,
 };

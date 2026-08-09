@@ -5,9 +5,9 @@ use std::fmt::Write as _;
 use downpour_ipc::{
     AddOptions, AddParams, CodecError, CommandHandler, DownloadId, DownloadView, ErrorData,
     HelloParams, HelloResult, IdParams, MAX_FRAME_BYTES, PROTOCOL_VERSION, Request, Response,
-    ResponseKind, RpcError, Session, SessionError, SessionToken, StateResult, SystemStatus,
-    VersionParams, WireState, decode_request, decode_response, encode_request, encode_response,
-    read_frame,
+    ResponseKind, RpcError, SecretString, Session, SessionError, SessionToken, StateResult,
+    SystemStatus, VersionParams, WireState, decode_request, decode_response, encode_request,
+    encode_response, read_frame,
 };
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -21,11 +21,11 @@ fn requests(token: String) -> Vec<Request> {
         Request::Hello(HelloParams {
             protocol_version: PROTOCOL_VERSION,
             client: "dp/0.1.0".to_owned(),
-            token,
+            token: SecretString::new(token),
         }),
         Request::DownloadAdd(AddParams {
             protocol_version: PROTOCOL_VERSION,
-            url: "https://example.test/file.bin?secret=never-log".to_owned(),
+            url: SecretString::new("https://example.test/file.bin?secret=never-log"),
             target: Some("file.bin".to_owned()),
             options: AddOptions {
                 connections: Some(4),
@@ -136,6 +136,7 @@ async fn oversized_length_is_rejected_after_only_the_four_byte_header() {
     let declared = u32::try_from(MAX_FRAME_BYTES + 1).unwrap();
     sender.write_all(&declared.to_le_bytes()).await.unwrap();
     sender.write_u8(0x7a).await.unwrap();
+    drop(sender);
 
     let error = read_frame(&mut receiver).await.unwrap_err();
     assert!(matches!(
@@ -146,6 +147,17 @@ async fn oversized_length_is_rejected_after_only_the_four_byte_header() {
         } if declared == MAX_FRAME_BYTES + 1
     ));
     assert_eq!(receiver.read_u8().await.unwrap(), 0x7a);
+}
+
+#[tokio::test]
+async fn exact_maximum_length_is_accepted() {
+    let mut frame = vec![0x5a; MAX_FRAME_BYTES + 4];
+    frame[..4].copy_from_slice(&u32::try_from(MAX_FRAME_BYTES).unwrap().to_le_bytes());
+    let mut reader = frame.as_slice();
+
+    let payload = read_frame(&mut reader).await.unwrap();
+    assert_eq!(payload.len(), MAX_FRAME_BYTES);
+    assert!(payload.iter().all(|byte| *byte == 0x5a));
 }
 
 #[derive(Default)]
@@ -246,6 +258,22 @@ fn malformed_unauthenticated_and_newer_messages_never_dispatch() {
     let mut session = Session::new(token.clone());
     assert!(matches!(
         session.handle_payload(
+            &payload(json!({"jsonrpc":"1.0","id":1,"method":"hello","params":{"protocol_version":1,"client":"dp","token":"11".repeat(32)}})),
+            &mut handler,
+        ),
+        Err(SessionError::Codec(CodecError::InvalidMessage))
+    ));
+    let mut session = Session::new(token.clone());
+    assert!(matches!(
+        session.handle_payload(
+            &payload(json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol_version":1,"client":"dp","token":"11".repeat(32)},"extra":true})),
+            &mut handler,
+        ),
+        Err(SessionError::Codec(CodecError::InvalidMessage))
+    ));
+    let mut session = Session::new(token.clone());
+    assert!(matches!(
+        session.handle_payload(
             &payload(json!({"jsonrpc":"2.0","id":1,"method":"download.get","params":{"protocol_version":1,"id":"018f0f0f0f0f70008000000000000001"}})),
             &mut handler,
         ),
@@ -297,6 +325,16 @@ fn malformed_unauthenticated_and_newer_messages_never_dispatch() {
             Err(SessionError::Codec(CodecError::InvalidMessage))
         ));
     }
+    assert!(matches!(
+        authenticated.handle_payload(
+            &payload(json!({"jsonrpc":"2.0","id":4,"method":"system.status","params":{"protocol_version":2}})),
+            &mut handler,
+        ),
+        Err(SessionError::UnsupportedVersion {
+            requested: 2,
+            supported: PROTOCOL_VERSION
+        })
+    ));
     assert!(handler.calls.is_empty());
 }
 
@@ -307,11 +345,11 @@ fn secret_bearing_message_debug_never_reveals_wire_values() {
     let hello = Request::Hello(HelloParams {
         protocol_version: PROTOCOL_VERSION,
         client: "dp".to_owned(),
-        token: token.clone(),
+        token: SecretString::new(token.clone()),
     });
     let add = Request::DownloadAdd(AddParams {
         protocol_version: PROTOCOL_VERSION,
-        url: signed_url.to_owned(),
+        url: SecretString::new(signed_url),
         target: None,
         options: AddOptions::default(),
     });
@@ -328,4 +366,10 @@ fn generated_tokens_are_distinct_and_all_formatting_is_redacted() {
     assert_ne!(first, second);
     assert_eq!(format!("{first}"), "[redacted]");
     assert_eq!(format!("{first:?}"), "SessionToken([redacted])");
+
+    let deterministic = SessionToken::from_bytes([0xab; 32]);
+    assert_eq!(deterministic.to_wire().expose(), "ab".repeat(32));
+    assert!(deterministic.matches_wire(&"ab".repeat(32)));
+    assert!(!deterministic.matches_wire(&"AB".repeat(32)));
+    assert!(!deterministic.matches_wire(&"ab".repeat(31)));
 }

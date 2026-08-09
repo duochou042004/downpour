@@ -1,6 +1,9 @@
 //! Typed version-1 request, result, and error payloads.
 
-use serde::{Deserialize, Serialize};
+use std::fmt;
+
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// The only IPC major understood by this build.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -61,7 +64,7 @@ pub struct HelloParams {
     /// Human-readable client build identifier.
     pub client: String,
     /// Redacted-on-debug session token wire text.
-    pub token: String,
+    pub token: SecretString,
 }
 
 /// Successful version negotiation result.
@@ -91,7 +94,7 @@ pub struct AddParams {
     /// Public IPC major carried by this message.
     pub protocol_version: u32,
     /// User-submitted HTTP(S) URL. It is secret-bearing and must never be logged.
-    pub url: String,
+    pub url: SecretString,
     /// Optional native target path text supplied by the local client.
     pub target: Option<String>,
     /// Transfer options available in S3.
@@ -99,7 +102,7 @@ pub struct AddParams {
 }
 
 /// Validated opaque download identity used on the wire.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct DownloadId(String);
 
@@ -120,6 +123,44 @@ impl DownloadId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for DownloadId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::new(&raw).map_err(D::Error::custom)
+    }
+}
+
+/// Secret-bearing wire text whose formatting is always redacted.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct SecretString(String);
+
+impl SecretString {
+    /// Wrap text that may cross IPC but must never appear in formatting or logs.
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    /// Expose the value only at an explicit protocol or credential boundary.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SecretString {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("[redacted]")
+    }
+}
+
+impl fmt::Display for SecretString {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("[redacted]")
     }
 }
 
