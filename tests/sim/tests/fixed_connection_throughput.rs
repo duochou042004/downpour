@@ -87,10 +87,11 @@ impl TransferProtocol for SimulatedOrigin {
         }
         let (start, end) = requested_window(request.range, self.body.len());
 
-        // Deliberately capped PROVE scaffold: every request consumes the whole representation's
-        // service time, so four connections cannot beat one. BUILD replaces this with an
-        // independent byte-time per request.
-        tokio::time::sleep(Duration::from_millis(LENGTH)).await;
+        let delivered = u64::try_from(end - start).unwrap();
+        // One virtual millisecond per byte, independently for every HTTP/1.1 connection. There
+        // is deliberately no aggregate server budget: four disjoint 16-byte requests therefore
+        // finish together in 16 ms, while one 64-byte request takes 64 ms.
+        tokio::time::sleep(Duration::from_millis(delivered)).await;
         {
             let mut state = self.state.lock().unwrap();
             let now = tokio::time::Instant::now();
@@ -103,7 +104,6 @@ impl TransferProtocol for SimulatedOrigin {
             source,
         })?;
 
-        let delivered = u64::try_from(end - start).unwrap();
         Ok(RangeOutcome {
             bytes_delivered: delivered,
             status: 206,

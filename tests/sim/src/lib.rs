@@ -1,6 +1,6 @@
-//! Deterministic simulation of the boundaries a crash can fall on.
+//! Deterministic simulation support for storage crash boundaries.
 //!
-//! This crate exists for one claim: **after a crash at any point in I-1's ordering, the bytes we
+//! This module exists for one claim: **after a crash at any point in I-1's ordering, the bytes we
 //! go on to claim are the bytes we actually have.** That ordering is
 //!
 //! ```text

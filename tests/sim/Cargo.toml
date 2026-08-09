@@ -1,6 +1,6 @@
 [package]
 name = "downpour-sim"
-description = "Deterministic simulation of crash and failure boundaries. Test-only; never compiled into a release binary."
+description = "Deterministic simulation of network, crash, and failure boundaries. Test-only; never compiled into a release binary."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

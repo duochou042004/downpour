@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T17:40:34Z",
+  "updated_at": "2026-08-09T17:45:15Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1012,8 +1012,8 @@
         {
           "id": "S3-C1",
           "text": "N connections give measurably higher throughput on an uncapped server",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "tests/sim/tests/fixed_connection_throughput.rs::four_independent_connections_beat_one_by_an_explicit_margin. Against the same 64-byte representation and independent one-byte-per-millisecond connection budgets, the real engine path takes exactly 64 ms with one request and 16 ms with four concurrent disjoint requests, a 4x wire-time improvement and twice the required explicit margin. Full-representation and constant-latency mutations, one-task launch, erased concurrency, zeroed storage, and a zero-duration oracle each turn the named proof red.",
           "invariants": []
         },
         {
@@ -1123,14 +1123,14 @@
         {
           "id": "S3-T5",
           "title": "Prove N fixed connections improve throughput on an uncapped origin",
-          "status": "in_progress",
-          "proof": null,
+          "status": "done",
+          "proof": "tests/sim/tests/fixed_connection_throughput.rs::four_independent_connections_beat_one_by_an_explicit_margin",
           "files": [
             "tests/sim/",
             "crates/downpour-engine/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "PROVE is behaviorally red. The deterministic origin scaffold deliberately charges every request the whole 64-byte representation's 64 ms service time, so one and four connections both take 64 ms. tests/sim/tests/fixed_connection_throughput.rs::four_independent_connections_beat_one_by_an_explicit_margin first proves the same byte-exact representation, exactly one versus four requests, and maximum active counts one versus four, then fails because four connections were required to finish the wire window in 16 ms and observed 64 ms. The first attempted oracle measured whole-pool elapsed and observed 6 seconds because Tokio virtual time advanced the two-second flush ticker while the real writer actor answered; that run was rejected as cross-runtime scheduling rather than throughput evidence. The corrected oracle measures first request entry through last simulated byte-time completion before storage backpressure. BUILD must replace only the scaffold's aggregate time with independent per-request byte time, then mutation-check byte proportionality, concurrency, the explicit margin, and byte equality.",
+          "notes": "PROVE was isolated in commit c4b1a46. The deliberately capped origin reached one versus four maximum-active requests and byte-exact completion, then failed because both wire windows were 64 ms instead of four connections taking 16 ms. An earlier whole-pool elapsed oracle observed 6 seconds because paused Tokio time advanced the two-second flush ticker while the real writer actor replied; that run was rejected and the oracle was corrected to measure first origin entry through last simulated byte-time completion before storage backpressure. BUILD changes only the simulation capacity model to one virtual millisecond per byte independently for every request. The real SegmentAllocator, FixedWorkerPool, WriterService and durable receipts run in both comparisons. The same 64 bytes take exactly 64 ms through one request with maximum active one and 16 ms through four disjoint requests with maximum active four, a 4x improvement and stronger than the asserted 2x margin. Six mutations went red and were restored with touched rebuilds: whole-representation time charged per request, constant 16 ms latency, erased maximum-active tracking, launching one initial engine task, zeroing durable storage writes, and recording a zero-duration wire window. The proof passed 20 consecutive runs. Final exact gates: workspace 305/305 with 3 skipped, doctests 7/7, release simulation 9/9. No correctness invariant changes: the proof exercises existing I-1/I-2 behavior but adds only a deterministic capacity model and timing evidence. S3-C1 is met; current_stage remains S3.",
           "invariants": []
         },
         {
@@ -3535,6 +3535,22 @@
         "tests/sim/tests/fixed_connection_throughput.rs"
       ],
       "left_in_progress": "S3-T5 remains in progress at BUILD. Commit the red proof, then make the simulated uncapped origin charge each request only for its own byte range, preserving the same real engine path. Mutation-check range-size proportionality, actual four-way concurrency, the explicit improvement threshold and byte-exact equality before claiming S3-C1."
+    },
+    {
+      "at": "2026-08-09T17:45:15Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Completed S3-T5 and met S3-C1 with deterministic virtual wire time. The proof runs the real allocator, fixed worker pool, writer actor and durable acknowledgements against the same 64-byte representation. An uncapped origin gives every request an independent one-byte-per-millisecond budget: one connection issues one request, reaches maximum active one and takes exactly 64 ms; four connections issue four disjoint requests, reach maximum active four and finish together in exactly 16 ms. Both outputs are byte-identical. Six valid mutations made the named proof red and were restored with touched rebuilds, covering aggregate or constant capacity, missing engine concurrency, false concurrency observation, broken storage, and a vacuous timing oracle. The proof passed 20 consecutive runs. The initial whole-pool oracle that measured a 6-second flush-ticker artifact was rejected rather than counted. Exact final gates: workspace 305/305 with 3 skipped, doctests 7/7, release simulation 9/9.",
+      "tasks_touched": [
+        "S3-T5"
+      ],
+      "files_touched": [
+        "state/progress.json",
+        "tests/sim/Cargo.toml",
+        "tests/sim/src/lib.rs",
+        "tests/sim/tests/fixed_connection_throughput.rs"
+      ],
+      "left_in_progress": "S3 is 5/15 tasks and 2/5 exit criteria. current_stage remains S3. Next is S3-T6 PROVE: deterministic worker death and interleaving schedules must each reach death, reclaim, split and out-of-order completion, assert exclusive ownership at every event, and finish byte-for-byte. It must include T4's queued-after-sync cancellation schedule."
     }
   ],
   "metrics": {
