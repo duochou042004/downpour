@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T17:51:21Z",
+  "updated_at": "2026-08-09T17:56:08Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1137,13 +1137,13 @@
           "id": "S3-T6",
           "title": "Survive worker death and adversarial interleavings without overlapping ownership or writes",
           "status": "in_progress",
-          "proof": "tests/sim/tests/worker_death_interleaving.rs::worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership (deliberately red before BUILD)",
+          "proof": "tests/sim/tests/worker_death_interleaving.rs::{worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership,timeout_and_truncation_resume_only_the_unwritten_suffix,repeated_transport_death_exhausts_one_bounded_origin_budget,protocol_errors_are_fatal_without_reclaim_retry} (three positive proofs deliberately red before BUILD)",
           "files": [
             "tests/sim/",
             "crates/downpour-engine/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "PROVE is isolated before BUILD. The deterministic simulation runs the actual allocator, fixed pool, writer actor and durable acknowledgements across 16 seeded schedules. Its independent protocol-lifetime oracle tracks temporal overlap rather than inferring ownership from the canonical map. Before demanding recovery, the red proof establishes that all three initial grants were concurrently live, worker 1 accepted 24-31 and then hit the injected connection reset, and that prefix crossed the durability fence. It then fails behaviorally because the current pool treats the retryable transport death as fatal. The green proof must reclaim only 32-47, split later active work, observe out-of-order durable completions, preserve exact bytes and finish with one Complete interval. T4's distinct queued-after-sync cancellation schedule is still required before this task can close.",
+          "notes": "PROVE is isolated before BUILD. The deterministic simulation runs the actual allocator, fixed pool, writer actor and durable acknowledgements across 16 seeded schedules. Its independent protocol-lifetime oracle tracks temporal overlap rather than inferring ownership from the canonical map. Before demanding recovery, the first red proof establishes that all three initial grants were concurrently live, worker 1 accepted 24-31 and then hit the injected connection reset, and that prefix crossed the durability fence. It then fails behaviorally because the current pool treats the retryable transport death as fatal. Separate red proofs require timeout and truncated-body failures to resume at exactly the first unwritten byte and require repeated transport death to stop after the default origin-wide budget of five retries (six requests). A protocol-error control already passes with exactly one attempt, pinning the only-if direction against retry-everything. The green proof must reclaim only 32-47, split later active work, observe out-of-order durable completions, preserve exact bytes and finish with one Complete interval. T4's distinct queued-after-sync cancellation schedule is still required before this task can close.",
           "invariants": [
             "I-1",
             "I-2",
@@ -3565,6 +3565,20 @@
         "tests/sim/tests/worker_death_interleaving.rs"
       ],
       "left_in_progress": "S3-T6 remains in progress at BUILD. Commit this behavioral red proof, then add bounded recovery for retryable Transport, Timeout and TruncatedBody failures while preserving fatal handling for protocol contradictions and sink/storage errors. The task cannot close until the separate queued-after-sync cancellation interleaving is proven and every claimed direction is mutation-checked."
+    },
+    {
+      "at": "2026-08-09T17:56:08Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Expanded S3-T6's red proof before implementing the recovery policy it requires. A table-driven origin now accepts three bytes and injects either Timeout or TruncatedBody; both cases must retry only 3-7 and currently fail on the first error. An always-resetting origin must consume the default origin-wide budget exactly—one initial attempt plus five retries—and currently fails after one request. A protocol error control already passes and records exactly one request, so broad retry classification is independently forbidden. The targeted binary compiles: three positive recovery tests fail behaviorally and the fatal-only control passes.",
+      "tasks_touched": [
+        "S3-T6"
+      ],
+      "files_touched": [
+        "state/progress.json",
+        "tests/sim/tests/worker_death_interleaving.rs"
+      ],
+      "left_in_progress": "S3-T6 remains at BUILD with two red-proof commits. Implement origin-wide bounded backoff and cancellation-before-reclaim, then make these proofs green. The queued-after-sync cancellation proof and mutation audit remain mandatory before completion."
     }
   ],
   "metrics": {

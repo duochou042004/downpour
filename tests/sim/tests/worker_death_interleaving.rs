@@ -8,17 +8,17 @@
 use std::future::pending;
 use std::io;
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use downpour_engine::SegmentAllocator;
-use downpour_engine::worker_pool::FixedWorkerPool;
+use downpour_engine::worker_pool::{FixedWorkerPool, PoolError};
 use downpour_engine::writer_service::WriterService;
 use downpour_http::{
     BackendCapabilities, ProbeError, ProbeRequest, RangeOutcome, RangeRequest, RangeSink,
-    TransferError, TransferProtocol,
+    RetryPolicy, TransferError, TransferProtocol,
 };
 use downpour_intervals::IntervalState;
 use downpour_storage::journal::{FramedRecord, JournalRecord};
@@ -430,4 +430,223 @@ async fn worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership() 
             "seed {seed}"
         );
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum InjectedFailure {
+    Transport,
+    Timeout,
+    TruncatedBody,
+    ErrorPage,
+}
+
+#[derive(Debug)]
+struct RetryOrigin {
+    body: Arc<Vec<u8>>,
+    remote: RemoteObject,
+    failure: InjectedFailure,
+    failures_remaining: AtomicUsize,
+    accepted_before_failure: usize,
+    requests: Mutex<Vec<Range<u64>>>,
+}
+
+impl RetryOrigin {
+    fn new(
+        body: Vec<u8>,
+        failure: InjectedFailure,
+        failures: usize,
+        accepted_before_failure: usize,
+    ) -> Self {
+        Self {
+            remote: proven_remote(u64::try_from(body.len()).unwrap()),
+            body: Arc::new(body),
+            failure,
+            failures_remaining: AtomicUsize::new(failures),
+            accepted_before_failure,
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn requests(&self) -> Vec<Range<u64>> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl TransferProtocol for RetryOrigin {
+    async fn probe(&self, _request: ProbeRequest) -> Result<RemoteObject, ProbeError> {
+        Ok(self.remote.clone())
+    }
+
+    async fn fetch_range(
+        &self,
+        request: RangeRequest,
+        sink: &mut RangeSink,
+    ) -> Result<RangeOutcome, TransferError> {
+        let range = requested_range(request.range, self.body.len());
+        self.requests.lock().unwrap().push(range.clone());
+        let should_fail = self
+            .failures_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok();
+
+        if should_fail {
+            let accepted = self
+                .accepted_before_failure
+                .min(usize::try_from(range.end - range.start).unwrap());
+            if accepted > 0 {
+                let start = usize::try_from(range.start).unwrap();
+                sink.accept(&self.body[start..start + accepted])
+                    .await
+                    .map_err(|source| TransferError::Sink {
+                        url: request.url.clone(),
+                        source,
+                    })?;
+            }
+            return Err(match self.failure {
+                InjectedFailure::Transport => TransferError::Transport {
+                    url: request.url,
+                    source: Box::new(io::Error::new(
+                        io::ErrorKind::ConnectionReset,
+                        "repeatable connection reset",
+                    )),
+                },
+                InjectedFailure::Timeout => TransferError::Timeout {
+                    url: request.url,
+                    bytes_delivered: u64::try_from(accepted).unwrap(),
+                },
+                InjectedFailure::TruncatedBody => TransferError::TruncatedBody {
+                    url: request.url,
+                    expected: range.end - range.start,
+                    delivered: u64::try_from(accepted).unwrap(),
+                },
+                InjectedFailure::ErrorPage => TransferError::LooksLikeAnErrorPage {
+                    url: request.url,
+                    declared_type: "application/octet-stream".to_owned(),
+                },
+            });
+        }
+
+        let start = usize::try_from(range.start).unwrap();
+        let end = usize::try_from(range.end).unwrap();
+        sink.accept(&self.body[start..end])
+            .await
+            .map_err(|source| TransferError::Sink {
+                url: request.url.clone(),
+                source,
+            })?;
+        Ok(RangeOutcome {
+            bytes_delivered: range.end - range.start,
+            status: 206,
+            content_range: Some(ContentRange::Bytes {
+                first: range.start,
+                last: range.end - 1,
+                complete_length: Some(u64::try_from(self.body.len()).unwrap()),
+            }),
+            protocol: NegotiatedProtocol::Http11,
+            truncated: false,
+        })
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            name: "sim-retry-policy",
+            protocols: vec![NegotiatedProtocol::Http11],
+            multiplexes_streams: false,
+            supports_ranges: true,
+        }
+    }
+}
+
+fn memory_writer(body_len: usize) -> (WriterService, Arc<Mutex<Vec<u8>>>) {
+    let stored = Arc::new(Mutex::new(vec![0; body_len]));
+    let total_length = u64::try_from(body_len).unwrap();
+    let durable = DurableWriter::try_new(
+        MemoryData {
+            bytes: Arc::clone(&stored),
+        },
+        MemoryJournal {
+            total_length,
+            completions: Arc::new(Mutex::new(Vec::new())),
+        },
+        0,
+    )
+    .unwrap();
+    let allocator = SegmentAllocator::new(total_length, 1).unwrap();
+    (WriterService::start(durable, allocator, 8).unwrap(), stored)
+}
+
+#[tokio::test]
+async fn timeout_and_truncation_resume_only_the_unwritten_suffix() {
+    let body = (0_u8..8).collect::<Vec<_>>();
+    for failure in [InjectedFailure::Timeout, InjectedFailure::TruncatedBody] {
+        let origin = Arc::new(RetryOrigin::new(body.clone(), failure, 1, 3));
+        let pool = FixedWorkerPool::new(Arc::clone(&origin), 1).unwrap();
+        let (writer, stored) = memory_writer(body.len());
+
+        let report = pool
+            .execute_segmented(&origin.remote, &writer)
+            .await
+            .unwrap_or_else(|error| panic!("{failure:?} was not recovered: {error}"));
+        assert_eq!(origin.requests(), vec![0..8, 3..8], "{failure:?}");
+        assert_eq!(
+            report
+                .workers()
+                .iter()
+                .map(|worker| worker.bytes())
+                .sum::<u64>(),
+            8,
+            "{failure:?}"
+        );
+        assert_eq!(*stored.lock().unwrap(), body, "{failure:?}");
+        let snapshot = writer.shutdown().await.unwrap();
+        assert_eq!(snapshot.allocator().intervals().len(), 1, "{failure:?}");
+        assert_eq!(
+            snapshot.allocator().intervals()[0].state(),
+            &IntervalState::Complete,
+            "{failure:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn repeated_transport_death_exhausts_one_bounded_origin_budget() {
+    let body = (0_u8..8).collect::<Vec<_>>();
+    let origin = Arc::new(RetryOrigin::new(
+        body.clone(),
+        InjectedFailure::Transport,
+        usize::MAX,
+        0,
+    ));
+    let pool = FixedWorkerPool::new(Arc::clone(&origin), 1).unwrap();
+    let (writer, _stored) = memory_writer(body.len());
+
+    let result = pool.execute_segmented(&origin.remote, &writer).await;
+    assert!(matches!(result, Err(PoolError::Transfer(_))));
+    assert_eq!(
+        origin.requests().len(),
+        usize::try_from(RetryPolicy::default().max_retries()).unwrap() + 1,
+        "the per-origin retry budget was not consumed exactly once per failed attempt"
+    );
+    drop(writer);
+}
+
+#[tokio::test]
+async fn protocol_errors_are_fatal_without_reclaim_retry() {
+    let body = (0_u8..8).collect::<Vec<_>>();
+    let origin = Arc::new(RetryOrigin::new(
+        body.clone(),
+        InjectedFailure::ErrorPage,
+        usize::MAX,
+        0,
+    ));
+    let pool = FixedWorkerPool::new(Arc::clone(&origin), 1).unwrap();
+    let (writer, _stored) = memory_writer(body.len());
+
+    let result = pool.execute_segmented(&origin.remote, &writer).await;
+    assert!(matches!(result, Err(PoolError::Transfer(_))));
+    assert_eq!(origin.requests(), vec![0..8]);
+    drop(writer);
 }
