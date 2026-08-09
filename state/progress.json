@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T17:17:46Z",
+  "updated_at": "2026-08-09T17:21:36Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1114,7 +1114,7 @@
             "crates/downpour-engine/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "PROVE began with the observer itself so the later engine proof cannot rely on unverified handshake evidence. Commit 337e9ba compiled and failed behaviorally at the first checkpoint because the inert scaffold reported zero held requests. The observer now assigns one nonzero stable ID per accepted socket, counts total/current/maximum connections, decrements current count through a serving-task lifetime guard, records the connection ID on every HTTP/1.1 and h2 request, counts requests by connection, and offers a deterministic one-shot gate keyed by range start. The reference-client proof holds one request, accepts a second idle socket, observes exactly two live connections, proves the drop decrement, repeats the gated range without blocking, and sends two requests over one keep-alive connection. Nine valid mutations went red and were restored with touched rebuilds: missing range match, repeatable gate, constant IDs, missing accepted count, missing active increment, missing active decrement, missing maximum tracking, unfiltered per-connection counts, and IDs that changed per request. An initial per-request mutation did not compile and was rejected before a behaviorally valid replacement was run. Exact observer gates: pathology_server 30/30 and strict corpus clippy clean. Next, add the separate red engine proof: a fast worker must finish, receive a new split, and send it over an existing keep-alive connection; rebuilding the client or forcing Connection: close must turn it red.",
+          "notes": "PROVE began with the observer itself so the later engine proof cannot rely on unverified handshake evidence. Commit 337e9ba compiled and failed behaviorally at the first checkpoint because the inert scaffold reported zero held requests. The observer now assigns one nonzero stable ID per accepted socket, counts total/current/maximum connections, decrements current count through a serving-task lifetime guard, records the connection ID on every HTTP/1.1 and h2 request, counts requests by connection, and offers a deterministic one-shot gate keyed by range start. The reference-client proof holds one request, accepts a second idle socket, observes exactly two live connections, proves the drop decrement, repeats the gated range without blocking, and sends two requests over one keep-alive connection. Nine valid mutations went red and were restored with touched rebuilds: missing range match, repeatable gate, constant IDs, missing accepted count, missing active increment, missing active decrement, missing maximum tracking, unfiltered per-connection counts, and IDs that changed per request. An initial per-request mutation did not compile and was rejected before a behaviorally valid replacement was run. Exact observer gates: pathology_server 30/30 and strict corpus clippy clean. The separate engine proof is now behaviorally red: against the real H1H2Backend and pathology server, it holds initial range 32-63, observes range 0-31 become durably Complete and exactly two accepted handshakes, then requires stable worker 0 to receive 48-63 before the peer is released, on the same connection ID and without a third handshake. The current fixed pool times out at that allocation checkpoint because it retires the completed worker. The reached-state assertions passed first, so the red is not a no-op or an unreachable setup.",
           "invariants": []
         },
         {
@@ -3484,6 +3484,22 @@
         "tests/corpus/tests/pathology_server.rs"
       ],
       "left_in_progress": "S3-T4 remains in progress and no exit criterion is claimed. Commit the green observer increment, then add a separate behaviorally red engine proof requiring one stable worker to complete, receive a split from a live peer, and issue the new range through its existing HTTP/1.1 connection as shown by the trusted connection IDs and handshake count."
+    },
+    {
+      "at": "2026-08-09T17:21:36Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Prepared S3-T4's separate deliberately failing engine proof using the already mutation-checked corpus observer. The production H1H2Backend probes a 64-byte local HTTP/1.1 origin, then the real writer actor and two-worker pool receive 0-31 and 32-63. The server deterministically holds 32-63. Before testing the missing behavior, the proof observes that hold, waits for 0-31 to become durably Complete in the sole allocator, confirms the exact initial requests, and confirms exactly two accepted handshakes. It then requires worker 0 to receive split 48-63 before the peer is released, with the same connection ID as 0-31 and no extra handshake. The test compiles and fails behaviorally at that split checkpoint: the current pool retires completed workers, so no 48-63 request arrives. This establishes reachability before reporting the evidence gap.",
+      "tasks_touched": [
+        "S3-T4"
+      ],
+      "files_touched": [
+        "Cargo.lock",
+        "crates/downpour-engine/Cargo.toml",
+        "crates/downpour-engine/tests/worker_pool.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3-T4 remains in progress at BUILD. Commit the red proof, then implement safe dynamic reassignment: stop the source fetch before splitting its live grant, fence queued writes through the actor, issue the right half to the idle worker, restart the shortened source, and preserve the backend/client across worker grants so the named connection-ID and handshake assertions turn green. No S3 exit criterion is met yet."
     }
   ],
   "metrics": {

@@ -485,6 +485,7 @@ name = "downpour-engine"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "downpour-corpus",
  "downpour-http",
  "downpour-intervals",
  "downpour-storage",

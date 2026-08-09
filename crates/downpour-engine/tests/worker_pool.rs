@@ -5,13 +5,16 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use downpour_corpus::content::Content;
+use downpour_corpus::server::{PathologyServer, RecordedRequest, ServerSpec};
 use downpour_engine::SegmentAllocator;
 use downpour_engine::worker_pool::{FixedWorkerPool, PoolError, PoolPlan, SingleStreamReason};
 use downpour_engine::writer_service::WriterService;
 use downpour_http::{
-    BackendCapabilities, ProbeError, ProbeRequest, RangeOutcome, RangeRequest, RangeSink,
-    SinkError, SinkTarget, TransferError, TransferProtocol,
+    BackendCapabilities, H1H2Backend, ProbeError, ProbeRequest, RangeOutcome, RangeRequest,
+    RangeSink, SinkError, SinkTarget, TransferError, TransferProtocol, TransportMode,
 };
+use downpour_intervals::{IntervalState, WorkerId};
 use downpour_storage::journal::FramedRecord;
 use downpour_storage::writer::{DurableData, DurableJournal, DurableWriter, WriterError};
 use downpour_types::{
@@ -533,4 +536,120 @@ async fn a_slow_open_range_flushes_at_the_exact_journal_interval() {
         Err(_) => panic!("transfer retained the writer control handle"),
     };
     writer.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_finished_worker_reuses_its_http11_connection_for_a_new_split() {
+    const LENGTH: u64 = 64;
+    let content = Content::new(73, LENGTH);
+    let server = PathologyServer::start_holding_first_range(
+        ServerSpec {
+            content,
+            ..ServerSpec::default()
+        },
+        32,
+    )
+    .await
+    .unwrap();
+    let backend = Arc::new(H1H2Backend::new(TransportMode::Http1Only).unwrap());
+    let remote = backend
+        .probe(ProbeRequest::new(server.entry_url().parse().unwrap()))
+        .await
+        .unwrap();
+    let pool = FixedWorkerPool::new(Arc::clone(&backend), 2).unwrap();
+    let (writer, stored, _) = writer_service(LENGTH, 16);
+    let writer = Arc::new(writer);
+    let transfer_writer = Arc::clone(&writer);
+    let mut transfer = tokio::spawn(async move {
+        pool.execute_segmented(&remote, transfer_writer.as_ref())
+            .await
+    });
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        server.wait_until_range_held(),
+    )
+    .await
+    .expect("the slow initial grant must reach the server gate");
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let snapshot = writer.snapshot().await.unwrap();
+            if snapshot.allocator().intervals().iter().any(|interval| {
+                interval.start() == 0
+                    && interval.end() == 32
+                    && interval.state() == &IntervalState::Complete
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("worker 0 must durably finish its initial grant while worker 1 remains held");
+
+    let accepted_before_reassignment = server.accepted_connection_count();
+    assert_eq!(accepted_before_reassignment, 2);
+    let initial_fast = request_with_range(&server.requests(), "bytes=0-31")
+        .expect("worker 0's initial exact range was recorded");
+    let reassigned = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if let Some(request) = request_with_range(&server.requests(), "bytes=48-63") {
+                break request;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the finished worker must receive a split before the slow peer is released");
+    assert_eq!(
+        reassigned.connection_id(),
+        initial_fast.connection_id(),
+        "the finished worker's new split must use its existing keep-alive connection"
+    );
+    assert_eq!(
+        server.accepted_connection_count(),
+        accepted_before_reassignment,
+        "issuing the split must not perform another handshake"
+    );
+
+    server.release_held_range();
+    let report = tokio::time::timeout(std::time::Duration::from_secs(2), &mut transfer)
+        .await
+        .expect("the pool must finish after the controlled peer is released")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        report
+            .workers()
+            .iter()
+            .filter(|record| record.worker() == WorkerId::new(0))
+            .count(),
+        2,
+        "stable worker 0 must have completed its initial grant and the reassigned split"
+    );
+    assert_eq!(
+        report
+            .workers()
+            .iter()
+            .map(|record| record.bytes())
+            .sum::<u64>(),
+        LENGTH
+    );
+    assert_eq!(*stored.lock().unwrap(), content.range(0, LENGTH));
+    assert_eq!(server.held_range_count(), 1);
+
+    let writer = Arc::try_unwrap(writer).unwrap_or_else(|_| panic!("transfer retained writer"));
+    let snapshot = writer.shutdown().await.unwrap();
+    assert_eq!(snapshot.allocator().intervals().len(), 1);
+    assert_eq!(
+        snapshot.allocator().intervals()[0].state(),
+        &IntervalState::Complete
+    );
+}
+
+fn request_with_range(requests: &[RecordedRequest], range: &str) -> Option<RecordedRequest> {
+    requests
+        .iter()
+        .find(|request| request.header("range").as_deref() == Some(range))
+        .cloned()
 }

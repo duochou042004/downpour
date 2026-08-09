@@ -19,6 +19,7 @@ tokio = { workspace = true, features = ["rt", "sync", "time"] }
 url = { workspace = true }
 
 [dev-dependencies]
+downpour-corpus = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
 
