@@ -22,6 +22,7 @@ downpour-daemon = { path = "crates/downpour-daemon" }
 downpour-engine = { path = "crates/downpour-engine" }
 downpour-sim = { path = "tests/sim" }
 downpour-http = { path = "crates/downpour-http" }
+downpour-ipc = { path = "crates/downpour-ipc" }
 downpour-intervals = { path = "crates/downpour-intervals" }
 downpour-storage = { path = "crates/downpour-storage" }
 downpour-types = { path = "crates/downpour-types" }
@@ -56,6 +57,8 @@ reqwest = { version = "0.13.4", default-features = false, features = [
 ] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled-windows"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+getrandom = "0.4.3"
 # ADR-0017. The server states a SHA-2 digest under RFC 9530, so verifying it means computing that
 # same algorithm; blake3 is ours, for per-block journal evidence, and cannot stand in for it.
 sha2 = "0.11.0"

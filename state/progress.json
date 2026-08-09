@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T18:17:11Z",
+  "updated_at": "2026-08-09T18:22:20Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1154,13 +1154,13 @@
           "id": "S3-T7",
           "title": "Create the versioned authenticated IPC foundation needed by the S3 daemon",
           "status": "in_progress",
-          "proof": null,
+          "proof": "crates/downpour-ipc/tests/contract.rs::{every_s3_request_result_and_error_round_trips_with_its_version,oversized_length_is_rejected_after_only_the_four_byte_header,hello_authenticates_once_then_each_s3_command_reaches_the_typed_dispatcher,malformed_unauthenticated_and_newer_messages_never_dispatch,generated_tokens_are_distinct_and_all_formatting_is_redacted} (deliberately red before BUILD)",
           "files": [
             "crates/downpour-ipc/",
             "crates/downpour-daemon/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "DESIGN is recorded first in proposed ADR-0020 because the normative IPC spec leaves byte framing and session-token provisioning open. The decision uses a four-byte little-endian length plus at most 1 MiB of strict typed JSON, a hello-first version/auth state machine, interprocess 2.4.3 local sockets, explicit mode 0600/current-user SID endpoint restrictions, and a redacted 256-bit OS-random per-daemon token. The S3 schema is limited to hello, download.add, download.get, download.resume and system.status. Next is PROVE: round-trip every request/result/error shape; reject oversized length before body allocation; reject malformed, unknown-field, pre-hello, bad-token and newer-version input before a counting dispatcher; then prove native Unix permissions and Windows DACL behavior at the platform layer.",
+          "notes": "DESIGN is recorded first in proposed ADR-0020 because the normative IPC spec leaves byte framing and session-token provisioning open. The decision uses a four-byte little-endian length plus at most 1 MiB of strict typed JSON, a hello-first version/auth state machine, interprocess 2.4.3 local sockets, explicit mode 0600/current-user SID endpoint restrictions, and a redacted 256-bit OS-random per-daemon token. The S3 schema is limited to hello, download.add, download.get, download.resume and system.status. PROVE now has five compiling behavioral failures against deliberate Unavailable scaffolds: every S3 request/result/error shape must round-trip with its version; an oversized declaration must consume only the four-byte header and leave the first body byte unread; valid hello must be internal then all four commands must reach a counting typed dispatcher; malformed JSON, unknown fields, pre-hello commands, bad tokens and newer versions must return their exact failure class with zero dispatch calls; generated 256-bit tokens must differ while all formatting stays redacted. All 5 tests are red before BUILD. Platform endpoint permissions remain a separate proof increment after this codec/session layer is green.",
           "invariants": [
             "I-11",
             "I-12",
@@ -3610,6 +3610,22 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T7 is in progress at PROVE. Commit the design, then scaffold only enough API for behaviorally failing codec, handshake, dispatch-side-effect and platform-permission proofs. Do not implement daemon transfer ownership or CLI migration; those remain S3-T8."
+    },
+    {
+      "at": "2026-08-09T18:22:20Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Prepared S3-T7's first deliberately failing implementation proof. Added the downpour-ipc crate with typed S3 request/result/error shapes for hello, add, get, resume and status, but left its codec, session state machine and token generator explicitly unavailable. Five integration tests compile and all five fail behaviorally: typed request/response round-trip, the one-MiB pre-allocation frame bound, valid hello followed by four typed dispatches, exact malformed/pre-auth/bad-token/newer-version refusal with zero handler calls, and distinct OS-random tokens whose formatting is redacted. The malformed-input proof does not accept a generic error stub: every case names the required error class. The oversized proof sends a body sentinel after the four-byte header so later mutation work can prove the decoder did not consume or allocate the declared body.",
+      "tasks_touched": [
+        "S3-T7"
+      ],
+      "files_touched": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "crates/downpour-ipc/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3-T7 remains in progress at BUILD. Commit these five red proofs, implement only the bounded strict codec, hello-first session and token generator, then mutation-check them before starting a separate red/green platform transport increment."
     }
   ],
   "metrics": {
