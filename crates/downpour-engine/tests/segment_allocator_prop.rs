@@ -1,0 +1,293 @@
+//! Semantic proofs for the Stage 3 segment allocator and invariant I-2.
+//!
+//! Canonical intervals are necessary but not sufficient: replacing one owner with another keeps
+//! the partition disjoint while two workers still believe they own the bytes. These tests compute
+//! permission and the exact scheduling decision independently from the allocator before each call.
+
+use std::ops::Range;
+
+use downpour_engine::{Allocation, AllocatorError, Grant, SegmentAllocator};
+use downpour_intervals::{Interval, IntervalState, WorkerId};
+use proptest::prelude::*;
+use proptest::test_runner::TestCaseResult;
+
+const TOTAL: u64 = 64;
+const MIN_SPLIT: u64 = 8;
+
+#[derive(Clone, Debug)]
+enum Operation {
+    Allocate(WorkerId),
+    Complete { worker: WorkerId, range: Range<u64> },
+    Abandon(WorkerId),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExpectedGrant {
+    worker: WorkerId,
+    range: Range<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExpectedAllocation {
+    grant: ExpectedGrant,
+    shortened: Option<ExpectedGrant>,
+}
+
+fn arb_worker() -> impl Strategy<Value = WorkerId> {
+    (0_u64..8).prop_map(WorkerId::new)
+}
+
+fn arb_range() -> impl Strategy<Value = Range<u64>> {
+    (0_u64..=TOTAL, 0_u64..=TOTAL).prop_map(|(start, end)| start..end)
+}
+
+fn arb_operation() -> impl Strategy<Value = Operation> {
+    prop_oneof![
+        arb_worker().prop_map(Operation::Allocate),
+        (arb_worker(), arb_range())
+            .prop_map(|(worker, range)| Operation::Complete { worker, range }),
+        arb_worker().prop_map(Operation::Abandon),
+    ]
+}
+
+fn worker_is_active(intervals: &[Interval], worker: WorkerId) -> bool {
+    intervals.iter().any(
+        |interval| matches!(interval.state(), IntervalState::InProgress { worker: owner } if *owner == worker),
+    )
+}
+
+fn preferred(
+    intervals: &[Interval],
+    predicate: impl Fn(&IntervalState) -> bool,
+) -> Option<&Interval> {
+    intervals
+        .iter()
+        .filter(|interval| predicate(interval.state()))
+        .max_by(|left, right| {
+            left.len()
+                .cmp(&right.len())
+                .then_with(|| right.start().cmp(&left.start()))
+        })
+}
+
+/// Independent statement of §4.2's S3 policy.
+///
+/// It reads only the public partition and does not call an allocator helper. That is what makes
+/// acceptance falsifiable in the only-if direction rather than inferred from the result itself.
+fn expected_allocation(
+    allocator: &SegmentAllocator,
+    worker: WorkerId,
+) -> Result<Option<ExpectedAllocation>, AllocatorError> {
+    let intervals = allocator.intervals();
+    if worker_is_active(intervals, worker) {
+        return Err(AllocatorError::WorkerAlreadyActive { worker });
+    }
+
+    if let Some(pending) = preferred(intervals, |state| matches!(state, IntervalState::Pending)) {
+        return Ok(Some(ExpectedAllocation {
+            grant: ExpectedGrant {
+                worker,
+                range: pending.start()..pending.end(),
+            },
+            shortened: None,
+        }));
+    }
+
+    let Some(source) = preferred(intervals, |state| {
+        matches!(state, IntervalState::InProgress { .. })
+    }) else {
+        return Ok(None);
+    };
+    let Some(required) = allocator.min_split_bytes().checked_mul(2) else {
+        return Ok(None);
+    };
+    if source.len() < required {
+        return Ok(None);
+    }
+    let IntervalState::InProgress {
+        worker: source_worker,
+    } = source.state()
+    else {
+        return Ok(None);
+    };
+    let split_at = source.start() + source.len() / 2;
+    Ok(Some(ExpectedAllocation {
+        grant: ExpectedGrant {
+            worker,
+            range: split_at..source.end(),
+        },
+        shortened: Some(ExpectedGrant {
+            worker: *source_worker,
+            range: source.start()..split_at,
+        }),
+    }))
+}
+
+fn actual_grant(grant: &Grant) -> ExpectedGrant {
+    ExpectedGrant {
+        worker: grant.worker(),
+        range: grant.range().clone(),
+    }
+}
+
+fn actual_allocation(allocation: &Allocation) -> ExpectedAllocation {
+    ExpectedAllocation {
+        grant: actual_grant(allocation.grant()),
+        shortened: allocation.shortened().map(actual_grant),
+    }
+}
+
+fn wholly_owned(intervals: &[Interval], range: &Range<u64>, worker: WorkerId) -> bool {
+    range.start < range.end
+        && range.end <= TOTAL
+        && intervals
+            .iter()
+            .filter(|interval| interval.start() < range.end && range.start < interval.end())
+            .all(|interval| *interval.state() == IntervalState::InProgress { worker })
+}
+
+fn assert_partition(intervals: &[Interval]) -> TestCaseResult {
+    let mut cursor = 0;
+    let mut previous = None;
+    for interval in intervals {
+        prop_assert_eq!(
+            interval.start(),
+            cursor,
+            "gap or overlap before {:?}",
+            interval
+        );
+        prop_assert!(interval.start() < interval.end());
+        if let Some(previous) = previous {
+            prop_assert_ne!(previous, interval.state());
+        }
+        cursor = interval.end();
+        previous = Some(interval.state());
+    }
+    prop_assert_eq!(cursor, TOTAL);
+    Ok(())
+}
+
+fn apply(allocator: &mut SegmentAllocator, operation: Operation) -> TestCaseResult {
+    let before = allocator.clone();
+    match operation {
+        Operation::Allocate(worker) => {
+            let expected = expected_allocation(&before, worker);
+            let actual = allocator.allocate(worker);
+            match (expected, actual) {
+                (Ok(expected), Ok(actual)) => {
+                    prop_assert_eq!(actual.as_ref().map(actual_allocation), expected);
+                }
+                (Err(expected), Err(actual)) => prop_assert_eq!(actual, expected),
+                (expected, actual) => prop_assert!(
+                    false,
+                    "allocation result disagreed with independent permission oracle: expected \
+                     {expected:?}, actual {actual:?}"
+                ),
+            }
+        }
+        Operation::Complete { worker, range } => {
+            let permitted = wholly_owned(before.intervals(), &range, worker);
+            let result = allocator.complete_durable(worker, range.clone());
+            prop_assert_eq!(
+                result.is_ok(),
+                permitted,
+                "completion acceptance disagreed with ownership before the call for {:?}",
+                range
+            );
+            if !permitted {
+                prop_assert_eq!(&*allocator, &before, "rejected completion mutated the map");
+            }
+        }
+        Operation::Abandon(worker) => {
+            let expected = before
+                .intervals()
+                .iter()
+                .filter_map(|interval| match interval.state() {
+                    IntervalState::InProgress { worker: owner } if *owner == worker => {
+                        Some(interval.len())
+                    }
+                    _ => None,
+                })
+                .sum::<u64>();
+            prop_assert_eq!(allocator.abandon(worker), expected);
+            prop_assert!(!worker_is_active(allocator.intervals(), worker));
+        }
+    }
+    assert_partition(allocator.intervals())
+}
+
+#[test]
+fn forced_sequence_reaches_split_death_reclaim_and_stale_completion() {
+    let first = WorkerId::new(1);
+    let second = WorkerId::new(2);
+    let replacement = WorkerId::new(3);
+    let mut allocator = SegmentAllocator::new(TOTAL, MIN_SPLIT).expect("valid allocator");
+
+    let initial = allocator
+        .allocate(first)
+        .expect("allocation is valid")
+        .expect("pending bytes exist");
+    assert_eq!(initial.grant().range(), &(0..TOTAL));
+
+    let split = allocator
+        .allocate(second)
+        .expect("allocation is valid")
+        .expect("the active grant is splittable");
+    assert_eq!(split.grant().range(), &(32..64));
+    assert_eq!(
+        split.shortened().map(Grant::range),
+        Some(&(0..32)),
+        "the original worker must learn its grant was shortened"
+    );
+
+    assert_eq!(allocator.abandon(first), 32, "worker death reclaimed bytes");
+    let reclaimed = allocator
+        .allocate(replacement)
+        .expect("allocation is valid")
+        .expect("reclaimed pending bytes exist");
+    assert_eq!(reclaimed.grant().range(), &(0..32));
+
+    let before = allocator.clone();
+    assert!(
+        allocator.complete_durable(first, 0..32).is_err(),
+        "a dead worker's stale completion must not bless its replacement's bytes"
+    );
+    assert_eq!(allocator, before, "stale completion mutated the map");
+}
+
+#[test]
+fn neither_half_may_fall_below_the_minimum_split_size() {
+    let mut allocator = SegmentAllocator::new(15, 8).expect("valid allocator");
+    assert!(
+        allocator
+            .allocate(WorkerId::new(1))
+            .expect("allocation is valid")
+            .is_some()
+    );
+    assert_eq!(
+        allocator
+            .allocate(WorkerId::new(2))
+            .expect("allocation is valid"),
+        None
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 10_000,
+        max_shrink_iters: 100_000,
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn every_decision_matches_the_semantic_oracle(
+        operations in proptest::collection::vec(arb_operation(), 0..100)
+    ) {
+        let mut allocator = SegmentAllocator::new(TOTAL, MIN_SPLIT)
+            .expect("the fixed test configuration is valid");
+        assert_partition(allocator.intervals())?;
+        for operation in operations {
+            apply(&mut allocator, operation)?;
+        }
+    }
+}

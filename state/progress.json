@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T15:45:53Z",
+  "updated_at": "2026-08-09T15:52:52Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1061,7 +1061,7 @@
             "crates/downpour-engine/"
           ],
           "blocked_by": null,
-          "notes": "PROVE step next: create the downpour-engine crate and commit a failing model-based allocator test before implementation. The oracle must assert accepted operations were semantically permitted, prove the exercised split/death states are reachable, and catch wrong-largest selection, disabled MIN_SPLIT_BYTES, stale ownership, and failed reclamation.",
+          "notes": "PROVE commit prepared. downpour-engine compiles and clippy is clean, while all three allocator proofs fail behaviorally against the no-grant scaffold: the forced sequence cannot obtain its initial grant, the minimum-split test cannot obtain its initial grant, and the 10000-case semantic oracle shrinks to Allocate(worker 0), expected [0,64), actual None. Next: commit this red proof, implement the smallest allocator policy, then mutation-check every guard and scheduling decision before marking the task done.",
           "invariants": [
             "I-2"
           ]
@@ -3311,6 +3311,24 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T1 is in progress at the PROVE step. Next: create the downpour-engine test target and commit a failing semantic allocator proof before adding allocator implementation. current_stage remains S3 and all five exit criteria remain unmet."
+    },
+    {
+      "at": "2026-08-09T15:52:52Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Prepared S3-T1's deliberately failing proof before allocator implementation. Added the downpour-engine crate with only the public allocator contract and a no-grant scaffold, then added an independent semantic oracle over arbitrary allocate, complete and abandon operations plus a forced sequence that necessarily reaches split, worker death, reclamation and stale completion. The first two runs exposed compile defects in the test itself and were rejected as evidence. After fixing those, cargo nextest ran three tests and all three failed for the intended missing behavior: no initial grant. The property shrank to one Allocate(worker 0), independently expected [0,64) and observed None. cargo clippy for every engine target is clean, so the red is behavioral rather than a build failure.",
+      "tasks_touched": [
+        "S3-T1"
+      ],
+      "files_touched": [
+        "Cargo.lock",
+        "crates/downpour-engine/Cargo.toml",
+        "crates/downpour-engine/src/lib.rs",
+        "crates/downpour-engine/tests/segment_allocator_prop.rs",
+        "crates/downpour-engine/tests/segment_allocator_prop.proptest-regressions",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3-T1 remains in progress. The failing proof is ready to commit; no allocator policy exists yet. After that red commit, implement largest pending, largest active half-split, busy-worker refusal, MIN_SPLIT_BYTES and reclaim, then mutation-verify each direction before changing task status."
     }
   ],
   "metrics": {

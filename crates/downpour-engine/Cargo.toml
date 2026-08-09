@@ -1,0 +1,19 @@
+[package]
+name = "downpour-engine"
+description = "Download scheduling, segment allocation, and worker supervision for Downpour."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+downpour-intervals = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
