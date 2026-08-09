@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T16:41:30Z",
+  "updated_at": "2026-08-09T16:43:59Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1094,7 +1094,7 @@
             "crates/downpour-http/"
           ],
           "blocked_by": "S3-T2",
-          "notes": "S3 uses a configured fixed worker count and records per-worker throughput; it does not adapt concurrency or use ETA splitting. Only proven range support with a known length may open multiple workers. Absent, unknown, or unaddressable range support must execute exactly one whole-representation stream. PROVE is behaviorally red: crates/downpour-engine/tests/worker_pool.rs compiles three tests and all three fail on the deliberate scaffold. Validated HTTP/1.1 evidence is wrongly planned as SingleStream, while segmented and fallback execution both return NotRunning. The proofs require an only-if planning table (protocol, backend capability, proof, known consistent length, signed local addressability), four concurrent exact disjoint ranges whose bytes become one Complete map, grant requests with no If-Range on a fresh transfer, per-worker byte/time records, and exactly one whole request plus one sync for absent range support. The worker path must also arrange the normative two-second writer flush tick; segment-end sync and the writer's eight-MiB threshold alone do not cover a slow long-lived segment.",
+          "notes": "S3 uses a configured fixed worker count and records per-worker throughput; it does not adapt concurrency or use ETA splitting. Only proven range support with a known length may open multiple workers. Absent, unknown, or unaddressable range support must execute exactly one whole-representation stream. PROVE is behaviorally red: crates/downpour-engine/tests/worker_pool.rs compiles four tests and all four fail on the deliberate scaffold. Validated HTTP/1.1 evidence is wrongly planned as SingleStream, while segmented and fallback execution return NotRunning. The proofs require an only-if planning table (protocol, backend capability, proof, known consistent length, signed local addressability), four concurrent exact disjoint ranges whose bytes become one Complete map, grant requests with no If-Range on a fresh transfer, per-worker byte/time records, and exactly one whole request plus one sync for absent range support. A paused-time fourth proof holds a one-worker response open after two bytes, advances the exact JOURNAL_FLUSH_INTERVAL, and requires that prefix to become Complete before the response ends; it currently fails because the scaffold exits before staging. Segment-end sync and the writer's eight-MiB threshold alone do not cover a slow long-lived segment.",
           "invariants": [
             "I-2",
             "I-3",
@@ -3420,6 +3420,21 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T3 remains in progress at BUILD. The red proof is ready to commit. Next: implement fail-closed planning, adapt actor-issued GrantWriters to append-only RangeSinks, launch the fixed initial ranges concurrently, validate outcomes, sync through the actor, and execute the one-request fallback. Add an explicit two-second flush tick rather than relying only on segment completion and the byte threshold."
+    },
+    {
+      "at": "2026-08-09T16:43:59Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Closed a hole in S3-T3's red proof before implementation. The first three tests covered planning, concurrent completion and the whole-stream fallback, but none could fail if the pool forgot the normative two-second durability flush during a slow open response. Added a paused-time protocol fixture that stages half of a four-byte range, holds the response open, advances exactly JOURNAL_FLUSH_INTERVAL, and inspects the real actor map before releasing the remaining bytes. The test compiles and fails behaviorally because the deliberate pool scaffold returns NotRunning before any byte is staged.",
+      "tasks_touched": [
+        "S3-T3"
+      ],
+      "files_touched": [
+        "crates/downpour-engine/Cargo.toml",
+        "crates/downpour-engine/tests/worker_pool.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3-T3 has four behaviorally red proofs and remains at BUILD. The implementation must drive DurableWriter::flush_if_due on virtual Tokio time while ranged workers are still active; a final sync is necessary but is not evidence for the interval bound."
     }
   ],
   "metrics": {

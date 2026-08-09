@@ -18,7 +18,7 @@ use downpour_types::{
     ByteRangeSpec, ContentRange, NegotiatedProtocol, RangeProof, RangeSupport, RemoteObject,
     Validator,
 };
-use tokio::sync::Barrier;
+use tokio::sync::{Barrier, Semaphore};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ObservedRequest {
@@ -40,6 +40,13 @@ struct FakeProtocol {
     capabilities: BackendCapabilities,
     state: Arc<Mutex<ProtocolState>>,
     rendezvous: Option<Arc<Barrier>>,
+    pause: Option<Arc<TransferPause>>,
+}
+
+#[derive(Debug)]
+struct TransferPause {
+    accepted: Semaphore,
+    release: Semaphore,
 }
 
 impl FakeProtocol {
@@ -59,6 +66,7 @@ impl FakeProtocol {
                 maximum_active: 0,
             })),
             rendezvous: None,
+            pause: None,
         }
     }
 
@@ -69,6 +77,11 @@ impl FakeProtocol {
 
     fn without_range_capability(mut self) -> Self {
         self.capabilities.supports_ranges = false;
+        self
+    }
+
+    fn with_mid_transfer_pause(mut self, pause: Arc<TransferPause>) -> Self {
+        self.pause = Some(pause);
         self
     }
 
@@ -107,7 +120,29 @@ impl TransferProtocol for FakeProtocol {
 
         let (start, end) = requested_window(request.range, self.body.len());
         let bytes = &self.body[start..end];
-        let accepted = sink.accept(bytes).await;
+        let accepted = if let Some(pause) = &self.pause {
+            let middle = bytes.len() / 2;
+            sink.accept(&bytes[..middle])
+                .await
+                .map_err(|source| TransferError::Sink {
+                    url: request.url.clone(),
+                    source,
+                })?;
+            pause.accepted.add_permits(1);
+            let permit =
+                pause
+                    .release
+                    .acquire()
+                    .await
+                    .map_err(|source| TransferError::Transport {
+                        url: request.url.clone(),
+                        source: Box::new(source),
+                    })?;
+            permit.forget();
+            sink.accept(&bytes[middle..]).await
+        } else {
+            sink.accept(bytes).await
+        };
         self.state.lock().unwrap().active -= 1;
         accepted.map_err(|source| TransferError::Sink {
             url: request.url.clone(),
@@ -427,4 +462,59 @@ async fn absent_range_support_executes_one_whole_request_and_one_sync() {
             1,
         )
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_open_range_flushes_at_the_exact_journal_interval() {
+    let body = b"slow".to_vec();
+    let remote = proven_remote(4, NegotiatedProtocol::Http11);
+    let pause = Arc::new(TransferPause {
+        accepted: Semaphore::new(0),
+        release: Semaphore::new(0),
+    });
+    let backend = Arc::new(
+        FakeProtocol::new(remote.clone(), body.clone()).with_mid_transfer_pause(Arc::clone(&pause)),
+    );
+    let pool = FixedWorkerPool::new(backend, 1).unwrap();
+    let (writer, stored) = writer_service(4, 1);
+    let writer = Arc::new(writer);
+    let task_writer = Arc::clone(&writer);
+    let mut transfer =
+        tokio::spawn(async move { pool.execute_segmented(&remote, task_writer.as_ref()).await });
+
+    tokio::select! {
+        permit = pause.accepted.acquire() => permit.unwrap().forget(),
+        result = &mut transfer => panic!("worker stopped before staging bytes: {result:?}"),
+    }
+    let before = writer.snapshot().await.unwrap();
+    assert_eq!(
+        before.allocator().intervals()[0].state(),
+        &downpour_intervals::IntervalState::InProgress {
+            worker: downpour_intervals::WorkerId::new(0),
+        }
+    );
+
+    tokio::time::advance(downpour_storage::writer::JOURNAL_FLUSH_INTERVAL).await;
+    tokio::task::yield_now().await;
+    let after = writer.snapshot().await.unwrap();
+    assert_eq!(
+        (
+            after.allocator().intervals()[0].start(),
+            after.allocator().intervals()[0].end()
+        ),
+        (0, 2)
+    );
+    assert_eq!(
+        after.allocator().intervals()[0].state(),
+        &downpour_intervals::IntervalState::Complete
+    );
+    assert_eq!(&stored.lock().unwrap()[..2], b"sl");
+
+    pause.release.add_permits(1);
+    transfer.await.unwrap().unwrap();
+    let writer = match Arc::try_unwrap(writer) {
+        Ok(writer) => writer,
+        Err(_) => panic!("transfer retained the writer control handle"),
+    };
+    writer.shutdown().await.unwrap();
 }
