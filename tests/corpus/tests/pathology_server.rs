@@ -575,6 +575,79 @@ async fn a_keep_alive_connection_serves_more_than_one_request() {
     );
 }
 
+#[tokio::test]
+async fn connection_observation_distinguishes_reuse_from_new_handshakes() {
+    let server = PathologyServer::start_holding_first_range(spec(), 0)
+        .await
+        .expect("server starts");
+    let addr = server.addr();
+    let path = server.entry_path();
+    let held =
+        tokio::spawn(
+            async move { h1_request(addr, "GET", &path, &[("Range", "bytes=0-9")]).await },
+        );
+
+    server.wait_until_range_held().await;
+    assert_eq!(
+        server.held_range_count(),
+        1,
+        "the observer must prove the controlled request actually reached the gate"
+    );
+    assert_eq!(server.accepted_connection_count(), 1);
+    assert_eq!(server.active_connection_count(), 1);
+
+    let second = h1_request(
+        server.addr(),
+        "GET",
+        &server.entry_path(),
+        &[("Range", "bytes=10-19")],
+    )
+    .await;
+    assert_eq!(second.status, 206);
+    assert_eq!(server.accepted_connection_count(), 2);
+    assert_eq!(server.active_connection_count(), 2);
+    assert_eq!(server.maximum_simultaneous_connections(), 2);
+
+    server.release_held_range();
+    assert_eq!(
+        held.await.expect("reference client task survives").status,
+        206
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_ne!(requests[0].connection_id(), 0);
+    assert_ne!(requests[1].connection_id(), 0);
+    assert_ne!(requests[0].connection_id(), requests[1].connection_id());
+    assert_eq!(
+        server.requests_on_connection(requests[0].connection_id()),
+        1
+    );
+
+    let reused = client::h1_pipeline(
+        server.addr(),
+        &[
+            (
+                server.entry_path(),
+                vec![("Range".to_owned(), "bytes=20-29".to_owned())],
+            ),
+            (
+                server.entry_path(),
+                vec![("Range".to_owned(), "bytes=30-39".to_owned())],
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(reused.len(), 2);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[2].connection_id(), requests[3].connection_id());
+    assert_eq!(server.accepted_connection_count(), 3);
+    assert_eq!(
+        server.requests_on_connection(requests[2].connection_id()),
+        2
+    );
+}
+
 // ---------------------------------------------------------------- metadata
 
 #[tokio::test]

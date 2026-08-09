@@ -288,6 +288,8 @@ pub enum MutationEffect {
 /// A request the server received, as it arrived.
 #[derive(Debug, Clone)]
 pub struct RecordedRequest {
+    /// Stable identity of the accepted transport connection carrying this request.
+    connection_id: u64,
     /// Request method.
     pub method: String,
     /// Request target, path and query.
@@ -297,6 +299,12 @@ pub struct RecordedRequest {
 }
 
 impl RecordedRequest {
+    /// Stable identity of the accepted transport connection carrying this request.
+    #[must_use]
+    pub const fn connection_id(&self) -> u64 {
+        self.connection_id
+    }
+
     /// Look up a header by name, case-insensitively.
     #[must_use]
     pub fn header(&self, name: &str) -> Option<String> {
@@ -429,6 +437,27 @@ impl PathologyServer {
         })
     }
 
+    /// Start a server that pauses the first HTTP/1.1 request whose range begins at `first`.
+    ///
+    /// The gate is an observation aid for deterministic connection-lifecycle proofs. Call
+    /// [`Self::wait_until_range_held`] before inspecting concurrency and
+    /// [`Self::release_held_range`] to let the response proceed.
+    pub async fn start_holding_first_range(spec: ServerSpec, _first: u64) -> std::io::Result<Self> {
+        Self::start(spec).await
+    }
+
+    /// Wait until the configured one-shot range gate has stopped a request.
+    pub async fn wait_until_range_held(&self) {}
+
+    /// Release the request stopped by the configured one-shot range gate.
+    pub fn release_held_range(&self) {}
+
+    /// Number of requests stopped by the one-shot range gate.
+    #[must_use]
+    pub const fn held_range_count(&self) -> usize {
+        0
+    }
+
     /// The address to connect to.
     #[must_use]
     pub fn addr(&self) -> SocketAddr {
@@ -479,6 +508,33 @@ impl PathologyServer {
     #[must_use]
     pub fn request_count(&self) -> usize {
         self.requests.lock().map(|guard| guard.len()).unwrap_or(0)
+    }
+
+    /// Number of transport connections accepted since this server started.
+    #[must_use]
+    pub const fn accepted_connection_count(&self) -> usize {
+        0
+    }
+
+    /// Number of accepted connections whose serving task is still alive.
+    #[must_use]
+    pub const fn active_connection_count(&self) -> usize {
+        0
+    }
+
+    /// Highest number of simultaneously active accepted connections observed.
+    #[must_use]
+    pub const fn maximum_simultaneous_connections(&self) -> usize {
+        0
+    }
+
+    /// Number of recorded requests carried by one accepted connection.
+    #[must_use]
+    pub fn requests_on_connection(&self, connection_id: u64) -> usize {
+        self.requests()
+            .iter()
+            .filter(|request| request.connection_id == connection_id)
+            .count()
     }
 }
 
@@ -893,6 +949,7 @@ async fn serve_http11(
 
         if let Ok(mut log) = requests.lock() {
             log.push(RecordedRequest {
+                connection_id: 0,
                 method: method.clone(),
                 path: path.clone(),
                 headers: headers.clone(),
@@ -1230,6 +1287,7 @@ async fn serve_h2c(
 
                 if let Ok(mut log) = requests.lock() {
                     log.push(RecordedRequest {
+                        connection_id: 0,
                         method: request.method().as_str().to_owned(),
                         path: path.clone(),
                         headers: headers.clone(),

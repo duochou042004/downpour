@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T16:59:19Z",
+  "updated_at": "2026-08-09T17:07:33Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1106,7 +1106,7 @@
         {
           "id": "S3-T4",
           "title": "Prove finished HTTP/1.1 connections are reused by counting handshakes",
-          "status": "todo",
+          "status": "in_progress",
           "proof": null,
           "files": [
             "tests/corpus/src/server.rs",
@@ -1114,7 +1114,7 @@
             "crates/downpour-engine/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "Add connection identities, accepted-connection count, requests per connection, and maximum simultaneous connections to the pathology server. A fast worker must finish, receive a new split, and send it over an existing keep-alive connection. Rebuilding the client or forcing Connection: close must turn the named proof red.",
+          "notes": "PROVE began with the observer itself so the later engine proof cannot rely on unverified handshake evidence. The deliberately inert scaffold gives every request connection ID zero, reports zero counters, and does not hold the configured range. tests/corpus/tests/pathology_server.rs::connection_observation_distinguishes_reuse_from_new_handshakes compiles and fails behaviorally at its first checkpoint: one request was required to reach the one-shot range gate and the observer reported zero. Next, implement and mutation-check stable accepted-connection identities, lifetime/max counters, per-connection request counts and the deterministic gate before writing the engine reuse proof. A fast worker must then finish, receive a new split, and send it over an existing keep-alive connection. Rebuilding the client or forcing Connection: close must turn the named engine proof red.",
           "invariants": []
         },
         {
@@ -3454,6 +3454,21 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3 is 3/15 tasks and 0/5 exit criteria. Next is S3-T4 PROVE: instrument the corpus server with connection identities and handshake/request counts, then require a completed fast worker to receive another split over its existing HTTP/1.1 connection. current_stage remains S3."
+    },
+    {
+      "at": "2026-08-09T17:07:33Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Prepared the first deliberately failing proof for S3-T4: the connection observer must prove itself before the engine can cite its handshake counts. Added an intentionally inert public scaffold for stable request connection IDs, accepted/active/maximum connection counters, per-connection request counts, and a deterministic one-shot range gate. The reference-client test combines two concurrently accepted sockets with two pipelined requests on one socket, so it distinguishes new handshakes from keep-alive reuse and proves the controlled concurrency state was reachable. It compiles and fails behaviorally at the first semantic checkpoint: the configured held request count is zero rather than one.",
+      "tasks_touched": [
+        "S3-T4"
+      ],
+      "files_touched": [
+        "state/progress.json",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/tests/pathology_server.rs"
+      ],
+      "left_in_progress": "S3-T4 remains in progress. Commit this red observer proof, then implement only the connection observer and one-shot gate, mutation-check every claimed direction, and commit it green before adding the separate behaviorally red engine reuse proof. No S3 exit criterion is met yet."
     }
   ],
   "metrics": {
