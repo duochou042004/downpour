@@ -24,6 +24,8 @@ url = { workspace = true }
 
 [dev-dependencies]
 downpour-corpus = { workspace = true }
+downpour-daemon = { workspace = true }
+downpour-ipc = { workspace = true }
 
 [lints]
 workspace = true

@@ -448,7 +448,9 @@ dependencies = [
  "clap",
  "directories",
  "downpour-corpus",
+ "downpour-daemon",
  "downpour-http",
+ "downpour-ipc",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -480,9 +482,11 @@ name = "downpour-daemon"
 version = "0.1.0"
 dependencies = [
  "downpour-intervals",
+ "downpour-ipc",
  "downpour-storage",
  "downpour-types",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 

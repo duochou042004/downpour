@@ -9,8 +9,10 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+downpour-ipc = { workspace = true }
 downpour-storage = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
