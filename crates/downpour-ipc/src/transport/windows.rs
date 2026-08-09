@@ -40,7 +40,7 @@ pub(super) fn prepare_paths(runtime_root: &Path) -> Result<EndpointPaths, Transp
     create_or_secure_directory(&runtime_dir, &descriptor)?;
     Ok(EndpointPaths {
         token_file: runtime_dir.join("session.token"),
-        pipe_name: format!("downpour-{sid}"),
+        pipe_name: pipe_name(&runtime_dir, &sid)?,
         runtime_dir,
     })
 }
@@ -63,9 +63,19 @@ pub(super) fn client_paths(runtime_root: &Path) -> Result<EndpointPaths, Transpo
     }
     Ok(EndpointPaths {
         token_file: runtime_dir.join("session.token"),
-        pipe_name: format!("downpour-{sid}"),
+        pipe_name: pipe_name(&runtime_dir, &sid)?,
         runtime_dir,
     })
+}
+
+fn pipe_name(runtime_dir: &Path, sid: &str) -> io::Result<String> {
+    let canonical = fs::canonicalize(runtime_dir)?;
+    let mut path_bytes = Vec::new();
+    for code_unit in canonical.as_os_str().encode_wide() {
+        path_bytes.extend_from_slice(&code_unit.to_le_bytes());
+    }
+    let digest = blake3::hash(&path_bytes).to_hex().to_string();
+    Ok(format!("downpour-{sid}-{}", &digest[..32]))
 }
 
 pub(super) fn create_listener(paths: &EndpointPaths) -> Result<NativeListener, TransportError> {

@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 
 [target.'cfg(windows)'.dependencies]
+blake3 = { workspace = true }
 widestring = { workspace = true }
 windows-sys = { workspace = true }
 
