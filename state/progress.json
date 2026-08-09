@@ -2,8 +2,8 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-06T12:10:02Z",
-  "updated_by": "claude-code",
+  "updated_at": "2026-08-09T15:45:53Z",
+  "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
     {
@@ -1005,7 +1005,7 @@
       "id": "S3",
       "name": "Dynamic segmentation over HTTP/1.1",
       "status": "active",
-      "started_at": null,
+      "started_at": "2026-08-09T15:45:53Z",
       "completed_at": null,
       "spec": "docs/03-transfer-engine-spec.md",
       "exit_criteria": [
@@ -1051,7 +1051,273 @@
           ]
         }
       ],
-      "tasks": []
+      "tasks": [
+        {
+          "id": "S3-T1",
+          "title": "Build the sole segment allocator with largest-remainder splitting and semantic ownership proofs",
+          "status": "in_progress",
+          "proof": null,
+          "files": [
+            "crates/downpour-engine/"
+          ],
+          "blocked_by": null,
+          "notes": "PROVE step next: create the downpour-engine crate and commit a failing model-based allocator test before implementation. The oracle must assert accepted operations were semantically permitted, prove the exercised split/death states are reachable, and catch wrong-largest selection, disabled MIN_SPLIT_BYTES, stale ownership, and failed reclamation.",
+          "invariants": [
+            "I-2"
+          ]
+        },
+        {
+          "id": "S3-T2",
+          "title": "Move durable writes behind one bounded per-download writer service",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "crates/downpour-engine/",
+            "crates/downpour-storage/"
+          ],
+          "blocked_by": "S3-T1",
+          "notes": "Record the supervisor/writer ownership decision before code so there remains exactly one canonical allocator. Prove back-pressure, grant-bounded writes, and acknowledgements only after the journal durability boundary. Begins B-21 and closes B-23 when the per-chunk spawn_blocking path is gone.",
+          "invariants": [
+            "I-1",
+            "I-2",
+            "I-10"
+          ]
+        },
+        {
+          "id": "S3-T3",
+          "title": "Run a fixed HTTP/1.1 worker pool with grant-only offsets and single-stream fallback",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "crates/downpour-engine/",
+            "crates/downpour-http/"
+          ],
+          "blocked_by": "S3-T2",
+          "notes": "S3 uses a configured fixed worker count and records per-worker throughput; it does not adapt concurrency or use ETA splitting. Only proven range support with a known length may open multiple workers. Absent, unknown, or unaddressable range support must execute exactly one whole-representation stream.",
+          "invariants": [
+            "I-2",
+            "I-3",
+            "I-5",
+            "I-6"
+          ]
+        },
+        {
+          "id": "S3-T4",
+          "title": "Prove finished HTTP/1.1 connections are reused by counting handshakes",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "tests/corpus/src/server.rs",
+            "tests/corpus/cases/connections/",
+            "crates/downpour-engine/"
+          ],
+          "blocked_by": "S3-T3",
+          "notes": "Add connection identities, accepted-connection count, requests per connection, and maximum simultaneous connections to the pathology server. A fast worker must finish, receive a new split, and send it over an existing keep-alive connection. Rebuilding the client or forcing Connection: close must turn the named proof red.",
+          "invariants": []
+        },
+        {
+          "id": "S3-T5",
+          "title": "Prove N fixed connections improve throughput on an uncapped origin",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "tests/sim/",
+            "crates/downpour-engine/"
+          ],
+          "blocked_by": "S3-T3",
+          "notes": "Use virtual time and an origin with independent per-connection capacity but no aggregate server cap. Compare the same representation with one and N workers and assert an explicit improvement. A release benchmark may corroborate this but wall-clock timing is not the primary exit proof.",
+          "invariants": []
+        },
+        {
+          "id": "S3-T6",
+          "title": "Survive worker death and adversarial interleavings without overlapping ownership or writes",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "tests/sim/",
+            "crates/downpour-engine/"
+          ],
+          "blocked_by": "S3-T3",
+          "notes": "Run the actual allocator, worker pool and durable acknowledgements under worker-death and interleaving-fuzz. Assert exclusive ownership at every event and the final file byte-for-byte. Each scenario must prove a worker died, a grant was reclaimed, a split occurred, and completions arrived out of order.",
+          "invariants": [
+            "I-1",
+            "I-2",
+            "I-4"
+          ]
+        },
+        {
+          "id": "S3-T7",
+          "title": "Create the versioned authenticated IPC foundation needed by the S3 daemon",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "crates/downpour-ipc/",
+            "crates/downpour-daemon/"
+          ],
+          "blocked_by": "S3-T3",
+          "notes": "Implement the v1 handshake, framed user-scoped transport, and the S3 method subset needed for add, get/status and resume. Round-trip every message, refuse newer versions, and reject malformed input without side effects. Write an ADR first for any persistent or protocol choice the normative IPC spec does not already fix.",
+          "invariants": [
+            "I-11",
+            "I-12",
+            "I-13",
+            "I-14"
+          ]
+        },
+        {
+          "id": "S3-T8",
+          "title": "Make the daemon own transfers and move the CLI behind IPC",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "crates/downpour-daemon/",
+            "crates/downpour-cli/",
+            "crates/downpour-engine/",
+            "crates/downpour-http/"
+          ],
+          "blocked_by": "S3-T7",
+          "notes": "Kill the CLI after submission and prove progress continues. Move orchestration and the storage adapter out of downpour-http, remove downpour-http's storage and interval dependencies, and mechanically prevent the CLI from linking engine or storage. Closes B-4 and B-21 and completes ADR-0016's expected reversal.",
+          "invariants": [
+            "I-11",
+            "I-12",
+            "I-13"
+          ]
+        },
+        {
+          "id": "S3-T9",
+          "title": "Resume after process exit and refuse symlink or reparse-point part files",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "crates/downpour-engine/",
+            "crates/downpour-daemon/",
+            "crates/downpour-storage/src/recovery.rs",
+            "crates/downpour-storage/src/part_file.rs",
+            "tests/sim/"
+          ],
+          "blocked_by": "S3-T8",
+          "notes": "Close B-25 by destroying all in-memory transfer state, reconciling on daemon restart, and explicitly resuming from the recorded identity and durable interval map without requesting completed bytes again. Close B-37 in the same change with an atomic no-follow reopen policy on Linux and Windows; a native storage test must prove a victim behind a symlink or reparse point remains byte-identical.",
+          "invariants": [
+            "I-1",
+            "I-2",
+            "I-3",
+            "I-9",
+            "I-10",
+            "I-12"
+          ]
+        },
+        {
+          "id": "S3-T10",
+          "title": "Implement off, sample and full block verification on cross-process resume",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "crates/downpour-storage/src/recovery.rs",
+            "crates/downpour-storage/tests/recovery.rs"
+          ],
+          "blocked_by": "S3-T9",
+          "notes": "Close B-19 with deterministic control over sampling. docs/04 section 3.4 is normative and says sample is the default; repair the contradictory backlog wording rather than silently treating off as the default. A corruption in every selected block must be detected without blessing or rewriting it.",
+          "invariants": [
+            "I-1",
+            "I-9"
+          ]
+        },
+        {
+          "id": "S3-T11",
+          "title": "Grow the connections corpus category from 3 to at least its floor of 20",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "tests/corpus/cases/connections/",
+            "tests/corpus/src/"
+          ],
+          "blocked_by": "S3-T4",
+          "notes": "Add at least 17 distinct server connection pathologies. Every case must prove the pathology fired through request, connection, reset or concurrency observations and remain subject to unconditional byte comparison. The docs/09 section 3.2 target is a floor and will not be lowered or padded with header variants.",
+          "invariants": [
+            "I-1",
+            "I-2",
+            "I-3",
+            "I-4",
+            "I-5",
+            "I-6"
+          ]
+        },
+        {
+          "id": "S3-T12",
+          "title": "Grow the ranges corpus category from 17 to at least its floor of 25",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "tests/corpus/cases/ranges/",
+            "tests/corpus/src/"
+          ],
+          "blocked_by": "S3-T3",
+          "notes": "Close B-13 with segmented-transfer range pathologies such as inconsistent totals between workers, one range returning 200, shifted or overlapping responses, and a later range returning 416. Each case must demonstrate its distinct server behaviour rather than padding parser variants.",
+          "invariants": [
+            "I-2",
+            "I-3",
+            "I-5",
+            "I-6"
+          ]
+        },
+        {
+          "id": "S3-T13",
+          "title": "Apply the documented retention policy without deleting resumable evidence",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "crates/downpour-daemon/",
+            "crates/downpour-storage/"
+          ],
+          "blocked_by": "S3-T7",
+          "notes": "Close the remaining part of B-30 as an isolated daemon-storage change. Deterministic filesystem tests must prove abandoned artifacts age out while active, paused and resumable artifacts survive.",
+          "invariants": [
+            "I-9",
+            "I-12"
+          ]
+        },
+        {
+          "id": "S3-T14",
+          "title": "Resolve the large-file digest verification cost for out-of-order segmented writes",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "crates/downpour-engine/",
+            "crates/downpour-storage/src/completion.rs",
+            "tests/corpus/tests/gigabyte.rs",
+            "docs/adr/"
+          ],
+          "blocked_by": "S3-T5",
+          "notes": "Re-measure B-34 on the segmented path. Never compute SHA-2 in arrival order. Either retain the verified second pass with recorded evidence or supersede ADR-0017 before adding a conditional sequential fast path whose out-of-order fallback is independently proven.",
+          "invariants": [
+            "I-4"
+          ]
+        },
+        {
+          "id": "S3-T15",
+          "title": "Mutation-audit every S3 exit proof and propose the stage gate",
+          "status": "todo",
+          "proof": null,
+          "files": [
+            "state/progress.json"
+          ],
+          "blocked_by": "S3-T1 through S3-T14",
+          "notes": "Run just gate, just sim, just corpus and just corpus-slow; require all four GitHub jobs including Windows; mutation-check every exit criterion in the direction it claims; confirm every mutated state was reached; restore, touch the source to force a rebuild, and rerun green. Audit B-33 here and count no unfalsifiable assertion as evidence. Propose /stage-gate but never advance current_stage.",
+          "invariants": [
+            "I-1",
+            "I-2",
+            "I-3",
+            "I-4",
+            "I-5",
+            "I-6",
+            "I-9",
+            "I-10",
+            "I-11",
+            "I-12",
+            "I-13",
+            "I-14"
+          ]
+        }
+      ]
     },
     {
       "id": "S4",
@@ -1800,10 +2066,10 @@
     },
     {
       "id": "B-25",
-      "text": "Resume is in-call only: SingleStream::download keeps its session across retries. A download interrupted by a process exit cannot yet resume, because nothing reopens the part file and journal from disk — S2-T7's reconcile_download does exactly that but needs a MetadataStore, and wiring it in is S2-T14's startup recovery. Until then the durable bytes survive but are only usable by a future daemon, not by a second `dp add`.",
+      "text": "Resume is in-call only: SingleStream::download keeps its session across retries. S2 startup recovery now reopens and reconciles the part file and journal, but deliberately leaves the download paused; no engine path consumes that reconciliation to continue after a process exit. S3-T9 closes the user-visible half of crash recovery by resuming from the recorded identity and durable interval map, and fixes B-37's no-follow reopen hazard in the same change.",
       "found_in_stage": "S2",
-      "target_stage": "S2",
-      "rationale": "The distinction between in-call and cross-process resume is invisible from the corpus, which never restarts a process, so it needs recording rather than rediscovering"
+      "target_stage": "S3",
+      "rationale": "Startup reconciliation makes cross-process resume possible but does not perform it. A process-boundary simulation must destroy the in-memory session, and the no-follow recovery fix must land before that resumed state can write."
     },
     {
       "id": "B-26",
@@ -3018,6 +3284,33 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3 is active and empty. Its first task is the segment allocator; B-37 becomes live the moment cross-process resume lands and should be fixed in the same change, not after it."
+    },
+    {
+      "at": "2026-08-09T15:45:53Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Oriented from the mandated harness, progress record, context map and engine invariants, then inspected the actual interval, HTTP, storage, recovery, daemon, CLI, corpus and simulation seams before touching engine code. Recorded a 15-task proof-first S3 graph. The core order is allocator, bounded writer service, fixed HTTP/1.1 worker pool, handshake-counted reuse, deterministic throughput, and worker-death/interleaving simulation. The graph also carries the architecture and S2 debt that becomes live here: daemon IPC and CLI migration, B-25 cross-process resume with B-37 fixed in that same change, verify_on_resume, the connections and ranges corpus floors, retention, and the out-of-order digest decision. Every exit criterion remains unmet; no implementation claim was made.",
+      "tasks_touched": [
+        "S3-T1",
+        "S3-T2",
+        "S3-T3",
+        "S3-T4",
+        "S3-T5",
+        "S3-T6",
+        "S3-T7",
+        "S3-T8",
+        "S3-T9",
+        "S3-T10",
+        "S3-T11",
+        "S3-T12",
+        "S3-T13",
+        "S3-T14",
+        "S3-T15"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3-T1 is in progress at the PROVE step. Next: create the downpour-engine test target and commit a failing semantic allocator proof before adding allocator implementation. current_stage remains S3 and all five exit criteria remain unmet."
     }
   ],
   "metrics": {
