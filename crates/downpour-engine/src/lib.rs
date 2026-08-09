@@ -21,6 +21,7 @@ use std::ops::Range;
 use downpour_intervals::{Interval, IntervalMap, IntervalMapError, IntervalState, WorkerId};
 use thiserror::Error;
 
+pub mod worker_pool;
 pub mod writer_service;
 
 /// Default lower bound for either half of a split grant.
