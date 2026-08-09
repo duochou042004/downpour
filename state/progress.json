@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T17:56:08Z",
+  "updated_at": "2026-08-09T18:11:27Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1019,8 +1019,8 @@
         {
           "id": "S3-C2",
           "text": "No overlapping writes under worker-death and interleaving-fuzz scenarios",
-          "met": false,
-          "evidence": null,
+          "met": true,
+          "evidence": "tests/sim/tests/worker_death_interleaving.rs::worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership runs the real allocator, fixed pool, writer actor and durable acknowledgements across 16 seeded completion schedules. An independent request-lifetime oracle observes all three initial grants live, one worker death after an accepted prefix, exact unwritten-suffix reclaim, a later split, out-of-order durable completion and a byte-exact final file. A deliberately unsafe allocate-and-split-before-cancel mutation produced simultaneous live 48-95 and 72-95 requests and turned the named proof red at overlap_observed, demonstrating the semantic I-2 direction rather than only canonical-map structure.",
           "invariants": [
             "I-2"
           ]
@@ -1136,14 +1136,14 @@
         {
           "id": "S3-T6",
           "title": "Survive worker death and adversarial interleavings without overlapping ownership or writes",
-          "status": "in_progress",
-          "proof": "tests/sim/tests/worker_death_interleaving.rs::{worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership,timeout_and_truncation_resume_only_the_unwritten_suffix,repeated_transport_death_exhausts_one_bounded_origin_budget,protocol_errors_are_fatal_without_reclaim_retry} (three positive proofs deliberately red before BUILD)",
+          "status": "done",
+          "proof": "tests/sim/tests/worker_death_interleaving.rs::{worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership,timeout_and_truncation_resume_only_the_unwritten_suffix,repeated_transport_death_exhausts_one_bounded_origin_budget,protocol_errors_are_fatal_without_reclaim_retry,cancellation_flushes_a_write_queued_after_the_previous_sync_before_accounting_and_split}",
           "files": [
             "tests/sim/",
             "crates/downpour-engine/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "PROVE is isolated before BUILD. The deterministic simulation runs the actual allocator, fixed pool, writer actor and durable acknowledgements across 16 seeded schedules. Its independent protocol-lifetime oracle tracks temporal overlap rather than inferring ownership from the canonical map. Before demanding recovery, the first red proof establishes that all three initial grants were concurrently live, worker 1 accepted 24-31 and then hit the injected connection reset, and that prefix crossed the durability fence. It then fails behaviorally because the current pool treats the retryable transport death as fatal. Separate red proofs require timeout and truncated-body failures to resume at exactly the first unwritten byte and require repeated transport death to stop after the default origin-wide budget of five retries (six requests). A protocol-error control already passes with exactly one attempt, pinning the only-if direction against retry-everything. The green proof must reclaim only 32-47, split later active work, observe out-of-order durable completions, preserve exact bytes and finish with one Complete interval. T4's distinct queued-after-sync cancellation schedule is still required before this task can close.",
+          "notes": "PROVE was isolated in commits 1a0a7c0 and 711570e. The first proof established all three initial grants concurrently live, one worker accepting 24-31 before a connection reset, and that prefix crossing the durability fence, then failed on the pool's fatal transport handling. Separate red proofs required timeout and truncation to resume at the exact first unwritten byte and repeated resets to stop after one initial attempt plus five origin-wide retries. BUILD classifies only Transport, Timeout and TruncatedBody as retryable. It fences and abandons the failed worker, cancels and drains live peers before allocation, accounts only durable intersections, reallocates the pending suffix first, then restarts and splits from canonical grants. Protocol and sink contradictions remain fatal. A blocking-journal simulation proves a Write queued after the previous fast sync is force-flushed before cancelled-attempt accounting and split; changing that fence to flush_if_due loses exactly 8 bytes from the report (56 rather than 64) even though allocation later flushes storage. Fifteen reachable mutations went red and were restored with forced rebuilds: fatal Transport, fatal Timeout, fatal TruncatedBody, retrying an error page, an off-by-one retry budget, omitted failed-worker abandon, returning the whole failed grant rather than only its suffix, omitted failed-attempt accounting, omitted peer cancellation, unsafe split while old peers remained live, suppressed death injection, erased interleaving diversity, sorted completion observations, suppressed split observation, and erased storage writes. The unsafe ordering mutation was observed semantically as overlapping live 48-95 and 72-95 requests. The 16 seeds produce more than one durable completion order, every seed observes death/reclaim/split/out-of-order completion, and every final file is byte-exact with one Complete interval. Final exact gates: workspace 310/310 with 3 skipped, doctests 7/7, release simulation 14/14. S3-C2 is met; current_stage remains S3.",
           "invariants": [
             "I-1",
             "I-2",
@@ -3579,12 +3579,27 @@
         "tests/sim/tests/worker_death_interleaving.rs"
       ],
       "left_in_progress": "S3-T6 remains at BUILD with two red-proof commits. Implement origin-wide bounded backoff and cancellation-before-reclaim, then make these proofs green. The queued-after-sync cancellation proof and mutation audit remain mandatory before completion."
+    },
+    {
+      "at": "2026-08-09T18:11:27Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Completed S3-T6 and met S3-C2. Retryable Transport, Timeout and TruncatedBody worker failures now consume one download-wide bounded retry budget, durably fence and abandon only the failed ownership, cancel and drain peers before any new allocation, and resume from the first unwritten byte. Protocol and sink contradictions remain fatal. The main simulation uses the real allocator, pool, actor and durability acknowledgements across 16 seeded schedules; every seed proves three initial live grants, an accepted prefix before death, exact suffix reclaim, a later split, non-offset-order durable completion, zero temporal request overlap, exact bytes and one final Complete interval. More than one completion order is required across the seeds. A separate blocking-journal schedule proves a write queued after the previous sync is force-flushed before cancelled-attempt accounting and splitting. Fifteen reachable mutations turned their named proof red and were restored with touched rebuilds, including a deliberately unsafe split that produced overlapping live 48-95 and 72-95 requests and was caught by the independent lifetime oracle. Exact final gates: workspace 310/310 with 3 skipped, doctests 7/7, release simulation 14/14.",
+      "tasks_touched": [
+        "S3-T6"
+      ],
+      "files_touched": [
+        "crates/downpour-engine/src/worker_pool.rs",
+        "state/progress.json",
+        "tests/sim/tests/worker_death_interleaving.rs"
+      ],
+      "left_in_progress": "S3 is 6/15 tasks and 3/5 exit criteria. current_stage remains S3. Next is S3-T7 PROVE: versioned authenticated IPC framing, user-scoped transport, malformed-input side-effect refusal and the S3 add/status/resume method subset, with an ADR first only if the normative IPC spec leaves a persistent or protocol choice open."
     }
   ],
   "metrics": {
     "corpus_cases_total": 76,
     "corpus_cases_passing": 76,
-    "sim_seeds_fixed": 3,
+    "sim_seeds_fixed": 19,
     "invariants_covered": 8,
     "invariants_total": 14,
     "silent_corruption_findings": 0

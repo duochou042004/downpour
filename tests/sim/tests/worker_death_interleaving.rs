@@ -5,11 +5,12 @@
 //! independently tracks live request ranges, so "the map stayed canonical" cannot stand in for
 //! the semantic claim that no two workers were allowed to write the same byte.
 
+use std::collections::BTreeSet;
 use std::future::pending;
 use std::io;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -27,7 +28,7 @@ use downpour_types::{
     ByteRangeSpec, ContentRange, NegotiatedProtocol, RangeProof, RangeSupport, RemoteObject,
     Validator,
 };
-use tokio::sync::Barrier;
+use tokio::sync::{Barrier, Semaphore};
 
 const LENGTH: u64 = 96;
 const MIN_SPLIT: u64 = 8;
@@ -313,6 +314,7 @@ impl DurableJournal for MemoryJournal {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership() {
     let body = (0_u8..u8::try_from(LENGTH).unwrap()).collect::<Vec<_>>();
+    let mut completion_orders = BTreeSet::new();
 
     for seed in 0..16_u64 {
         let origin = Arc::new(DeathOrigin::new(body.clone(), seed));
@@ -333,12 +335,23 @@ async fn worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership() 
         let allocator = SegmentAllocator::new(LENGTH, MIN_SPLIT).unwrap();
         let writer = WriterService::start(durable, allocator, 16).unwrap();
 
-        let outcome = tokio::time::timeout(
+        let timed = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             pool.execute_segmented(&origin.remote, &writer),
         )
-        .await
-        .unwrap_or_else(|_| panic!("seed {seed}: worker recovery deadlocked"));
+        .await;
+        let outcome = match timed {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                let stalled = origin.observation();
+                assert!(
+                    !stalled.overlap_observed,
+                    "seed {seed}: overlapping live requests were observed before the scheduler deadlocked: {:?}",
+                    stalled.events
+                );
+                panic!("seed {seed}: worker recovery deadlocked");
+            }
+        };
 
         // Establish that the failure is behavioral, not an unreachable fixture: all three
         // initial grants became simultaneously live and the designated worker accepted its
@@ -411,6 +424,12 @@ async fn worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership() 
         );
 
         let committed = completions.lock().unwrap().clone();
+        completion_orders.insert(
+            committed
+                .iter()
+                .map(|range| range.start)
+                .collect::<Vec<_>>(),
+        );
         assert!(
             committed.contains(&(DIED_GRANT_START..DIED_AFTER)),
             "seed {seed}: accepted bytes from the dead worker were not durably fenced"
@@ -430,6 +449,10 @@ async fn worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership() 
             "seed {seed}"
         );
     }
+    assert!(
+        completion_orders.len() > 1,
+        "all 16 seeds reproduced one durable completion order: {completion_orders:?}"
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -633,7 +656,7 @@ async fn repeated_transport_death_exhausts_one_bounded_origin_budget() {
     drop(writer);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn protocol_errors_are_fatal_without_reclaim_retry() {
     let body = (0_u8..8).collect::<Vec<_>>();
     let origin = Arc::new(RetryOrigin::new(
@@ -649,4 +672,188 @@ async fn protocol_errors_are_fatal_without_reclaim_retry() {
     assert!(matches!(result, Err(PoolError::Transfer(_))));
     assert_eq!(origin.requests(), vec![0..8]);
     drop(writer);
+}
+
+#[derive(Debug)]
+struct SyncGate {
+    entered: Semaphore,
+    released: Mutex<bool>,
+    release: Condvar,
+}
+
+impl SyncGate {
+    fn new() -> Self {
+        Self {
+            entered: Semaphore::new(0),
+            released: Mutex::new(false),
+            release: Condvar::new(),
+        }
+    }
+
+    fn block_actor(&self) {
+        self.entered.add_permits(1);
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.release.wait(released).unwrap();
+        }
+    }
+
+    fn release_actor(&self) {
+        *self.released.lock().unwrap() = true;
+        self.release.notify_all();
+    }
+}
+
+#[derive(Debug)]
+struct BlockingJournal {
+    total_length: u64,
+    gate: Arc<SyncGate>,
+}
+
+impl DurableJournal for BlockingJournal {
+    fn total_length(&self) -> u64 {
+        self.total_length
+    }
+
+    fn append(&mut self, _record: &FramedRecord) -> Result<(), WriterError> {
+        Ok(())
+    }
+
+    fn sync_data(&mut self) -> Result<(), WriterError> {
+        self.gate.block_actor();
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct QueuedAfterSyncOrigin {
+    body: Arc<Vec<u8>>,
+    remote: RemoteObject,
+    gate: Arc<SyncGate>,
+    queued_after_sync: AtomicBool,
+    requests: Mutex<Vec<Range<u64>>>,
+}
+
+#[async_trait]
+impl TransferProtocol for QueuedAfterSyncOrigin {
+    async fn probe(&self, _request: ProbeRequest) -> Result<RemoteObject, ProbeError> {
+        Ok(self.remote.clone())
+    }
+
+    async fn fetch_range(
+        &self,
+        request: RangeRequest,
+        sink: &mut RangeSink,
+    ) -> Result<RangeOutcome, TransferError> {
+        let range = requested_range(request.range, self.body.len());
+        self.requests.lock().unwrap().push(range.clone());
+
+        if range == (32..64) {
+            self.gate.entered.acquire().await.unwrap().forget();
+            // Poll once while the actor is still blocked in the fast worker's journal sync. The
+            // bounded send completes, the reply cannot, and dropping the future leaves the Write
+            // command queued exactly after that sync boundary.
+            {
+                let accepted = sink.accept(&self.body[32..40]);
+                tokio::pin!(accepted);
+                tokio::select! {
+                    biased;
+                    result = &mut accepted => {
+                        panic!("queued slow write completed before the sync gate: {result:?}");
+                    }
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+            self.queued_after_sync.store(true, Ordering::SeqCst);
+            self.gate.release_actor();
+            pending::<()>().await;
+        }
+
+        let start = usize::try_from(range.start).unwrap();
+        let end = usize::try_from(range.end).unwrap();
+        sink.accept(&self.body[start..end])
+            .await
+            .map_err(|source| TransferError::Sink {
+                url: request.url.clone(),
+                source,
+            })?;
+        Ok(RangeOutcome {
+            bytes_delivered: range.end - range.start,
+            status: 206,
+            content_range: Some(ContentRange::Bytes {
+                first: range.start,
+                last: range.end - 1,
+                complete_length: Some(u64::try_from(self.body.len()).unwrap()),
+            }),
+            protocol: NegotiatedProtocol::Http11,
+            truncated: false,
+        })
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            name: "sim-queued-after-sync",
+            protocols: vec![NegotiatedProtocol::Http11],
+            multiplexes_streams: false,
+            supports_ranges: true,
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancellation_flushes_a_write_queued_after_the_previous_sync_before_accounting_and_split() {
+    let body = (0_u8..64).collect::<Vec<_>>();
+    let gate = Arc::new(SyncGate::new());
+    let origin = Arc::new(QueuedAfterSyncOrigin {
+        remote: proven_remote(u64::try_from(body.len()).unwrap()),
+        body: Arc::new(body.clone()),
+        gate: Arc::clone(&gate),
+        queued_after_sync: AtomicBool::new(false),
+        requests: Mutex::new(Vec::new()),
+    });
+    let stored = Arc::new(Mutex::new(vec![0; body.len()]));
+    let durable = DurableWriter::try_new(
+        MemoryData {
+            bytes: Arc::clone(&stored),
+        },
+        BlockingJournal {
+            total_length: u64::try_from(body.len()).unwrap(),
+            gate,
+        },
+        0,
+    )
+    .unwrap();
+    let allocator = SegmentAllocator::new(u64::try_from(body.len()).unwrap(), 8).unwrap();
+    let writer = WriterService::start(durable, allocator, 8).unwrap();
+    let pool = FixedWorkerPool::new(Arc::clone(&origin), 2).unwrap();
+
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        pool.execute_segmented(&origin.remote, &writer),
+    )
+    .await
+    .expect("the queued-after-sync schedule deadlocked")
+    .unwrap();
+    assert!(origin.queued_after_sync.load(Ordering::SeqCst));
+    assert_eq!(
+        report
+            .workers()
+            .iter()
+            .map(|worker| worker.bytes())
+            .sum::<u64>(),
+        64,
+        "the cancelled attempt's queued prefix was omitted from durable accounting"
+    );
+    assert_eq!(*stored.lock().unwrap(), body);
+    let requests = origin.requests.lock().unwrap().clone();
+    assert!(requests.contains(&(0..32)));
+    assert!(requests.contains(&(32..64)));
+    assert!(requests.iter().any(|range| range.start == 40));
+    assert!(requests.iter().any(|range| range.start > 40));
+    let snapshot = writer.shutdown().await.unwrap();
+    assert_eq!(snapshot.allocator().intervals().len(), 1);
+    assert_eq!(
+        snapshot.allocator().intervals()[0].state(),
+        &IntervalState::Complete
+    );
 }

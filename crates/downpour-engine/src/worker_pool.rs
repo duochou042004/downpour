@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use downpour_http::{
-    RangeRequest, RangeSink, SinkError, SinkTarget, TransferError, TransferProtocol,
+    RangeRequest, RangeSink, RetryDecision, RetryPolicy, SinkError, SinkTarget, TransferError,
+    TransferProtocol, TransientKind,
 };
 use downpour_intervals::{IntervalState, WorkerId};
 use downpour_storage::writer::{JOURNAL_FLUSH_INTERVAL, WriterError};
@@ -282,6 +283,8 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
         let mut candidate_idle = None;
         let mut draining_for_reassignment = false;
         let mut cancelled_attempts: Vec<RunningWorker> = Vec::new();
+        let retry_policy = RetryPolicy::default();
+        let mut transient_failures = 0_u32;
 
         loop {
             if tasks.is_empty() {
@@ -368,9 +371,38 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
                             }
                         }
                         Ok(WorkerEvent::Finished { worker, result: Err(error) }) => {
-                            running.remove(&worker);
-                            self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
-                            return Err(error);
+                            let Some(attempt) = running.remove(&worker) else {
+                                self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
+                                return Err(PoolError::IncompleteCoverage);
+                            };
+                            let Some(kind) = retryable_worker_failure(&error) else {
+                                self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
+                                return Err(error);
+                            };
+                            match retry_policy.decide(kind, transient_failures, None) {
+                                RetryDecision::GiveUp => {
+                                    self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
+                                    return Err(error);
+                                }
+                                RetryDecision::RetryAfter(delay) => {
+                                    transient_failures = transient_failures.saturating_add(1);
+
+                                    // The failed fetch is gone, but its accepted prefix may still
+                                    // be staged. Fence it before returning only the unwritten
+                                    // suffix to Pending. Live peers are cancelled and drained
+                                    // before allocation can split any of their grants.
+                                    writer.abandon(worker).await?;
+                                    cancelled_attempts.push(attempt);
+                                    candidate_idle = Some(worker);
+                                    draining_for_reassignment = true;
+                                    for active in running.values_mut() {
+                                        if let Some(cancel) = active.cancel.take() {
+                                            let _cancelled_before_recovery = cancel.send(()).is_ok();
+                                        }
+                                    }
+                                    tokio::time::sleep(delay).await;
+                                }
+                            }
                         }
                         Ok(WorkerEvent::Cancelled { worker }) => {
                             let Some(attempt) = running.remove(&worker) else {
@@ -551,6 +583,23 @@ fn completed_bytes_inside(
                 .saturating_sub(interval.start().max(grant.start))
         })
         .sum()
+}
+
+fn retryable_worker_failure(error: &PoolError) -> Option<TransientKind> {
+    let PoolError::Transfer(source) = error else {
+        return None;
+    };
+    match source.as_ref() {
+        TransferError::Transport { .. } => Some(TransientKind::ConnectionReset),
+        TransferError::Timeout { .. } => Some(TransientKind::Timeout),
+        TransferError::TruncatedBody { .. } => Some(TransientKind::TruncatedBody),
+        TransferError::UnexpectedStatus { .. }
+        | TransferError::LooksLikeAnErrorPage { .. }
+        | TransferError::UnusableRangeResponse { .. }
+        | TransferError::OverDelivery { .. }
+        | TransferError::Sink { .. }
+        | TransferError::ValidatorMismatch { .. } => None,
+    }
 }
 
 fn single(reason: SingleStreamReason) -> PoolPlan {
