@@ -1,11 +1,11 @@
-//! The one place fetched bytes become durable.
+//! The engine's concrete bridge from fetched bytes to durable storage.
 //!
 //! This module owns **I-1** for the transfer path. It does not reimplement the durability
 //! ordering — that lives in `downpour_storage::writer::DurableWriter`, where S2-T5 put it and
 //! where the crash-boundary proofs point. What this module owns is that every byte the HTTP
 //! layer accepts goes through that writer, and that no second way of putting bytes on disk
-//! exists in the workspace. S1's minimal seek-then-write sink is gone; ADR-0016 records why the
-//! replacement lives here rather than in `downpour-engine`, and when it leaves.
+//! exists in the workspace. S1's minimal seek-then-write sink is gone; this module's move into
+//! `downpour-engine` completes ADR-0016's expected S3 reversal.
 //!
 //! The blocking writer is driven from async code by moving it into `spawn_blocking` and back
 //! out on every call. Moving rather than sharing is deliberate: the writer is the single owner
@@ -24,7 +24,7 @@ use downpour_storage::part_file::{PartFile, PartFileError};
 use downpour_storage::writer::{DurableWriter, JournalFile, WriterError};
 use downpour_types::ContentDigest;
 
-use crate::sink::{SinkError, SinkTarget};
+use downpour_http::{SinkError, SinkTarget};
 
 /// The single worker identity a single-stream transfer uses.
 ///

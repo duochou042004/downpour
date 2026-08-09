@@ -68,9 +68,10 @@ fn responses() -> Vec<(ResponseKind, Response)> {
             Response::Download(DownloadView {
                 protocol_version: PROTOCOL_VERSION,
                 id: id(),
-                state: WireState::Transferring,
+                state: WireState::Failed,
                 covered: 32,
                 total: Some(96),
+                error_kind: Some("transport".to_owned()),
             }),
         ),
         (
@@ -184,6 +185,7 @@ impl CommandHandler for CountingHandler {
                     state: WireState::Paused,
                     covered: 0,
                     total: None,
+                    error_kind: None,
                 })
             }
             Request::DownloadResume(_) => {

@@ -359,10 +359,11 @@ mod wiring {
     use std::time::Duration;
 
     use async_trait::async_trait;
+    use downpour_engine::{SingleStream, StorageLayout};
     use downpour_http::probe::ReprobePolicy;
     use downpour_http::{
         BackendCapabilities, ProbeError, ProbeRequest, RangeOutcome, RangeRequest, RangeSink,
-        RetryPolicy, SingleStream, StorageLayout, TransferError, TransferProtocol,
+        RetryPolicy, TransferError, TransferProtocol,
     };
     use downpour_types::{
         ByteRangeSpec, NegotiatedProtocol, RangeProof, RangeSupport, RemoteObject, Validator,

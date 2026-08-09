@@ -1,11 +1,7 @@
 //! `dp` — the Downpour command-line client.
 //!
-//! **Stage-1 shape, not the intended architecture.** `docs/02-architecture.md` §3 states a hard
-//! rule: clients never link the engine, because a client that can perform a transfer defeats the
-//! daemon guarantee (I-12) — closing the window would stop the download. There is no daemon until
-//! later stages, so `dp add` currently performs the transfer in-process. Backlog B-4 records the
-//! move to IPC, and it is a move rather than a rewrite because everything below `SingleStream` is
-//! already behind the `TransferProtocol` boundary.
+//! The CLI is an authenticated IPC client. It owns no transfer, storage handle, journal, or engine
+//! task; exiting or being killed can therefore affect only this client connection (I-12).
 //!
 //! `main` is the one place in this codebase where an error may be printed and the process may
 //! exit non-zero; `anyhow` is confined to this boundary (`.claude/rules/rust.md`).
@@ -15,8 +11,12 @@ use std::process::ExitCode;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use downpour_http::{H1H2Backend, SingleStream, StorageLayout, TransportMode};
-use url::Url;
+use downpour_ipc::{
+    AddOptions, AddParams, EndpointPaths, HelloParams, IdParams, LocalStream, PROTOCOL_VERSION,
+    Request, Response, ResponseKind, SecretString, WireState, decode_response, encode_request,
+    read_client_token,
+};
+use thiserror::Error;
 
 /// A download manager that does not corrupt your files.
 #[derive(Debug, Parser)]
@@ -41,14 +41,9 @@ enum Command {
         #[arg(short = 'o', long = "output-dir")]
         output_dir: Option<PathBuf>,
 
-        /// Force HTTP/1.1 rather than negotiating.
-        #[arg(long, conflicts_with = "http2_prior_knowledge")]
-        http1: bool,
-
-        /// Assume HTTP/2 without negotiating (h2c). For cleartext origins that speak HTTP/2,
-        /// including the corpus server, where there is no TLS and therefore no ALPN.
-        #[arg(long = "http2-prior-knowledge")]
-        http2_prior_knowledge: bool,
+        /// Fixed HTTP/1.1 connection count requested from the daemon.
+        #[arg(long)]
+        connections: Option<u16>,
     },
 }
 
@@ -73,51 +68,170 @@ fn main() -> ExitCode {
             // The chain matters: "storing x failed" on its own does not say why, and the cause is
             // what a bug report needs.
             eprintln!("dp: {error:#}");
-            ExitCode::FAILURE
+            error.exit_code()
         }
     }
 }
 
-async fn run(command: Command) -> anyhow::Result<()> {
+#[derive(Debug, Error)]
+enum ClientError {
+    #[error("{0}")]
+    General(#[source] anyhow::Error),
+    #[error("daemon is unreachable: {0}")]
+    Daemon(#[source] anyhow::Error),
+    #[error("download failed: {0}")]
+    DownloadFailed(String),
+}
+
+impl ClientError {
+    fn exit_code(&self) -> ExitCode {
+        match self {
+            Self::General(_) => ExitCode::FAILURE,
+            Self::Daemon(_) => ExitCode::from(3),
+            Self::DownloadFailed(_) => ExitCode::from(4),
+        }
+    }
+}
+
+async fn run(command: Command) -> Result<(), ClientError> {
     match command {
         Command::Add {
             url,
             output_dir,
-            http1,
-            http2_prior_knowledge,
+            connections,
         } => {
-            let url = Url::parse(&url).with_context(|| format!("{url} is not a valid URL"))?;
             let output_dir = match output_dir {
                 Some(dir) => dir,
-                None => {
-                    std::env::current_dir().context("could not determine the current directory")?
+                None => std::env::current_dir()
+                    .context("could not determine the current directory")
+                    .map_err(ClientError::General)?,
+            };
+            let target = output_dir
+                .to_str()
+                .context("output directory is not representable by the IPC path schema")
+                .map_err(ClientError::General)?
+                .to_owned();
+            let mut client = IpcClient::connect().await?;
+            let response = client
+                .call(
+                    Request::DownloadAdd(AddParams {
+                        protocol_version: PROTOCOL_VERSION,
+                        url: SecretString::new(url),
+                        target: Some(target),
+                        options: AddOptions { connections },
+                    }),
+                    ResponseKind::Added,
+                )
+                .await?;
+            let Response::Added(added) = response else {
+                return Err(response_error(response));
+            };
+            let id = added.id;
+            loop {
+                let response = client
+                    .call(
+                        Request::DownloadGet(IdParams {
+                            protocol_version: PROTOCOL_VERSION,
+                            id: id.clone(),
+                        }),
+                        ResponseKind::Download,
+                    )
+                    .await?;
+                match response {
+                    Response::Download(view) if view.state == WireState::Completed => {
+                        println!("{}", id.as_str());
+                        return Ok(());
+                    }
+                    Response::Download(view) if view.state == WireState::Failed => {
+                        return Err(ClientError::DownloadFailed(
+                            view.error_kind.unwrap_or_else(|| "unknown".to_owned()),
+                        ));
+                    }
+                    Response::Download(_) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                    other => return Err(response_error(other)),
                 }
-            };
-
-            let mode = if http1 {
-                TransportMode::Http1Only
-            } else if http2_prior_knowledge {
-                TransportMode::Http2PriorKnowledge
-            } else {
-                TransportMode::Negotiated
-            };
-
-            let journal_dir = journal_dir().context("could not resolve the state directory")?;
-            std::fs::create_dir_all(&journal_dir)
-                .with_context(|| format!("creating {}", journal_dir.display()))?;
-
-            let backend = H1H2Backend::new(mode).context("could not build the HTTP backend")?;
-            let layout = StorageLayout::new(&output_dir, &journal_dir);
-            let path = SingleStream::new(backend)
-                .download(url.clone(), &layout)
-                .await
-                .with_context(|| format!("downloading {url}"))?;
-
-            // stdout carries the result and nothing else, so `dp add ... | xargs` works. Progress
-            // and diagnostics go to stderr via tracing.
-            println!("{}", path.display());
-            Ok(())
+            }
         }
+    }
+}
+
+struct IpcClient {
+    stream: LocalStream,
+    next_id: u64,
+}
+
+impl IpcClient {
+    async fn connect() -> Result<Self, ClientError> {
+        let runtime_root = runtime_root().map_err(ClientError::Daemon)?;
+        let paths = EndpointPaths::discover(&runtime_root)
+            .context("discovering the daemon endpoint")
+            .map_err(ClientError::Daemon)?;
+        let token = read_client_token(&paths)
+            .context("reading the daemon session token")
+            .map_err(ClientError::Daemon)?;
+        let stream = LocalStream::connect(&paths)
+            .await
+            .context("connecting to downpourd")
+            .map_err(ClientError::Daemon)?;
+        let mut client = Self { stream, next_id: 1 };
+        let response = client
+            .call(
+                Request::Hello(HelloParams {
+                    protocol_version: PROTOCOL_VERSION,
+                    client: format!("dp/{}", env!("CARGO_PKG_VERSION")),
+                    token,
+                }),
+                ResponseKind::Hello,
+            )
+            .await?;
+        if matches!(response, Response::Hello(_)) {
+            Ok(client)
+        } else {
+            Err(response_error(response))
+        }
+    }
+
+    async fn call(
+        &mut self,
+        request: Request,
+        expected: ResponseKind,
+    ) -> Result<Response, ClientError> {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        let frame = encode_request(id, &request)
+            .context("encoding an IPC request")
+            .map_err(ClientError::General)?;
+        self.stream
+            .send(&frame)
+            .await
+            .context("sending an IPC request")
+            .map_err(ClientError::Daemon)?;
+        let payload = self
+            .stream
+            .receive()
+            .await
+            .context("receiving an IPC response")
+            .map_err(ClientError::Daemon)?;
+        let (response_id, response) = decode_response(&payload, expected)
+            .context("decoding an IPC response")
+            .map_err(ClientError::Daemon)?;
+        if response_id != id {
+            return Err(ClientError::Daemon(anyhow::anyhow!(
+                "daemon replied with response id {response_id}, expected {id}"
+            )));
+        }
+        Ok(response)
+    }
+}
+
+fn response_error(response: Response) -> ClientError {
+    match response {
+        Response::Error(error) => ClientError::DownloadFailed(error.data.kind),
+        _ => ClientError::Daemon(anyhow::anyhow!(
+            "daemon returned an unexpected response type"
+        )),
     }
 }
 
@@ -137,14 +251,23 @@ fn init_tracing(verbosity: u8) {
         .try_init();
 }
 
-/// Where recovery journals live: `$XDG_DATA_HOME/downpour/journals/` and the Windows equivalent.
+/// Root beneath which the daemon provisions its protected socket or named-pipe token state.
 ///
-/// Resolved through `directories` rather than hard-coded or derived from the executable's
-/// location (`docs/02-architecture.md` §7). It has to be the same directory the daemon will use,
-/// because a journal the daemon cannot find is a download it cannot recover — and one written
-/// beside the user's downloads would be destroyed by clearing that folder.
-fn journal_dir() -> anyhow::Result<PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", "downpour")
-        .context("no home directory for this user")?;
-    Ok(dirs.data_dir().join("journals"))
+/// Tests override it per process; production follows the platform paths in `docs/02` §7.
+fn runtime_root() -> anyhow::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("DOWNPOUR_RUNTIME_ROOT") {
+        return Ok(PathBuf::from(path));
+    }
+    #[cfg(unix)]
+    {
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .context("XDG_RUNTIME_DIR is not set")
+    }
+    #[cfg(windows)]
+    {
+        let dirs = directories::ProjectDirs::from("", "", "downpour")
+            .context("no local application-data directory for this user")?;
+        Ok(dirs.data_local_dir().join("runtime"))
+    }
 }

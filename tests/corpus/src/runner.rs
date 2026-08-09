@@ -16,7 +16,8 @@
 
 use std::path::{Path, PathBuf};
 
-use downpour_http::{H1H2Backend, SingleStream, TransportMode};
+use downpour_engine::{SingleStream, StorageLayout};
+use downpour_http::{H1H2Backend, TransportMode};
 use downpour_types::RangeSupport;
 
 use crate::case::{Case, FinalState, ProtocolCase, RangeSupportCase};
@@ -329,10 +330,7 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
     // honoured exactly, so `retry-after-is-honoured` still waits the second the server asked for.
     let outcome = SingleStream::new(backend)
         .with_retry_policy(downpour_http::RetryPolicy::fast_for_tests())
-        .download(
-            url,
-            &downpour_http::StorageLayout::new(scratch, &journal_dir),
-        )
+        .download(url, &StorageLayout::new(scratch, &journal_dir))
         .await;
 
     // ---- expectation: final state and error kind

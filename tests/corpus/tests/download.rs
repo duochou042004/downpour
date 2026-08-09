@@ -12,8 +12,8 @@ use std::path::Path;
 
 use downpour_corpus::content::Content;
 use downpour_corpus::server::{Framing, PathologyServer, Protocol, RangeBehaviour, ServerSpec};
-use downpour_http::download::{DownloadError, SingleStream};
-use downpour_http::{H1H2Backend, StorageLayout, TransportMode};
+use downpour_engine::{DownloadError, SingleStream, StorageLayout};
+use downpour_http::{H1H2Backend, TransportMode};
 use url::Url;
 
 const SIZE: u64 = 512 * 1024;

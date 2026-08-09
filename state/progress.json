@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T19:23:18Z",
+  "updated_at": "2026-08-09T19:44:05Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1172,7 +1172,7 @@
           "id": "S3-T8",
           "title": "Make the daemon own transfers and move the CLI behind IPC",
           "status": "in_progress",
-          "proof": "crates/downpour-cli/tests/daemon_ownership.rs::killing_cli_after_submission_does_not_stop_daemon_progress; crates/downpour-cli/tests/dependency_boundary.rs::cli_production_dependencies_cannot_reach_transfer_or_storage_crates; crates/downpour-http/tests/dependency_boundary.rs::http_production_dependencies_cannot_reach_allocator_or_storage_crates; all three deliberately red before BUILD",
+          "proof": "crates/downpour-cli/tests/daemon_ownership.rs::killing_cli_after_submission_does_not_stop_daemon_progress; crates/downpour-cli/tests/dependency_boundary.rs::cli_production_dependencies_cannot_reach_transfer_or_storage_crates; crates/downpour-http/tests/dependency_boundary.rs::http_production_dependencies_cannot_reach_allocator_or_storage_crates; crates/downpour-cli/tests/dp_add.rs daemon-backed end-to-end suite; the first three were deliberately red before BUILD",
           "files": [
             "crates/downpour-daemon/",
             "crates/downpour-cli/",
@@ -1180,7 +1180,7 @@
             "crates/downpour-http/"
           ],
           "blocked_by": "S3-T7",
-          "notes": "Kill the CLI after submission and prove progress continues. Move orchestration and the storage adapter out of downpour-http, remove downpour-http's storage and interval dependencies, and mechanically prevent the CLI from linking engine or storage. Closes B-4 and B-21 and completes ADR-0016's expected reversal. PROVE prepared 2026-08-09: the lifetime fixture binds the real user-scoped native endpoint, starts a real dp subprocess, and holds the origin's first range request so the transfer cannot race to completion. A test-only handler wrapper will signal only after the production daemon registry accepts download.add, then holds the response while the test kills that still-live CLI. Releasing both gates must produce a byte-exact 8 MiB final file. The daemon connection surface is an explicit Unavailable scaffold. The proof currently fails after three seconds because current dp never submits to IPC; the two independent dependency proofs fail on downpour-cli -> downpour-http and downpour-http -> downpour-intervals respectively.",
+          "notes": "Kill the CLI after submission and prove progress continues. Move orchestration and the storage adapter out of downpour-http, remove downpour-http's storage and interval dependencies, and mechanically prevent the CLI from linking engine or storage. Closes B-4 and B-21 and completes ADR-0016's expected reversal. PROVE prepared 2026-08-09: the lifetime fixture binds the real user-scoped native endpoint, starts a real dp subprocess, and holds the origin's first range request so the transfer cannot race to completion. A test-only handler wrapper signals only after the production daemon registry accepts download.add, then holds the response while the test kills that still-live CLI. Releasing both gates produces a byte-exact 8 MiB final file. The proof initially failed after three seconds because Stage-1 dp never submitted to IPC; the two independent dependency proofs failed on downpour-cli -> downpour-http and downpour-http -> downpour-intervals respectively. BUILD moves SingleStream and StorageSink together into downpour-engine, adds a detached daemon-owned transfer registry and authenticated framed connection loop, makes dp an IPC-only client with the specified unreachable/download-failed exit codes, preserves stable error kinds across the wire, and adds the thin downpourd process loop. The seven existing dp tests now run through the production daemon/session/engine path. Four reachable mutations went red and were restored with touched rebuilds: synchronous client-bound execution, post-completion byte corruption, a CLI-to-engine production edge, and an HTTP-to-storage production edge. Erasing the stable failure kind also made the pre-existing content-encoding refusal proof red. The lifetime proof passed 20/20 process runs. Windows GNU all-target clippy is clean. Final local gates: workspace 323/323 with 3 skipped, doctests 7/7, release simulation 14/14. Native Windows CI remains before completion.",
           "invariants": [
             "I-11",
             "I-12",
@@ -1931,7 +1931,7 @@
     },
     {
       "id": "B-4",
-      "text": "downpour-cli links downpour-http directly in S1 because no daemon exists yet. When downpour-daemon lands, move the transfer behind IPC so the architecture rule 'clients never link the engine' (docs/02 section 3) holds again.",
+      "text": "CLOSED 2026-08-09 by S3-T8. dp now authenticates over downpour-ipc and its recursive production dependency proof rejects any path to downpour-http, downpour-engine or downpour-storage. A real dp subprocess is killed after daemon submission while a held origin request proves work remains live; the daemon then completes the byte-exact file. Original: downpour-cli links downpour-http directly in S1 because no daemon exists yet. When downpour-daemon lands, move the transfer behind IPC so the architecture rule 'clients never link the engine' (docs/02 section 3) holds again.",
       "found_in_stage": "S1",
       "target_stage": "S3",
       "rationale": "Roadmap S1 lists only three crates, so a direct link is the only option now; recorded so it is not mistaken for the intended end state"
@@ -2050,7 +2050,7 @@
     },
     {
       "id": "B-21",
-      "text": "ADR-0016 gives downpour-http a dependency on downpour-storage so the storage-backed sink can live beside SingleStream. The architecture diagram in docs/02 section 3 has no such arrow: engine is the crate that sees both. Delete the dependency in S3 when downpour-engine lands and SingleStream moves there with the sink. If S3 closes with it still present, it was forgotten.",
+      "text": "CLOSED 2026-08-09 by S3-T8. SingleStream and StorageSink moved together to downpour-engine, downpour-http's normal interval/storage dependencies were deleted, and a recursive production-graph proof forbids their return. ADR-0016 records that its expected crate-boundary reversal fired; B-23 remains separate because the single-stream fallback's per-call spawn_blocking performance cleanup is not this dependency reversal. Original: ADR-0016 gives downpour-http a dependency on downpour-storage so the storage-backed sink can live beside SingleStream. The architecture diagram in docs/02 section 3 has no such arrow: engine is the crate that sees both. Delete the dependency in S3 when downpour-engine lands and SingleStream moves there with the sink. If S3 closes with it still present, it was forgotten.",
       "found_in_stage": "S2",
       "target_stage": "S3",
       "rationale": "ADR-0016's reversal trigger is an expected end, not a contingency, and an expected end that nothing tracks is just a permanent exception"
@@ -3771,6 +3771,27 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T8 remains in progress at BUILD. Commit the red proof first. Move SingleStream and StorageSink orchestration into downpour-engine, delete downpour-http's interval/storage edges, implement daemon task registry plus framed connection loop, and replace dp's transfer path with authenticated IPC. Preserve every existing end-to-end server pathology through a daemon-backed CLI fixture, then mutation-check client death, both dependency barriers, and byte equality before claiming completion."
+    },
+    {
+      "at": "2026-08-09T19:44:05Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Built and mutation-verified S3-T8's daemon ownership boundary. SingleStream and StorageSink moved intact to downpour-engine, completing ADR-0016's crate-boundary reversal; downpour-http has no production path to intervals or storage, and dp has no production path to HTTP, engine or storage. Both proofs recursively traverse workspace normal dependencies. TransferDaemon authenticates framed sessions, validates typed requests, starts detached engine tasks before replying, retains queryable state and stable failure kinds, and serves add/get/status; downpourd is the thin multi-client process loop. dp now performs hello/add/get only over IPC, polls daemon state, prints the stable ID, and uses exit 3 for unreachable plus exit 4 for transfer failure. All seven legacy dp behaviors run through that boundary. The named lifetime proof reached accepted submission with the HTTP probe held, forcibly killed the live dp process, released both gates and observed an 8 MiB byte-exact final file; it passed 20/20 runs. Four task mutations and one inherited error-semantic mutation went red and were restored with touched rebuilds: synchronous client-bound execution, corrupting the named result at offset zero, reintroducing CLI-to-engine, reintroducing HTTP-to-storage, and erasing the stable content-encoding failure kind. Windows GNU all-target clippy is clean. Exact final local gates: workspace 323/323 with 3 skipped, doctests 7/7 and release simulation 14/14.",
+      "tasks_touched": [
+        "S3-T8"
+      ],
+      "files_touched": [
+        "Cargo.lock",
+        "crates/downpour-cli/",
+        "crates/downpour-daemon/",
+        "crates/downpour-engine/",
+        "crates/downpour-http/",
+        "crates/downpour-ipc/",
+        "docs/adr/0016-storage-backed-sink-in-http-until-the-engine-lands.md",
+        "tests/corpus/",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3-T8 remains in progress pending all four native GitHub jobs on the green BUILD commit. Do not mark done or start S3-T9 until those are green. current_stage remains S3."
     }
   ],
   "metrics": {

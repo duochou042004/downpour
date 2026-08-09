@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 
 use downpour_corpus::content::Content;
 use downpour_corpus::server::{PathologyServer, Protocol, ServerSpec};
-use downpour_http::{H1H2Backend, SingleStream, TransportMode};
+use downpour_engine::{SingleStream, StorageLayout};
+use downpour_http::{H1H2Backend, TransportMode};
 use url::Url;
 
 /// One gigabyte, decimal, as the exit criterion words it.
@@ -121,10 +122,7 @@ async fn download_a_gigabyte_with(
 
     let started = std::time::Instant::now();
     let path = SingleStream::new(backend)
-        .download(
-            url,
-            &downpour_http::StorageLayout::new(&scratch.path, scratch.journals()),
-        )
+        .download(url, &StorageLayout::new(&scratch.path, scratch.journals()))
         .await
         .expect("a gigabyte downloads");
     let elapsed = started.elapsed();

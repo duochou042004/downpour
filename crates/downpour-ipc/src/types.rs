@@ -232,6 +232,9 @@ pub struct DownloadView {
     pub covered: u64,
     /// Known representation length.
     pub total: Option<u64>,
+    /// Stable failure kind when `state` is `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
 }
 
 /// Minimal daemon status returned in S3.

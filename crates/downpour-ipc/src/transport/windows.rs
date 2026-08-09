@@ -45,6 +45,29 @@ pub(super) fn prepare_paths(runtime_root: &Path) -> Result<EndpointPaths, Transp
     })
 }
 
+pub(super) fn client_paths(runtime_root: &Path) -> Result<EndpointPaths, TransportError> {
+    let sid = current_user_sid()?;
+    let runtime_dir = runtime_root.join("downpour");
+    let runtime_wide = wide_path(&runtime_dir);
+    // SAFETY: runtime_wide is NUL-terminated and remains live for the call.
+    let flags = unsafe { GetFileAttributesW(runtime_wide.as_ptr()) };
+    if flags == INVALID_FILE_ATTRIBUTES {
+        return Err(io::Error::last_os_error().into());
+    }
+    if flags & FILE_ATTRIBUTE_DIRECTORY == 0 || flags & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Downpour runtime path is not a real directory",
+        )
+        .into());
+    }
+    Ok(EndpointPaths {
+        token_file: runtime_dir.join("session.token"),
+        pipe_name: format!("downpour-{sid}"),
+        runtime_dir,
+    })
+}
+
 pub(super) fn create_listener(paths: &EndpointPaths) -> Result<NativeListener, TransportError> {
     let sid = current_user_sid()?;
     let descriptor = descriptor_for_sid(&sid)?;

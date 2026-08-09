@@ -142,3 +142,15 @@ a measurable regression against its S1 baseline, or the worker pool lands and a 
 needs the same file handle. Do not replace it earlier on the strength of the argument alone —
 the reason to prefer a channel is amortisation across workers, and with one worker there is
 nothing to amortise.
+
+## Resolution
+
+The crate-boundary reversal trigger fired in S3-T8. `SingleStream` and `StorageSink` moved together
+to `downpour-engine`; `downpour-http` no longer has production dependencies on either
+`downpour-storage` or `downpour-intervals`. A recursive production-graph test in each affected
+client/protocol crate makes both boundaries executable rather than relying on this note.
+
+The second trigger is tracked independently by B-23. The fixed segmented worker path uses S3's
+bounded writer actor, while the retained single-stream fallback still uses the per-call
+`spawn_blocking` adapter described above. This resolution does not claim that separate performance
+cleanup is complete.

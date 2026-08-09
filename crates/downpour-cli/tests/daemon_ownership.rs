@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use downpour_corpus::content::Content;
 use downpour_corpus::server::{PathologyServer, ServerSpec};
 use downpour_daemon::server::{TransferConfig, TransferDaemon, serve_connection};
+use downpour_http::TransportMode;
 use downpour_ipc::{CommandHandler, LocalListener, Request, Response};
 
 const SIZE: u64 = 8 * 1024 * 1024;
@@ -68,7 +69,6 @@ fn spawn_dp(url: &str, output: &Path, runtime_root: &Path) -> Child {
         .arg(url)
         .arg("--output-dir")
         .arg(output)
-        .arg("--http1")
         .env("DOWNPOUR_RUNTIME_ROOT", runtime_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -103,7 +103,7 @@ async fn killing_cli_after_submission_does_not_stop_daemon_progress() {
     let daemon = TransferDaemon::new(TransferConfig {
         target_dir: output.clone(),
         journal_dir: journals,
-        connections: 4,
+        transport_mode: TransportMode::Http1Only,
     });
     let (submitted_tx, submitted_rx) = sync_channel(1);
     let (release_tx, release_rx) = sync_channel(1);
@@ -133,6 +133,8 @@ async fn killing_cli_after_submission_does_not_stop_daemon_progress() {
     if submitted.is_err() {
         let _ = cli.kill();
         let output = cli.wait_with_output().expect("collect failed dp");
+        server.release_held_range();
+        let _ = release_tx.send(());
         panic!(
             "the daemon never accepted the submitted download; stdout={:?}, stderr={:?}",
             String::from_utf8_lossy(&output.stdout),

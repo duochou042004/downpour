@@ -451,10 +451,10 @@ dependencies = [
  "downpour-daemon",
  "downpour-http",
  "downpour-ipc",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "url",
 ]
 
 [[package]]
@@ -463,6 +463,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "downpour-engine",
  "downpour-http",
  "downpour-storage",
  "downpour-types",
@@ -481,6 +482,10 @@ dependencies = [
 name = "downpour-daemon"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "directories",
+ "downpour-engine",
+ "downpour-http",
  "downpour-intervals",
  "downpour-ipc",
  "downpour-storage",
@@ -488,6 +493,8 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -495,6 +502,7 @@ name = "downpour-engine"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "downpour-corpus",
  "downpour-http",
  "downpour-intervals",
@@ -503,6 +511,7 @@ dependencies = [
  "proptest",
  "thiserror",
  "tokio",
+ "tracing",
  "url",
 ]
 
@@ -511,9 +520,7 @@ name = "downpour-http"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "blake3",
- "downpour-intervals",
- "downpour-storage",
+ "downpour-engine",
  "downpour-types",
  "httpdate",
  "mime",

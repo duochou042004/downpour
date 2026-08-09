@@ -43,6 +43,11 @@ pub struct EndpointPaths {
 }
 
 impl EndpointPaths {
+    /// Discover an existing daemon endpoint without creating or changing its protected state.
+    pub fn discover(runtime_root: &Path) -> Result<Self, TransportError> {
+        client_paths(runtime_root)
+    }
+
     /// User-private Downpour runtime directory.
     #[must_use]
     pub fn runtime_dir(&self) -> &Path {
@@ -185,6 +190,34 @@ fn prepare_paths(runtime_root: &Path) -> Result<EndpointPaths, TransportError> {
 }
 
 #[cfg(unix)]
+fn client_paths(runtime_root: &Path) -> Result<EndpointPaths, TransportError> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let runtime_dir = runtime_root.join("downpour");
+    let metadata = fs::symlink_metadata(&runtime_dir)?;
+    if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Downpour runtime directory is not a private real directory",
+        )
+        .into());
+    }
+    let root_metadata = fs::metadata(runtime_root)?;
+    if metadata.uid() != root_metadata.uid() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Downpour runtime directory owner differs from its runtime root",
+        )
+        .into());
+    }
+    Ok(EndpointPaths {
+        token_file: runtime_dir.join("session.token"),
+        socket_path: runtime_dir.join("daemon.sock"),
+        runtime_dir,
+    })
+}
+
+#[cfg(unix)]
 fn create_listener(paths: &EndpointPaths) -> Result<NativeListener, TransportError> {
     use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
 
@@ -240,4 +273,4 @@ fn provision_token(paths: &EndpointPaths, token: &SessionToken) -> Result<(), Tr
 mod windows;
 
 #[cfg(windows)]
-use windows::{create_listener, native_name, prepare_paths, provision_token};
+use windows::{client_paths, create_listener, native_name, prepare_paths, provision_token};

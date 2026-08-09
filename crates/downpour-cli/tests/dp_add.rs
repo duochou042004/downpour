@@ -10,6 +10,9 @@ use std::process::Command;
 
 use downpour_corpus::content::Content;
 use downpour_corpus::server::{PathologyServer, Protocol, RangeBehaviour, ServerSpec};
+use downpour_daemon::server::{TransferConfig, TransferDaemon, serve_connection};
+use downpour_http::TransportMode;
+use downpour_ipc::LocalListener;
 
 const SIZE: u64 = 256 * 1024;
 
@@ -72,14 +75,53 @@ struct Run {
     stderr: String,
 }
 
-fn dp_add(url: &str, scratch: &Scratch, extra: &[&str]) -> Run {
+struct DaemonHarness {
+    runtime_root: PathBuf,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl DaemonHarness {
+    async fn start(target_dir: &Path, mode: TransportMode) -> Self {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let runtime_root = std::env::temp_dir().join(format!("downpour-cli-daemon-{unique}"));
+        let journal_dir = runtime_root.join("journals");
+        std::fs::create_dir_all(&runtime_root).expect("create daemon runtime root");
+        std::fs::create_dir_all(&journal_dir).expect("create daemon journal directory");
+        let listener = LocalListener::bind(&runtime_root).expect("bind daemon endpoint");
+        let token = listener.session_token();
+        let daemon = TransferDaemon::new(TransferConfig {
+            target_dir: target_dir.to_path_buf(),
+            journal_dir,
+            transport_mode: mode,
+        });
+        let task = tokio::spawn(async move {
+            let Ok(stream) = listener.accept().await else {
+                return;
+            };
+            let _ = serve_connection(stream, token, daemon).await;
+        });
+        Self { runtime_root, task }
+    }
+}
+
+impl Drop for DaemonHarness {
+    fn drop(&mut self) {
+        self.task.abort();
+        let _ = std::fs::remove_dir_all(&self.runtime_root);
+    }
+}
+
+fn dp_add(url: &str, scratch: &Scratch, daemon: &DaemonHarness) -> Run {
     let mut command = Command::new(dp_binary());
     command
         .arg("add")
         .arg(url)
         .arg("--output-dir")
         .arg(scratch.path())
-        .args(extra);
+        .env("DOWNPOUR_RUNTIME_ROOT", &daemon.runtime_root);
     let output = command.output().expect("dp runs");
     Run {
         code: output.status.code(),
@@ -89,22 +131,27 @@ fn dp_add(url: &str, scratch: &Scratch, extra: &[&str]) -> Run {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn dp_add_downloads_a_file_and_prints_its_path() {
+async fn dp_add_downloads_a_file_and_prints_its_id() {
     let server = PathologyServer::start(spec()).await.expect("server starts");
     let scratch = Scratch::new("ok");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
 
-    let run = dp_add(&server.entry_url(), &scratch, &["--http1"]);
+    let run = dp_add(&server.entry_url(), &scratch, &daemon);
 
     assert_eq!(run.code, Some(0), "stderr was: {}", run.stderr);
-    let printed = run.stdout.trim();
-    assert_eq!(
-        Path::new(printed),
-        scratch.path().join("content"),
-        "stdout must carry the path and nothing else, so `dp add | xargs` works"
+    assert!(
+        run.stdout.trim().len() == 32
+            && run
+                .stdout
+                .trim()
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit()),
+        "stdout must carry one stable download ID and nothing else: {:?}",
+        run.stdout
     );
     assert_eq!(scratch.entries(), vec!["content"]);
 
-    let bytes = std::fs::read(printed).expect("the printed path is readable");
+    let bytes = std::fs::read(scratch.path().join("content")).expect("final file is readable");
     assert_eq!(
         Content::new(42, SIZE).first_mismatch(0, &bytes),
         None,
@@ -121,11 +168,12 @@ async fn dp_add_works_over_http2() {
     .await
     .expect("server starts");
     let scratch = Scratch::new("h2");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http2PriorKnowledge).await;
 
-    let run = dp_add(&server.entry_url(), &scratch, &["--http2-prior-knowledge"]);
+    let run = dp_add(&server.entry_url(), &scratch, &daemon);
 
     assert_eq!(run.code, Some(0), "stderr was: {}", run.stderr);
-    let bytes = std::fs::read(run.stdout.trim()).expect("readable");
+    let bytes = std::fs::read(scratch.path().join("content")).expect("readable");
     assert_eq!(Content::new(42, SIZE).first_mismatch(0, &bytes), None);
 }
 
@@ -138,9 +186,10 @@ async fn dp_add_downloads_from_a_server_without_range_support() {
     .await
     .expect("server starts");
     let scratch = Scratch::new("noranges");
-    let run = dp_add(&server.entry_url(), &scratch, &["--http1"]);
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
+    let run = dp_add(&server.entry_url(), &scratch, &daemon);
     assert_eq!(run.code, Some(0), "stderr was: {}", run.stderr);
-    let bytes = std::fs::read(run.stdout.trim()).expect("readable");
+    let bytes = std::fs::read(scratch.path().join("content")).expect("readable");
     assert_eq!(Content::new(42, SIZE).first_mismatch(0, &bytes), None);
 }
 
@@ -155,10 +204,11 @@ async fn dp_add_exits_non_zero_and_writes_no_file_when_the_probe_refuses() {
     .await
     .expect("server starts");
     let scratch = Scratch::new("gzip");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
 
-    let run = dp_add(&server.entry_url(), &scratch, &["--http1"]);
+    let run = dp_add(&server.entry_url(), &scratch, &daemon);
 
-    assert_eq!(run.code, Some(1));
+    assert_eq!(run.code, Some(4));
     assert!(
         run.stdout.trim().is_empty(),
         "nothing may be printed to stdout on failure"
@@ -169,7 +219,7 @@ async fn dp_add_exits_non_zero_and_writes_no_file_when_the_probe_refuses() {
         scratch.entries()
     );
     assert!(
-        run.stderr.contains("Content-Encoding") || run.stderr.contains("compressed"),
+        run.stderr.contains("unexpected_content_encoding"),
         "the reason must be reported, got: {}",
         run.stderr
     );
@@ -184,10 +234,11 @@ async fn dp_add_leaves_no_final_name_when_the_body_is_truncated() {
     .await
     .expect("server starts");
     let scratch = Scratch::new("truncated");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
 
-    let run = dp_add(&server.entry_url(), &scratch, &["--http1"]);
+    let run = dp_add(&server.entry_url(), &scratch, &daemon);
 
-    assert_eq!(run.code, Some(1));
+    assert_eq!(run.code, Some(4));
     let entries = scratch.entries();
     assert!(
         !entries.contains(&"content".to_owned()),
@@ -199,13 +250,10 @@ async fn dp_add_leaves_no_final_name_when_the_body_is_truncated() {
 #[tokio::test(flavor = "multi_thread")]
 async fn dp_add_reports_a_bad_url_without_touching_the_network() {
     let scratch = Scratch::new("badurl");
-    let run = dp_add("not a url", &scratch, &[]);
-    assert_eq!(run.code, Some(1));
-    assert!(
-        run.stderr.contains("not a valid URL"),
-        "got: {}",
-        run.stderr
-    );
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
+    let run = dp_add("not a url", &scratch, &daemon);
+    assert_eq!(run.code, Some(4));
+    assert!(run.stderr.contains("invalid_url"), "got: {}", run.stderr);
     assert!(scratch.entries().is_empty());
 }
 

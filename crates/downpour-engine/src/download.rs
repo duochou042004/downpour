@@ -1,4 +1,4 @@
-//! The single-stream download: probe, fetch, verify, rename.
+//! Engine-owned single-stream orchestration: probe, fetch, verify, rename.
 //!
 //! This module owns **I-4** for S1: *a completed download is verified before it is named.* The
 //! target is written as `<name>.dppart` and moved to its real name only after the delivered
@@ -6,12 +6,9 @@
 //! indistinguishable from a good one to the user and to every other program on the system, which
 //! makes it worse than an obvious failure.
 //!
-//! **This is a stage-1 arrangement, not the intended architecture.** Orchestration belongs in
-//! `downpour-engine` behind the daemon's IPC (`docs/02-architecture.md` §3, and the hard rule
-//! that clients never link the engine), and durable writes belong in `downpour-storage`, which
-//! owns preallocation, positional writes and the journal ordering I-1 requires. Neither crate
-//! exists until S2/S3. Backlog B-4 and B-5 record the move; the [`crate::sink::SinkTarget`]
-//! boundary is what makes it a substitution rather than a rewrite.
+//! This module moved out of `downpour-http` at S3-T8, completing ADR-0016's required reversal.
+//! Protocol code now owns only network behavior; orchestration and its concrete durable adapter
+//! live together here, above the [`downpour_http::SinkTarget`] boundary.
 
 use std::path::{Path, PathBuf};
 
@@ -19,12 +16,11 @@ use downpour_types::Validator;
 use thiserror::Error;
 use url::Url;
 
-use crate::error::{ProbeError, TransferError};
-use crate::probe::{ReprobePolicy, ResumePlan};
-use crate::protocol::{ProbeRequest, RangeRequest, TransferProtocol};
-use crate::retry::{RetryDecision, RetryPolicy, RetryState, TransientKind};
-use crate::sink::{RangeSink, SinkError};
 use crate::storage_sink::{Artifacts, StorageSink};
+use downpour_http::{
+    ProbeError, ProbeRequest, RangeRequest, RangeSink, ReprobePolicy, ResumePlan, RetryDecision,
+    RetryPolicy, RetryState, SinkError, TransferError, TransferProtocol, TransientKind,
+};
 use downpour_types::{ByteRangeSpec, RemoteObject};
 use std::time::SystemTime;
 

@@ -21,8 +21,13 @@ use std::ops::Range;
 use downpour_intervals::{Interval, IntervalMap, IntervalMapError, IntervalState, WorkerId};
 use thiserror::Error;
 
+pub mod download;
+pub mod storage_sink;
 pub mod worker_pool;
 pub mod writer_service;
+
+pub use download::{DownloadError, SingleStream, StorageLayout};
+pub use storage_sink::{Artifacts, StorageSink};
 
 /// Default lower bound for either half of a split grant.
 pub const DEFAULT_MIN_SPLIT_BYTES: u64 = 1024 * 1024;
