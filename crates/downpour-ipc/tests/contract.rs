@@ -218,6 +218,10 @@ fn hello_authenticates_once_then_each_s3_command_reaches_the_typed_dispatcher() 
     let (_, response) = session.handle_payload(&hello, &mut handler).unwrap();
     assert!(matches!(response, Response::Hello(_)));
     assert!(handler.calls.is_empty());
+    assert!(matches!(
+        session.handle_payload(&hello, &mut handler),
+        Err(SessionError::HelloRepeated)
+    ));
 
     for (index, request) in requests("unused".to_owned())
         .into_iter()
@@ -274,7 +278,47 @@ fn malformed_unauthenticated_and_newer_messages_never_dispatch() {
             supported: PROTOCOL_VERSION
         })
     ));
+    let raw_token = [0x11; 32];
+    let mut authenticated = Session::new(SessionToken::from_bytes(raw_token));
+    let hello = payload(
+        json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol_version":1,"client":"dp","token":"11".repeat(32)}}),
+    );
+    authenticated.handle_payload(&hello, &mut handler).unwrap();
+    for malformed in [
+        payload(
+            json!({"jsonrpc":"2.0","id":2,"method":"download.get","params":{"protocol_version":1,"id":"not-a-download-id"}}),
+        ),
+        payload(
+            json!({"jsonrpc":"2.0","id":3,"method":"download.unknown","params":{"protocol_version":1}}),
+        ),
+    ] {
+        assert!(matches!(
+            authenticated.handle_payload(&malformed, &mut handler),
+            Err(SessionError::Codec(CodecError::InvalidMessage))
+        ));
+    }
     assert!(handler.calls.is_empty());
+}
+
+#[test]
+fn secret_bearing_message_debug_never_reveals_wire_values() {
+    let token = "0123456789abcdef".repeat(4);
+    let signed_url = "https://example.test/file?signature=do-not-log";
+    let hello = Request::Hello(HelloParams {
+        protocol_version: PROTOCOL_VERSION,
+        client: "dp".to_owned(),
+        token: token.clone(),
+    });
+    let add = Request::DownloadAdd(AddParams {
+        protocol_version: PROTOCOL_VERSION,
+        url: signed_url.to_owned(),
+        target: None,
+        options: AddOptions::default(),
+    });
+    let rendered = format!("{hello:?} {add:?}");
+    assert!(!rendered.contains(&token));
+    assert!(!rendered.contains("do-not-log"));
+    assert!(rendered.matches("[redacted]").count() >= 2);
 }
 
 #[test]
