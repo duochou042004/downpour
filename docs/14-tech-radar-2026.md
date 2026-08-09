@@ -20,6 +20,7 @@ here without checking it against §5 and recording it.
 | `rustls` | 0.23 | TLS | With the platform verifier, so enterprise roots work |
 | `rusqlite` | 0.40.1 | SQLite | ADR-0015. Direct, no ORM; default features off and `bundled-windows` on, so Linux uses its security-patched system SQLite while native Windows has a reproducible library. WAL mode. |
 | `serde` | 1.0 | Serialisation | |
+| `serde_json` | 1.0.151 | Strict JSON-RPC payloads | ADR-0020. Rust 1.71 MSRV, MIT/Apache-2.0; private typed DTOs with unknown-field refusal. |
 | `ciborium` | 0.2.2 | Canonical metadata CBOR | ADR-0015. Apache-2.0, Rust 1.58 MSRV; private tuple DTOs only. Exact re-encoding rejects non-canonical bytes, while `RangeProof` remains non-deserializable. |
 | `thiserror` / `anyhow` | 2.0 / 1.0 | Errors | `thiserror` in libraries, `anyhow` only at binary boundaries |
 | `tracing` | 0.1 | Structured logging | Spans per download and per segment |
@@ -28,7 +29,8 @@ here without checking it against §5 and recording it.
 | `bytes` | 1.12 | Buffers | |
 | `directories` | 6.0 | Platform paths | Never hard-code paths |
 | `keyring` | 4.1 | Credential storage | Secret Service / kwallet / Credential Manager |
-| `interprocess` | 2.4 | UDS + named pipes | One API for both platforms |
+| `interprocess` | 2.4.3 | UDS + named pipes | ADR-0020. One Tokio API for both platforms; endpoint permissions are configured explicitly. |
+| `getrandom` | 0.4.3 | IPC session-token entropy | ADR-0020. Direct OS CSPRNG access; Rust 1.85 MSRV, MIT/Apache-2.0. |
 | `governor` | 0.10 | Rate limiting | Token bucket |
 | `proptest` | 1.11 | Property testing | The interval map and journal depend on this |
 | `sha2` | 0.11 | RFC 9530 digest verification | ADR-0017. The server states SHA-2, so verifying its evidence means computing SHA-2; `blake3` is ours, for per-block journal records, and cannot substitute. |
@@ -132,3 +134,4 @@ and gets an ADR.
 | 2026-08-04 | S2-T2 | Added `crc` 3.4.0 after re-verifying it against crates.io and its published source: released 2025-11-26, Rust 1.83 MSRV, MIT OR Apache-2.0, 245M downloads, one dependency (`crc-catalog`), and both crates forbid unsafe. Rejected `crc32c` 0.6.8 for this path: its last crate release was 2024-06, it declares no MSRV, and its hardware acceleration uses architecture-specific unsafe. ADR-0012 records the trade-off and reversal trigger. |
 | 2026-08-04 | S2-T4 | Re-verified `rustix` 1.1.4, `libc` 0.2.189 and `windows-sys` 0.61.2 from crates.io and their published sources: all are MSRV-compatible and Apache-2.0-compatible, and all are already present in the resolved workspace graph. Rejected `fs4` 1.1.0 because it lacks the normative Linux fallback chain and method report; rejected `file_alloc` 0.1.3 because its Windows path uses forbidden `SetFileValidData`, declares no MSRV, and would add Tokio to a synchronous primitive. `cargo-geiger` was not installed, so the audit inspected the exact binding and candidate source paths directly; ADR-0014 confines four first-party FFI calls and records the reversal trigger. |
 | 2026-08-04 | S2-T6 | Re-verified `rusqlite` 0.40.1 and `ciborium` 0.2.2 against crates.io and their published sources before metadata code. `rusqlite` is MIT and selected with only `bundled-windows`; its unavoidable SQLite FFI stays behind one storage module and its undeclared MSRV must be proven by the pinned Rust and native Windows gates. `ciborium`, `ciborium-io`, and `ciborium-ll` are Apache-2.0, declare Rust 1.58, and contain no production `unsafe` blocks in their published Rust sources. Rejected JSON/derived `RemoteObject` persistence because it would create an unchecked `RangeProof` path and make secret-bearing URLs too easy to write; rejected a new UUID dependency by storing and validating the journal's existing 16-byte UUIDv7 representation. ADR-0015 records the formats and exit paths. |
+| 2026-08-10 | S3-T7 | Re-verified `interprocess` 2.4.3, `serde_json` 1.0.151 and `getrandom` 0.4.3 from their published crates before IPC design. All are MSRV-compatible and Apache-2.0-compatible. `interprocess` exposes Tokio local sockets across Unix and Windows plus explicit Unix mode and Windows security-descriptor hooks; `serde_json` retains a bounded default recursion limit and typed Serde decoding; `getrandom::fill` fails rather than returning partial or known-insecure entropy. ADR-0020 confines them to the IPC crate and records their exit paths. |

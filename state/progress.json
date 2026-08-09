@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T18:11:27Z",
+  "updated_at": "2026-08-09T18:17:11Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1153,14 +1153,14 @@
         {
           "id": "S3-T7",
           "title": "Create the versioned authenticated IPC foundation needed by the S3 daemon",
-          "status": "todo",
+          "status": "in_progress",
           "proof": null,
           "files": [
             "crates/downpour-ipc/",
             "crates/downpour-daemon/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "Implement the v1 handshake, framed user-scoped transport, and the S3 method subset needed for add, get/status and resume. Round-trip every message, refuse newer versions, and reject malformed input without side effects. Write an ADR first for any persistent or protocol choice the normative IPC spec does not already fix.",
+          "notes": "DESIGN is recorded first in proposed ADR-0020 because the normative IPC spec leaves byte framing and session-token provisioning open. The decision uses a four-byte little-endian length plus at most 1 MiB of strict typed JSON, a hello-first version/auth state machine, interprocess 2.4.3 local sockets, explicit mode 0600/current-user SID endpoint restrictions, and a redacted 256-bit OS-random per-daemon token. The S3 schema is limited to hello, download.add, download.get, download.resume and system.status. Next is PROVE: round-trip every request/result/error shape; reject oversized length before body allocation; reject malformed, unknown-field, pre-hello, bad-token and newer-version input before a counting dispatcher; then prove native Unix permissions and Windows DACL behavior at the platform layer.",
           "invariants": [
             "I-11",
             "I-12",
@@ -3594,6 +3594,22 @@
         "tests/sim/tests/worker_death_interleaving.rs"
       ],
       "left_in_progress": "S3 is 6/15 tasks and 3/5 exit criteria. current_stage remains S3. Next is S3-T7 PROVE: versioned authenticated IPC framing, user-scoped transport, malformed-input side-effect refusal and the S3 add/status/resume method subset, with an ADR first only if the normative IPC spec leaves a persistent or protocol choice open."
+    },
+    {
+      "at": "2026-08-09T18:17:11Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Completed S3-T7's DESIGN gate before code. The normative IPC spec fixes JSON-RPC 2.0, local-only UDS/named-pipe transport, endpoint permissions, a hello token and version refusal, but leaves the public byte framing and token provisioning open. Proposed ADR-0020 chooses the native-host-compatible four-byte little-endian length with a one-MiB pre-allocation ceiling, strict method DTOs, a hello-first authenticated session, interprocess local sockets with explicit Unix mode or Windows current-user DACL, and a redacted 256-bit OS-random per-daemon token. Re-verified interprocess 2.4.3, serde_json 1.0.151 and getrandom 0.4.3 for MSRV, licence and bounded use, and recorded them in the tech radar. No IPC implementation or completion claim exists yet.",
+      "tasks_touched": [
+        "S3-T7"
+      ],
+      "files_touched": [
+        "docs/14-tech-radar-2026.md",
+        "docs/adr/0020-bounded-authenticated-local-ipc.md",
+        "docs/adr/README.md",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3-T7 is in progress at PROVE. Commit the design, then scaffold only enough API for behaviorally failing codec, handshake, dispatch-side-effect and platform-permission proofs. Do not implement daemon transfer ownership or CLI migration; those remain S3-T8."
     }
   ],
   "metrics": {

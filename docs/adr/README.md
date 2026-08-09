@@ -71,6 +71,7 @@ it is an opinion with a number.
 | [0017](0017-sha2-and-base64-for-rfc-9530-verification.md) | Verify RFC 9530 digests with `sha2` and `base64` | proposed | S2 |
 | [0018](0018-local-corpus-scope-and-fault-injection-boundary.md) | Fault injection lives at a production seam; `local` targets 10 | proposed | S2 |
 | [0019](0019-single-owner-download-state-actor.md) | Allocation and durable writes serialized through one download-state actor | proposed | S3 |
+| [0020](0020-bounded-authenticated-local-ipc.md) | Bounded strict JSON-RPC frames over authenticated local sockets | proposed | S3 |
 
 ## Rules
 
