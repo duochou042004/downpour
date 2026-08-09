@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T17:45:15Z",
+  "updated_at": "2026-08-09T17:51:21Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1136,14 +1136,14 @@
         {
           "id": "S3-T6",
           "title": "Survive worker death and adversarial interleavings without overlapping ownership or writes",
-          "status": "todo",
-          "proof": null,
+          "status": "in_progress",
+          "proof": "tests/sim/tests/worker_death_interleaving.rs::worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership (deliberately red before BUILD)",
           "files": [
             "tests/sim/",
             "crates/downpour-engine/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "Run the actual allocator, worker pool and durable acknowledgements under worker-death and interleaving-fuzz. Assert exclusive ownership at every event and the final file byte-for-byte. Each scenario must prove a worker died, a grant was reclaimed, a split occurred, and completions arrived out of order.",
+          "notes": "PROVE is isolated before BUILD. The deterministic simulation runs the actual allocator, fixed pool, writer actor and durable acknowledgements across 16 seeded schedules. Its independent protocol-lifetime oracle tracks temporal overlap rather than inferring ownership from the canonical map. Before demanding recovery, the red proof establishes that all three initial grants were concurrently live, worker 1 accepted 24-31 and then hit the injected connection reset, and that prefix crossed the durability fence. It then fails behaviorally because the current pool treats the retryable transport death as fatal. The green proof must reclaim only 32-47, split later active work, observe out-of-order durable completions, preserve exact bytes and finish with one Complete interval. T4's distinct queued-after-sync cancellation schedule is still required before this task can close.",
           "invariants": [
             "I-1",
             "I-2",
@@ -3551,6 +3551,20 @@
         "tests/sim/tests/fixed_connection_throughput.rs"
       ],
       "left_in_progress": "S3 is 5/15 tasks and 2/5 exit criteria. current_stage remains S3. Next is S3-T6 PROVE: deterministic worker death and interleaving schedules must each reach death, reclaim, split and out-of-order completion, assert exclusive ownership at every event, and finish byte-for-byte. It must include T4's queued-after-sync cancellation schedule."
+    },
+    {
+      "at": "2026-08-09T17:51:21Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Prepared S3-T6's first deliberately failing simulation proof around the actual SegmentAllocator, FixedWorkerPool, WriterService and durable acknowledgements. Three initial grants rendezvous so temporal concurrency is proven. Worker 1 accepts 24-31 from grant 24-47 and then receives a deterministic transport reset while both peers remain live. An independent protocol-lifetime oracle records every request range and flags any temporal overlap, so canonical interval structure cannot stand in for semantic exclusive ownership. Before the red assertion, the proof establishes all three initial requests, maximum active three, the injected death event and the accepted prefix crossing the durability fence. It then fails behaviorally because the current scheduler treats that retryable transport death as fatal. A successful run must request only 32-47, later split active work, observe out-of-order durable completions, preserve byte-exact storage and end with one Complete interval across 16 seeded interleavings.",
+      "tasks_touched": [
+        "S3-T6"
+      ],
+      "files_touched": [
+        "state/progress.json",
+        "tests/sim/tests/worker_death_interleaving.rs"
+      ],
+      "left_in_progress": "S3-T6 remains in progress at BUILD. Commit this behavioral red proof, then add bounded recovery for retryable Transport, Timeout and TruncatedBody failures while preserving fatal handling for protocol contradictions and sink/storage errors. The task cannot close until the separate queued-after-sync cancellation interleaving is proven and every claimed direction is mutation-checked."
     }
   ],
   "metrics": {
