@@ -64,13 +64,24 @@ impl TransferDaemon {
                 return rpc_error("invalid_url", "download URL is not HTTP(S)", false, None);
             }
         };
-        if params.options.connections == Some(0) {
-            return rpc_error(
-                "invalid_connections",
-                "connection count must be greater than zero",
-                false,
-                None,
-            );
+        match params.options.connections {
+            Some(0) => {
+                return rpc_error(
+                    "invalid_connections",
+                    "connection count must be greater than zero",
+                    false,
+                    None,
+                );
+            }
+            None | Some(1) => {}
+            Some(_) => {
+                return rpc_error(
+                    "segmented_execution_not_ready",
+                    "daemon completion is not yet wired to the segmented worker pool",
+                    false,
+                    None,
+                );
+            }
         }
         let id = match fresh_download_id() {
             Ok(id) => id,

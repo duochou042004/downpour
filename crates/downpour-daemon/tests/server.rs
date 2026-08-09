@@ -26,4 +26,17 @@ async fn an_unwired_multi_connection_request_is_refused_instead_of_silently_runn
         panic!("the daemon accepted a connection count its execution path does not consume");
     };
     assert_eq!(error.data.kind, "segmented_execution_not_ready");
+
+    let response = daemon.handle(Request::DownloadAdd(AddParams {
+        protocol_version: PROTOCOL_VERSION,
+        url: SecretString::new("http://127.0.0.1:9/single"),
+        target: None,
+        options: AddOptions {
+            connections: Some(1),
+        },
+    }));
+    assert!(
+        matches!(response, Response::Added(_)),
+        "the refusal guard also rejected the wired single-stream path: {response:?}"
+    );
 }
