@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T16:12:07Z",
+  "updated_at": "2026-08-09T16:20:33Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1077,7 +1077,7 @@
             "crates/downpour-storage/"
           ],
           "blocked_by": "S3-T1",
-          "notes": "DESIGN recorded in proposed ADR-0019 before code: one per-download state actor owns the sole SegmentAllocator and DurableWriter; the async supervisor owns only its control handle and worker lifecycle; workers get narrower sequential grant-writer handles over one bounded FIFO. Split and abandon commands flush staged work before ownership changes, and stale writes ordered after the fence are rejected against the one canonical map. Next PROVE commit: behavioral red tests for bounded back-pressure, worker-inexpressible offsets, stale-grant rejection before I/O, split/abandon fences, durability receipts only after journal sync, and explicit shutdown/error propagation.",
+          "notes": "DESIGN recorded in proposed ADR-0019 before code: one per-download state actor owns the sole SegmentAllocator and DurableWriter; the async supervisor owns only its control handle and worker lifecycle; workers get narrower sequential grant-writer handles over one bounded FIFO. Split and abandon commands flush staged work before ownership changes, and stale writes ordered after the fence are rejected against the one canonical map. PROVE is now behaviorally red: crates/downpour-engine/tests/writer_service.rs compiles seven proofs, and all seven fail at the first service operation with ActorStopped because the bounded-channel scaffold deliberately starts no receiver. The proofs cover exact write/data-sync/journal-append/journal-sync receipts, split and abandon durability fences, stale-grant rejection before I/O, exact queue saturation while the actor is blocked, sequential worker cursors and payload bounds, clean shutdown, backend error propagation, and zero-capacity refusal.",
           "invariants": [
             "I-1",
             "I-2",
@@ -3368,6 +3368,24 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3-T2 is in progress at PROVE. No writer-service code exists. Next commit must compile and fail behaviorally on bounded back-pressure, stale-grant rejection before I/O, durability receipt ordering, split/abandon fences, and shutdown/error propagation."
+    },
+    {
+      "at": "2026-08-09T16:20:33Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Prepared S3-T2's deliberately failing behavioral proof on top of ADR-0019. Added the bounded service and sequential grant-writer API, but the scaffold intentionally drops its receiver and starts no state actor. Added fake data and journal backends that expose exact ordering plus a controllable blocked write. All seven tests compile and all seven fail at their first required actor operation with ActorStopped: there is no false red from a compiler or fixture defect. The suite specifies journal-sync-gated durability receipts, split and abandon as durability fences, stale-grant rejection before storage I/O, exact bounded-queue saturation, worker-inexpressible absolute offsets through a sequential cursor, payload bounds before I/O, clean shutdown, backend-error propagation, and zero-capacity refusal.",
+      "tasks_touched": [
+        "S3-T2"
+      ],
+      "files_touched": [
+        "Cargo.lock",
+        "crates/downpour-engine/Cargo.toml",
+        "crates/downpour-engine/src/lib.rs",
+        "crates/downpour-engine/src/writer_service.rs",
+        "crates/downpour-engine/tests/writer_service.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3-T2 remains in progress at BUILD. The red proof is ready to commit; the service has no receiver and no state actor. Next: run one dedicated blocking actor that owns the allocator and DurableWriter, then make only these behavioral proofs green before mutation-auditing every claimed direction."
     }
   ],
   "metrics": {

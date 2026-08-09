@@ -485,8 +485,10 @@ name = "downpour-engine"
 version = "0.1.0"
 dependencies = [
  "downpour-intervals",
+ "downpour-storage",
  "proptest",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

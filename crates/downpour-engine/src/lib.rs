@@ -21,6 +21,8 @@ use std::ops::Range;
 use downpour_intervals::{Interval, IntervalMap, IntervalMapError, IntervalState, WorkerId};
 use thiserror::Error;
 
+pub mod writer_service;
+
 /// Default lower bound for either half of a split grant.
 pub const DEFAULT_MIN_SPLIT_BYTES: u64 = 1024 * 1024;
 
@@ -203,5 +205,13 @@ impl SegmentAllocator {
                     .then_with(|| right.start().cmp(&left.start()))
             })
             .map(|(interval, worker)| (interval.start()..interval.end(), worker))
+    }
+
+    #[allow(
+        dead_code,
+        reason = "used by the actor added after the red proof commit"
+    )]
+    pub(crate) fn interval_map_mut(&mut self) -> &mut IntervalMap {
+        &mut self.intervals
     }
 }
