@@ -525,10 +525,15 @@ dependencies = [
 name = "downpour-sim"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "downpour-corpus",
+ "downpour-engine",
+ "downpour-http",
  "downpour-intervals",
  "downpour-storage",
  "downpour-types",
+ "tokio",
+ "url",
 ]
 
 [[package]]

@@ -19,6 +19,7 @@ clap = "4.6.5"
 directories = "6.0"
 downpour-corpus = { path = "tests/corpus" }
 downpour-daemon = { path = "crates/downpour-daemon" }
+downpour-engine = { path = "crates/downpour-engine" }
 downpour-sim = { path = "tests/sim" }
 downpour-http = { path = "crates/downpour-http" }
 downpour-intervals = { path = "crates/downpour-intervals" }

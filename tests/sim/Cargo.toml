@@ -10,10 +10,15 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+async-trait = { workspace = true }
 downpour-corpus = { workspace = true }
+downpour-engine = { workspace = true }
+downpour-http = { workspace = true }
 downpour-intervals = { workspace = true }
 downpour-storage = { workspace = true }
 downpour-types = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
+url = { workspace = true }
 
 [lints]
 workspace = true

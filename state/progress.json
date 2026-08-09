@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T17:36:48Z",
+  "updated_at": "2026-08-09T17:40:34Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1123,14 +1123,14 @@
         {
           "id": "S3-T5",
           "title": "Prove N fixed connections improve throughput on an uncapped origin",
-          "status": "todo",
+          "status": "in_progress",
           "proof": null,
           "files": [
             "tests/sim/",
             "crates/downpour-engine/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "Use virtual time and an origin with independent per-connection capacity but no aggregate server cap. Compare the same representation with one and N workers and assert an explicit improvement. A release benchmark may corroborate this but wall-clock timing is not the primary exit proof.",
+          "notes": "PROVE is behaviorally red. The deterministic origin scaffold deliberately charges every request the whole 64-byte representation's 64 ms service time, so one and four connections both take 64 ms. tests/sim/tests/fixed_connection_throughput.rs::four_independent_connections_beat_one_by_an_explicit_margin first proves the same byte-exact representation, exactly one versus four requests, and maximum active counts one versus four, then fails because four connections were required to finish the wire window in 16 ms and observed 64 ms. The first attempted oracle measured whole-pool elapsed and observed 6 seconds because Tokio virtual time advanced the two-second flush ticker while the real writer actor answered; that run was rejected as cross-runtime scheduling rather than throughput evidence. The corrected oracle measures first request entry through last simulated byte-time completion before storage backpressure. BUILD must replace only the scaffold's aggregate time with independent per-request byte time, then mutation-check byte proportionality, concurrency, the explicit margin, and byte equality.",
           "invariants": []
         },
         {
@@ -3518,6 +3518,23 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3 is 4/15 tasks and 1/5 exit criteria. current_stage remains S3. Next are S3-T5's virtual-time fixed-connection throughput proof and S3-T6's worker-death/interleaving simulation, including the queued-after-sync cancellation schedule that T4 deliberately did not claim."
+    },
+    {
+      "at": "2026-08-09T17:40:34Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Prepared S3-T5's deliberately failing deterministic throughput proof around the real allocator, fixed worker pool, writer actor and durable acknowledgements. The simulated HTTP/1.1 origin records exact request concurrency and a virtual wire window. Its scaffold deliberately charges each request the whole 64-byte representation's 64 ms service time: both one and four connections therefore take 64 ms. Before failing the timing criterion, the proof establishes that the same representation finished byte-exactly, that one run issued one request with maximum active one, and that the four-worker run issued four requests with maximum active four. It then fails at the explicit 16 ms expectation. An initial whole-pool elapsed oracle was rejected after observing 6 seconds from Tokio's flush ticker racing the real writer thread; the corrected oracle measures request entry through simulated byte-time completion before storage backpressure, eliminating that unrelated clock interaction.",
+      "tasks_touched": [
+        "S3-T5"
+      ],
+      "files_touched": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "state/progress.json",
+        "tests/sim/Cargo.toml",
+        "tests/sim/tests/fixed_connection_throughput.rs"
+      ],
+      "left_in_progress": "S3-T5 remains in progress at BUILD. Commit the red proof, then make the simulated uncapped origin charge each request only for its own byte range, preserving the same real engine path. Mutation-check range-size proportionality, actual four-way concurrency, the explicit improvement threshold and byte-exact equality before claiming S3-C1."
     }
   ],
   "metrics": {
