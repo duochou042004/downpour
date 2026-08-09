@@ -19,6 +19,7 @@
 mod codec;
 mod session;
 mod token;
+mod transport;
 mod types;
 
 pub use codec::{
@@ -27,6 +28,7 @@ pub use codec::{
 };
 pub use session::{CommandHandler, Session, SessionError};
 pub use token::{SessionToken, TokenError};
+pub use transport::{EndpointPaths, LocalListener, LocalStream, TransportError, read_client_token};
 pub use types::{
     AddOptions, AddParams, DownloadId, DownloadView, ErrorData, HelloParams, HelloResult, IdParams,
     PROTOCOL_VERSION, Request, Response, ResponseKind, RpcError, SecretString, StateResult,
