@@ -28,6 +28,7 @@ url = { workspace = true }
 [dev-dependencies]
 downpour-intervals = { workspace = true }
 downpour-types = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true
