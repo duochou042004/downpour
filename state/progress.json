@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-09T17:07:33Z",
+  "updated_at": "2026-08-09T17:17:46Z",
   "updated_by": "codex",
   "current_stage": "S3",
   "stages": [
@@ -1114,7 +1114,7 @@
             "crates/downpour-engine/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "PROVE began with the observer itself so the later engine proof cannot rely on unverified handshake evidence. The deliberately inert scaffold gives every request connection ID zero, reports zero counters, and does not hold the configured range. tests/corpus/tests/pathology_server.rs::connection_observation_distinguishes_reuse_from_new_handshakes compiles and fails behaviorally at its first checkpoint: one request was required to reach the one-shot range gate and the observer reported zero. Next, implement and mutation-check stable accepted-connection identities, lifetime/max counters, per-connection request counts and the deterministic gate before writing the engine reuse proof. A fast worker must then finish, receive a new split, and send it over an existing keep-alive connection. Rebuilding the client or forcing Connection: close must turn the named engine proof red.",
+          "notes": "PROVE began with the observer itself so the later engine proof cannot rely on unverified handshake evidence. Commit 337e9ba compiled and failed behaviorally at the first checkpoint because the inert scaffold reported zero held requests. The observer now assigns one nonzero stable ID per accepted socket, counts total/current/maximum connections, decrements current count through a serving-task lifetime guard, records the connection ID on every HTTP/1.1 and h2 request, counts requests by connection, and offers a deterministic one-shot gate keyed by range start. The reference-client proof holds one request, accepts a second idle socket, observes exactly two live connections, proves the drop decrement, repeats the gated range without blocking, and sends two requests over one keep-alive connection. Nine valid mutations went red and were restored with touched rebuilds: missing range match, repeatable gate, constant IDs, missing accepted count, missing active increment, missing active decrement, missing maximum tracking, unfiltered per-connection counts, and IDs that changed per request. An initial per-request mutation did not compile and was rejected before a behaviorally valid replacement was run. Exact observer gates: pathology_server 30/30 and strict corpus clippy clean. Next, add the separate red engine proof: a fast worker must finish, receive a new split, and send it over an existing keep-alive connection; rebuilding the client or forcing Connection: close must turn it red.",
           "invariants": []
         },
         {
@@ -3469,6 +3469,21 @@
         "tests/corpus/tests/pathology_server.rs"
       ],
       "left_in_progress": "S3-T4 remains in progress. Commit this red observer proof, then implement only the connection observer and one-shot gate, mutation-check every claimed direction, and commit it green before adding the separate behaviorally red engine reuse proof. No S3 exit criterion is met yet."
+    },
+    {
+      "at": "2026-08-09T17:17:46Z",
+      "agent": "codex",
+      "stage": "S3",
+      "summary": "Implemented and independently hardened S3-T4's connection observer before using it as engine evidence. Each accepted socket gets one stable nonzero identity; atomic counters expose total, current and maximum simultaneous connections; a task-lifetime guard decrements current on every serving-task exit; request records carry the socket identity over HTTP/1.1 and h2; and a one-shot range-start gate makes a chosen request lifetime deterministic without wall-clock sleeps. The reference client proves two simultaneous sockets, a drop decrement, distinct handshakes, two requests sharing one keep-alive socket, per-connection request counts, and a repeated gated range that is not held twice. Nine valid mutations each made that named test red and were restored with a touched rebuild. The initial attempt to perturb per-request identity did not compile and was rejected; a valid perturbation then made IDs vary by Range header and was caught. Exact checks: pathology_server 30/30, strict downpour-corpus clippy clean, formatting and progress validation clean.",
+      "tasks_touched": [
+        "S3-T4"
+      ],
+      "files_touched": [
+        "state/progress.json",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/tests/pathology_server.rs"
+      ],
+      "left_in_progress": "S3-T4 remains in progress and no exit criterion is claimed. Commit the green observer increment, then add a separate behaviorally red engine proof requiring one stable worker to complete, receive a split from a live peer, and issue the new range through its existing HTTP/1.1 connection as shown by the trusted connection IDs and handshake count."
     }
   ],
   "metrics": {

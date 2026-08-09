@@ -587,7 +587,12 @@ async fn connection_observation_distinguishes_reuse_from_new_handshakes() {
             async move { h1_request(addr, "GET", &path, &[("Range", "bytes=0-9")]).await },
         );
 
-    server.wait_until_range_held().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        server.wait_until_range_held(),
+    )
+    .await
+    .expect("the configured range must reach the gate");
     assert_eq!(
         server.held_range_count(),
         1,
@@ -596,17 +601,26 @@ async fn connection_observation_distinguishes_reuse_from_new_handshakes() {
     assert_eq!(server.accepted_connection_count(), 1);
     assert_eq!(server.active_connection_count(), 1);
 
-    let second = h1_request(
-        server.addr(),
-        "GET",
-        &server.entry_path(),
-        &[("Range", "bytes=10-19")],
-    )
-    .await;
-    assert_eq!(second.status, 206);
-    assert_eq!(server.accepted_connection_count(), 2);
+    let idle = tokio::net::TcpStream::connect(server.addr())
+        .await
+        .expect("second handshake succeeds");
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while server.accepted_connection_count() != 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the server must observe the second accepted connection");
     assert_eq!(server.active_connection_count(), 2);
     assert_eq!(server.maximum_simultaneous_connections(), 2);
+    drop(idle);
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while server.active_connection_count() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("dropping one accepted socket must decrement the active count");
 
     server.release_held_range();
     assert_eq!(
@@ -614,36 +628,45 @@ async fn connection_observation_distinguishes_reuse_from_new_handshakes() {
         206
     );
     let requests = server.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 1);
     assert_ne!(requests[0].connection_id(), 0);
-    assert_ne!(requests[1].connection_id(), 0);
-    assert_ne!(requests[0].connection_id(), requests[1].connection_id());
     assert_eq!(
         server.requests_on_connection(requests[0].connection_id()),
         1
     );
 
-    let reused = client::h1_pipeline(
-        server.addr(),
-        &[
-            (
-                server.entry_path(),
-                vec![("Range".to_owned(), "bytes=20-29".to_owned())],
-            ),
-            (
-                server.entry_path(),
-                vec![("Range".to_owned(), "bytes=30-39".to_owned())],
-            ),
-        ],
+    let reused = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        client::h1_pipeline(
+            server.addr(),
+            &[
+                (
+                    server.entry_path(),
+                    vec![("Range".to_owned(), "bytes=0-9".to_owned())],
+                ),
+                (
+                    server.entry_path(),
+                    vec![("Range".to_owned(), "bytes=30-39".to_owned())],
+                ),
+            ],
+        ),
     )
-    .await;
+    .await
+    .expect("the one-shot gate must not hold the repeated range");
     assert_eq!(reused.len(), 2);
+    assert_eq!(
+        server.held_range_count(),
+        1,
+        "the range gate must be one-shot even when the same range is requested again"
+    );
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
-    assert_eq!(requests[2].connection_id(), requests[3].connection_id());
+    assert_eq!(requests.len(), 3);
+    assert_ne!(requests[1].connection_id(), 0);
+    assert_ne!(requests[0].connection_id(), requests[1].connection_id());
+    assert_eq!(requests[1].connection_id(), requests[2].connection_id());
     assert_eq!(server.accepted_connection_count(), 3);
     assert_eq!(
-        server.requests_on_connection(requests[2].connection_id()),
+        server.requests_on_connection(requests[1].connection_id()),
         2
     );
 }

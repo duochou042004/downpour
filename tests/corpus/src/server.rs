@@ -20,7 +20,7 @@
 //! negotiation and `Alt-Svc` are `protocols`-category concerns and belong to S5.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use std::pin::Pin;
@@ -29,6 +29,7 @@ use std::task::{Context as TaskContext, Poll};
 use hyper::body::{Body as HttpBody, Bytes, Frame, SizeHint};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Notify, Semaphore};
 
 use crate::content::Content;
 
@@ -329,6 +330,95 @@ struct TransientBudget {
     etag: Mutex<Option<String>>,
 }
 
+#[derive(Debug, Default)]
+struct ConnectionObservation {
+    next_id: AtomicU64,
+    accepted: AtomicUsize,
+    active: AtomicUsize,
+    maximum_active: AtomicUsize,
+}
+
+impl ConnectionObservation {
+    fn accepted(self: &Arc<Self>) -> (u64, ActiveConnection) {
+        let connection_id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        self.accepted.fetch_add(1, Ordering::SeqCst);
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum_active.fetch_max(active, Ordering::SeqCst);
+        (
+            connection_id,
+            ActiveConnection {
+                observation: Arc::clone(self),
+            },
+        )
+    }
+}
+
+struct ActiveConnection {
+    observation: Arc<ConnectionObservation>,
+}
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        self.observation.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Debug)]
+struct FirstRangeGate {
+    first: u64,
+    claimed: AtomicBool,
+    held: AtomicUsize,
+    arrived: Notify,
+    release: Semaphore,
+}
+
+impl FirstRangeGate {
+    fn new(first: u64) -> Self {
+        Self {
+            first,
+            claimed: AtomicBool::new(false),
+            held: AtomicUsize::new(0),
+            arrived: Notify::new(),
+            release: Semaphore::new(0),
+        }
+    }
+
+    async fn hold_if_matches(&self, range: Option<&str>) {
+        let matches = range
+            .and_then(parse_range)
+            .is_some_and(|range| match range {
+                RequestedRange::FromTo(first, _) | RequestedRange::From(first) => {
+                    first == self.first
+                }
+                RequestedRange::Suffix(_) => false,
+            });
+        if !matches
+            || self
+                .claimed
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+        {
+            return;
+        }
+
+        self.held.fetch_add(1, Ordering::SeqCst);
+        self.arrived.notify_waiters();
+        if let Ok(permit) = self.release.acquire().await {
+            permit.forget();
+        }
+    }
+
+    async fn wait_until_held(&self) {
+        loop {
+            let arrived = self.arrived.notified();
+            if self.held.load(Ordering::SeqCst) > 0 {
+                return;
+            }
+            arrived.await;
+        }
+    }
+}
+
 impl TransientBudget {
     fn new(spec: &ServerSpec) -> Self {
         Self {
@@ -380,6 +470,8 @@ pub struct PathologyServer {
     addr: SocketAddr,
     spec: Arc<ServerSpec>,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
+    connections: Arc<ConnectionObservation>,
+    range_gate: Option<Arc<FirstRangeGate>>,
     accept_task: tokio::task::JoinHandle<()>,
 }
 
@@ -397,16 +489,26 @@ impl PathologyServer {
     /// An ephemeral port rather than a fixed one so that corpus cases can run in parallel — with
     /// a fixed port they would collide, and the collision would look like a flaky test.
     pub async fn start(spec: ServerSpec) -> std::io::Result<Self> {
+        Self::start_with_gate(spec, None).await
+    }
+
+    async fn start_with_gate(
+        spec: ServerSpec,
+        range_gate: Option<Arc<FirstRangeGate>>,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let spec = Arc::new(spec);
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let connections = Arc::new(ConnectionObservation::default());
 
         let budget = Arc::new(TransientBudget::new(&spec));
         let accept_task = tokio::spawn({
             let spec = Arc::clone(&spec);
             let requests = Arc::clone(&requests);
             let budget = Arc::clone(&budget);
+            let connections = Arc::clone(&connections);
+            let range_gate = range_gate.clone();
             async move {
                 loop {
                     let Ok((stream, _peer)) = listener.accept().await else {
@@ -415,13 +517,24 @@ impl PathologyServer {
                     let spec = Arc::clone(&spec);
                     let requests = Arc::clone(&requests);
                     let budget = Arc::clone(&budget);
+                    let (connection_id, active_connection) = connections.accepted();
+                    let range_gate = range_gate.clone();
                     tokio::spawn(async move {
+                        let _active_connection = active_connection;
                         match spec.protocol {
                             Protocol::Http11 => {
-                                serve_http11(stream, &spec, &requests, &budget).await;
+                                serve_http11(
+                                    stream,
+                                    &spec,
+                                    &requests,
+                                    &budget,
+                                    connection_id,
+                                    range_gate.as_deref(),
+                                )
+                                .await;
                             }
                             Protocol::H2c => {
-                                serve_h2c(stream, &spec, &requests, &budget).await;
+                                serve_h2c(stream, &spec, &requests, &budget, connection_id).await;
                             }
                         }
                     });
@@ -433,6 +546,8 @@ impl PathologyServer {
             addr,
             spec,
             requests,
+            connections,
+            range_gate,
             accept_task,
         })
     }
@@ -442,20 +557,30 @@ impl PathologyServer {
     /// The gate is an observation aid for deterministic connection-lifecycle proofs. Call
     /// [`Self::wait_until_range_held`] before inspecting concurrency and
     /// [`Self::release_held_range`] to let the response proceed.
-    pub async fn start_holding_first_range(spec: ServerSpec, _first: u64) -> std::io::Result<Self> {
-        Self::start(spec).await
+    pub async fn start_holding_first_range(spec: ServerSpec, first: u64) -> std::io::Result<Self> {
+        Self::start_with_gate(spec, Some(Arc::new(FirstRangeGate::new(first)))).await
     }
 
     /// Wait until the configured one-shot range gate has stopped a request.
-    pub async fn wait_until_range_held(&self) {}
+    pub async fn wait_until_range_held(&self) {
+        if let Some(gate) = &self.range_gate {
+            gate.wait_until_held().await;
+        }
+    }
 
     /// Release the request stopped by the configured one-shot range gate.
-    pub fn release_held_range(&self) {}
+    pub fn release_held_range(&self) {
+        if let Some(gate) = &self.range_gate {
+            gate.release.add_permits(1);
+        }
+    }
 
     /// Number of requests stopped by the one-shot range gate.
     #[must_use]
-    pub const fn held_range_count(&self) -> usize {
-        0
+    pub fn held_range_count(&self) -> usize {
+        self.range_gate
+            .as_ref()
+            .map_or(0, |gate| gate.held.load(Ordering::SeqCst))
     }
 
     /// The address to connect to.
@@ -512,20 +637,20 @@ impl PathologyServer {
 
     /// Number of transport connections accepted since this server started.
     #[must_use]
-    pub const fn accepted_connection_count(&self) -> usize {
-        0
+    pub fn accepted_connection_count(&self) -> usize {
+        self.connections.accepted.load(Ordering::SeqCst)
     }
 
     /// Number of accepted connections whose serving task is still alive.
     #[must_use]
-    pub const fn active_connection_count(&self) -> usize {
-        0
+    pub fn active_connection_count(&self) -> usize {
+        self.connections.active.load(Ordering::SeqCst)
     }
 
     /// Highest number of simultaneously active accepted connections observed.
     #[must_use]
-    pub const fn maximum_simultaneous_connections(&self) -> usize {
-        0
+    pub fn maximum_simultaneous_connections(&self) -> usize {
+        self.connections.maximum_active.load(Ordering::SeqCst)
     }
 
     /// Number of recorded requests carried by one accepted connection.
@@ -907,6 +1032,8 @@ async fn serve_http11(
     spec: &ServerSpec,
     requests: &Arc<Mutex<Vec<RecordedRequest>>>,
     budget: &Arc<TransientBudget>,
+    connection_id: u64,
+    range_gate: Option<&FirstRangeGate>,
 ) {
     let mut buffered: Vec<u8> = Vec::new();
 
@@ -949,11 +1076,15 @@ async fn serve_http11(
 
         if let Ok(mut log) = requests.lock() {
             log.push(RecordedRequest {
-                connection_id: 0,
+                connection_id,
                 method: method.clone(),
                 path: path.clone(),
                 headers: headers.clone(),
             });
+        }
+
+        if let Some(gate) = range_gate {
+            gate.hold_if_matches(range_header.as_deref()).await;
         }
 
         let if_range = headers
@@ -1265,6 +1396,7 @@ async fn serve_h2c(
     spec: &ServerSpec,
     requests: &Arc<Mutex<Vec<RecordedRequest>>>,
     budget: &Arc<TransientBudget>,
+    connection_id: u64,
 ) {
     let io = hyper_util::rt::TokioIo::new(stream);
     let service =
@@ -1287,7 +1419,7 @@ async fn serve_h2c(
 
                 if let Ok(mut log) = requests.lock() {
                     log.push(RecordedRequest {
-                        connection_id: 0,
+                        connection_id,
                         method: request.method().as_str().to_owned(),
                         path: path.clone(),
                         headers: headers.clone(),
