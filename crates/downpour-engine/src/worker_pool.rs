@@ -354,7 +354,11 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
                                 scheduler.reclaim_after_failure().await?;
                                 return Err(error);
                             };
-                            match retry_policy.decide(kind, transient_failures, None) {
+                            match retry_policy.decide(
+                                kind,
+                                transient_failures,
+                                worker_retry_after(&error),
+                            ) {
                                 RetryDecision::GiveUp => {
                                     scheduler.reclaim_after_failure().await?;
                                     return Err(error);
@@ -724,12 +728,33 @@ fn retryable_worker_failure(error: &PoolError) -> Option<TransientKind> {
         TransferError::Transport { .. } => Some(TransientKind::ConnectionReset),
         TransferError::Timeout { .. } => Some(TransientKind::Timeout),
         TransferError::TruncatedBody { .. } => Some(TransientKind::TruncatedBody),
-        TransferError::UnexpectedStatus { .. }
-        | TransferError::LooksLikeAnErrorPage { .. }
+        // Classified by the same table the single-stream path uses
+        // (`crate::download::transient_kind_of`, `docs/03` §7). A `429` from an origin enforcing
+        // its cap politely, or a `503` from one under load, is the first signal I-7 names — and
+        // treating it as fatal here made the segmented path strictly less resilient than the
+        // single-stream path it replaces. `401`, `403` and `410` still fall through to `None`:
+        // those are the refresh flow's (I-8), not a back-off's.
+        TransferError::UnexpectedStatus { status, .. } => TransientKind::from_status(*status),
+        TransferError::LooksLikeAnErrorPage { .. }
         | TransferError::UnusableRangeResponse { .. }
         | TransferError::OverDelivery { .. }
         | TransferError::Sink { .. }
         | TransferError::ValidatorMismatch { .. } => None,
+    }
+}
+
+/// The `Retry-After` a failed worker's response carried, if it carried one.
+///
+/// Substituting our own curve for what a rate limiter asked for is how a rate limit becomes a
+/// ban, so the header is passed through rather than ignored — the same rule the single-stream
+/// path follows in `crate::download::retry_after_of`.
+fn worker_retry_after(error: &PoolError) -> Option<&str> {
+    let PoolError::Transfer(source) = error else {
+        return None;
+    };
+    match source.as_ref() {
+        TransferError::UnexpectedStatus { retry_after, .. } => retry_after.as_deref(),
+        _ => None,
     }
 }
 
