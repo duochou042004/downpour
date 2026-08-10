@@ -4188,6 +4188,22 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3-T9 is close but still todo. What is left is download.resume: the IPC method still returns resume_not_ready, and it now has everything it needs — a persisted identity, a reconciled interval map, SegmentedDownload::resume, and a journal both sides can find. The proof to write with it is the one this session could not construct cheaply: interrupt a transfer so it is left non-terminal, restart, resume, and assert byte-exact with no completed range requested twice. That needs a way to leave a transfer interrupted, which the one-shot server gate does not give because the pool retries past it from a different offset. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Closed B-25 and marked S3-T9 done. download.resume reconciles and runs: it rebuilds the probed identity from the record rather than re-probing, since that identity is what I-8 asks to be persisted and its validator is what I-3 compares against when the resumed transfer asks for a range. A URL whose working form lives in the keyring is refused rather than resumed against its query-stripped public form, which the origin would reject; that path is S8. The end-to-end proof builds the interrupted state directly — two durable runs with a hole between them and a hole at the end, and a record still saying Transferring — because that is what a killed process leaves, and because the pool retries past a one-shot server gate from a different offset so there is no cheap way to hold a real transfer open. It asserts recovery reports the download Paused with the coverage the journal proved, that resume is accepted, that the file lands byte-exact, and that no range the journal already proved is requested again. Mutations: re-probing instead of replaying the record turns it red; seeding a fresh allocator turns it red with the resume requesting 0-2097152, a range the journal already proved. S3-T9 spans B-25, B-37, B-44, B-45, B-46, B-48, B-50, B-51 and B-52. Local 347/347 with 3 skipped.",
+      "tasks_touched": [
+        "S3-T9",
+        "B-25"
+      ],
+      "files_touched": [
+        "crates/downpour-daemon/src/server.rs",
+        "crates/downpour-daemon/tests/server.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3 is 10/16 tasks and 3/5 exit criteria. S3-T9 is done. Next by the plan is S3-T10, off/sample/full block verification on cross-process resume, which is now unblocked because resume exists. Then T11 and T12, the corpus floors, which are the largest remaining volume: connections is 3/20 and ranges is 17/25. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {
