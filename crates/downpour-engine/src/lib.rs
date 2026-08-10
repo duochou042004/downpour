@@ -33,7 +33,9 @@ pub mod storage_sink;
 pub mod worker_pool;
 pub mod writer_service;
 
-pub use download::{DownloadError, SingleStream, StorageLayout};
+pub use download::{
+    DownloadError, SingleStream, StorageLayout, transfer_id_for, validator_hash_of,
+};
 pub use segmented::SegmentedDownload;
 pub use storage_sink::{Artifacts, StorageSink};
 
