@@ -216,6 +216,9 @@ pub struct ServerCase {
     /// with no status and no reason. Answering would make it the `429` pathology instead.
     #[serde(default)]
     pub max_concurrent_connections: Option<usize>,
+    /// After this many ranged responses, report a different total in `Content-Range`.
+    #[serde(default)]
+    pub inconsistent_total_after: Option<usize>,
     /// Accept and immediately close this many connections, with no response at all.
     #[serde(default)]
     pub close_without_responding: usize,
@@ -736,6 +739,7 @@ impl Case {
     pub fn server_spec(&self) -> ServerSpec {
         ServerSpec {
             max_concurrent_connections: self.server.max_concurrent_connections,
+            inconsistent_total_after: self.server.inconsistent_total_after,
             close_without_responding: self.server.close_without_responding,
             close_after_requests: self.server.close_after_requests,
             protocol: match self.server.protocol {

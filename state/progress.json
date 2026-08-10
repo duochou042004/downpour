@@ -2285,6 +2285,13 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "A category the harness cannot reach is worse than an empty one, because cases written for it look like coverage"
+    },
+    {
+      "id": "B-54",
+      "text": "FOUND 2026-08-10, not fixed. docs/03 section 9 lists STALL_WINDOW at 30 seconds with the note \"No progress -> Stalled\", and section 9 opens by saying every default there is configurable. It is implemented nowhere: grep finds Stalled only as an enum variant in the IPC, metadata and retry vocabularies, with nothing that measures progress against a window or moves a download into that state. What exists instead is a hardcoded 300-second per-request timeout in RangeRequest::whole, ranged and resume, which has no parameter behind it in the spec and is not reachable from configuration or from a corpus case. The practical consequence is that a server which accepts a connection and then never answers, or trickles bytes forever, is untestable: the only observable is a five-minute timeout, which no corpus case can wait for, and the correct answer per the spec is a 30-second stall window rather than a request deadline. Two connections-category pathologies named in docs/09 section 3.2 are blocked behind this. Deliberately not implemented here: a Stalled state machine is engine behaviour with its own proofs and is not among S3 deliverables in docs/12.",
+      "found_in_stage": "S3",
+      "target_stage": "S4",
+      "rationale": "A normative parameter with no implementation is worse than a missing feature, because the spec reads as though the behaviour exists and nothing contradicts it"
     }
   ],
   "session_log": [
@@ -4263,11 +4270,29 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3-T11 open at 6 of 20 connections cases. Fourteen remain and each needs its own server capability rather than a YAML variant; the ones already sketched are per-connection byte caps, connection reuse limits, half-open and idle-timeout drops, and slow-loris stalls. Two constraints found while doing these and worth knowing before the next batch: the engine per-request timeout is fixed at 300 seconds and is not reachable from a case, so any pathology whose observable is a timeout — a silent accept that never answers, a slow-loris stall — cannot be written until that is configurable; and the segmented path uses RetryPolicy::default rather than fast_for_tests, so a concurrency case that also injects transient failures will be slow. Then T12 ranges 17 of 25, T13, T14, T15. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Added the first S3-T12 range pathology and found B-54 on the way. The case: several workers fetch disjoint ranges and after the first ranged response the origin starts reporting a different total in Content-Range, as a rotated CDN edge or a load balancer in front of two versions of an object does. Every individual response is well formed — correct status, valid Content-Range, exactly the bytes asked for — and only comparing them across workers shows they cannot describe one representation, which is why it cannot occur on a single stream at all. Mutation: dropping the total comparison in the worker pool makes the download succeed and produce a file, which is the corruption the case exists to prevent, so the proof fails in the direction it claims. B-54, recorded and not fixed: docs/03 section 9 lists STALL_WINDOW at 30 seconds and it is implemented nowhere, while a hardcoded 300-second per-request timeout with no spec parameter behind it stands in its place; that blocks two connections pathologies whose only observable is a timeout, and a Stalled state machine is not an S3 deliverable. ranges is now 18 of 25, connections 6 of 20, corpus 80 of 159. Local 349/349 with 3 skipped.",
+      "tasks_touched": [
+        "S3-T12",
+        "S3-T11",
+        "B-54"
+      ],
+      "files_touched": [
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/cases/ranges/workers-disagree-about-the-total-length.yaml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3 is 11/16 tasks and 3/5 exit criteria. T12 ranges at 18 of 25: the remaining named shapes from the task note are one range returning 200, shifted or overlapping responses between workers, and a later range returning 416, and the ordinal trigger added here — ranged_served — is the mechanism the rest of them need. T11 connections at 6 of 20, with two of the remaining shapes blocked behind B-54. Then T13, T14, T15. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 79,
-    "corpus_cases_passing": 79,
+    "corpus_cases_total": 80,
+    "corpus_cases_passing": 80,
     "sim_seeds_fixed": 19,
     "invariants_covered": 10,
     "invariants_total": 14,

@@ -1,0 +1,26 @@
+id: workers-disagree-about-the-total-length
+category: ranges
+description: >
+  Several workers fetch disjoint ranges of what they each believe is one file, and after the first
+  ranged response the origin starts reporting a different total in `Content-Range` — a CDN edge
+  that rotated, or a load balancer in front of two versions of the object.
+  Every individual response is well-formed: correct status, syntactically valid `Content-Range`,
+  exactly the bytes asked for. Nothing is wrong with any one of them. Only comparing them across
+  workers shows they cannot all describe the same representation, which is why this is a
+  segmented-transfer pathology and cannot occur on a single stream at all.
+  The engine must refuse rather than assemble. Assembling would produce a file of the size the
+  probe established, whose later bytes came from a different object — the exact shape of corruption
+  that a length check and a coverage check both pass.
+references: ["docs/agent/INVARIANTS.md#i-3", "docs/03-transfer-engine-spec.md §2.1", "docs/09-testing-strategy.md §3.2"]
+
+connections: 4
+
+server:
+  content: { size: 8MiB, seed: 143 }
+  etag: '"disagree-v1"'
+  inconsistent_total_after: 1
+
+expect:
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false

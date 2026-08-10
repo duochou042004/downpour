@@ -219,6 +219,14 @@ pub struct ServerSpec {
     /// `429`. The engine has to notice the drop rather than wait out a timeout, and must not
     /// treat "the origin allows four" as "four is the right number" (I-7).
     pub max_concurrent_connections: Option<usize>,
+    /// After this many ranged responses, report a different total in `Content-Range`.
+    ///
+    /// The segmented shape of a representation changing underneath a transfer, and the most
+    /// dangerous one: several workers are fetching disjoint ranges of what they each believe is
+    /// the same file, and the origin — a CDN edge that rotated, a load balancer in front of two
+    /// versions — starts telling later workers a different size. Each individual response is
+    /// well-formed. Only comparing them reveals that they cannot all describe one representation.
+    pub inconsistent_total_after: Option<usize>,
     /// Accept and immediately close this many connections, with no response at all.
     ///
     /// What a load balancer with no healthy backend does, and what a firewall dropping a flow
@@ -265,6 +273,7 @@ impl Default for ServerSpec {
             if_range: IfRangeBehaviour::default(),
             behaviour: Vec::new(),
             max_concurrent_connections: None,
+            inconsistent_total_after: None,
             close_without_responding: 0,
             close_after_requests: None,
         }
@@ -345,6 +354,9 @@ impl RecordedRequest {
 /// would let every attempt fail forever, which would prove the opposite of what the case intends.
 #[derive(Debug)]
 struct TransientBudget {
+    /// Ranged responses served so far, across every connection. Ordinal-triggered range
+    /// pathologies fire on it.
+    ranged_served: AtomicUsize,
     /// Connections still owed an immediate hang-up.
     silent: AtomicU32,
     body: AtomicU32,
@@ -449,6 +461,7 @@ impl FirstRangeGate {
 impl TransientBudget {
     fn new(spec: &ServerSpec) -> Self {
         Self {
+            ranged_served: AtomicUsize::new(0),
             silent: AtomicU32::new(
                 u32::try_from(spec.close_without_responding).unwrap_or(u32::MAX),
             ),
@@ -833,6 +846,7 @@ fn plan(
     range_header: Option<&str>,
     if_range: Option<&str>,
     current_etag: Option<&str>,
+    ranged_served: usize,
 ) -> Plan {
     // A resume whose validator no longer matches is answered with the whole representation, so
     // the range is discarded before anything else looks at it.
@@ -974,9 +988,15 @@ fn plan(
                         ));
                     }
                     _ => {
+                        // Each response is individually well-formed. Only comparing them across
+                        // workers shows that they cannot all describe one representation.
+                        let claimed = match spec.inconsistent_total_after {
+                            Some(after) if ranged_served > after => total + 1,
+                            _ => total,
+                        };
                         headers.push((
                             "Content-Range".to_owned(),
-                            format!("bytes {first}-{last}/{total}"),
+                            format!("bytes {first}-{last}/{claimed}"),
                         ));
                     }
                 }
@@ -1155,12 +1175,16 @@ async fn serve_http11(
             .find(|(name, _)| name == "if-range")
             .map(|(_, value)| value.clone());
         let current_etag = budget.current_etag();
+        let ranged_served = budget
+            .ranged_served
+            .fetch_add(usize::from(range_header.is_some()), Ordering::SeqCst);
         let mut plan = plan(
             spec,
             &path,
             range_header.as_deref(),
             if_range.as_deref(),
             current_etag.as_deref(),
+            ranged_served,
         );
         budget.serve(spec, bytes_to_write(spec, &plan));
         let mut full_len = planned_body_len(spec, &plan);
@@ -1504,12 +1528,16 @@ async fn serve_h2c(
                     .find(|(name, _)| name == "if-range")
                     .map(|(_, value)| value.clone());
                 let current_etag = budget.current_etag();
+                let ranged_served = budget
+                    .ranged_served
+                    .fetch_add(usize::from(range_header.is_some()), Ordering::SeqCst);
                 let mut plan = plan(
                     &spec,
                     &path,
                     range_header.as_deref(),
                     if_range.as_deref(),
                     current_etag.as_deref(),
+                    ranged_served,
                 );
                 budget.serve(&spec, bytes_to_write(&spec, &plan));
                 let mut send_len = bytes_to_write(&spec, &plan);
