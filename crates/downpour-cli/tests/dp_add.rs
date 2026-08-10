@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use downpour_corpus::content::Content;
-use downpour_corpus::server::{PathologyServer, Protocol, RangeBehaviour, ServerSpec};
+use downpour_corpus::server::{DigestSpec, PathologyServer, Protocol, RangeBehaviour, ServerSpec};
 use downpour_daemon::server::{TransferConfig, TransferDaemon, serve_connection};
 use downpour_http::TransportMode;
 use downpour_ipc::LocalListener;
@@ -394,5 +394,57 @@ async fn dp_add_below_the_split_floor_uses_one_connection_however_many_are_asked
             .iter()
             .map(|request| request.header("range"))
             .collect::<Vec<_>>()
+    );
+}
+
+/// I-4 on the segmented path: verified before it is named, with no fast path around it.
+///
+/// The pool refuses incomplete coverage on its own, so a truncated segmented transfer never
+/// reaches the rename. A digest mismatch is different: every byte arrived, the interval map is
+/// complete, the length on disk is right, and the file is still not the representation the server
+/// meant to send. Only the completion sequence can tell, which is why removing it leaves every
+/// other test green.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_segmented_transfer_whose_digest_disagrees_is_not_given_the_final_name() {
+    let server = PathologyServer::start(ServerSpec {
+        content: Content::new(42, SEGMENTED_SIZE),
+        // Well-formed, correct algorithm, wrong bytes — the shape a mid-transfer substitution or a
+        // cache serving a stale representation produces.
+        digest: Some(DigestSpec::Literal(
+            "sha-256=:UjfWbtkjaXhFXHo0IdcHqDcgSv5hDkCLnYCPUcYbHnk=:".to_owned(),
+        )),
+        ..ServerSpec::default()
+    })
+    .await
+    .expect("server starts");
+    let scratch = Scratch::new("segmented-digest");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
+
+    let run = dp_add_with(
+        &server.entry_url(),
+        &scratch,
+        &daemon,
+        &["--connections", "4"],
+    );
+
+    assert_ne!(run.code, Some(0), "stdout was: {}", run.stdout);
+    assert!(
+        run.stderr.contains("unverified"),
+        "the refusal must name verification, not a generic failure: {}",
+        run.stderr
+    );
+    assert!(
+        !scratch.entries().contains(&"content".to_owned()),
+        "a file that failed verification must not wear the final name: {:?}",
+        scratch.entries()
+    );
+    // The part file is evidence for a later resume and is deliberately not deleted (docs/04 §6).
+    assert!(
+        scratch
+            .entries()
+            .iter()
+            .any(|name| name.ends_with(".dppart")),
+        "the partial file must survive as resumable evidence: {:?}",
+        scratch.entries()
     );
 }

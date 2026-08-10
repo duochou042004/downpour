@@ -1327,7 +1327,7 @@
           "title": "Wire the daemon's transfer path to the segmented worker pool",
           "status": "done",
           "blocked_by": "S3-T8",
-          "proof": "crates/downpour-cli/tests/dp_add.rs::dp_add_with_four_connections_segments_the_transfer_and_lands_byte_exact and ::dp_add_below_the_split_floor_uses_one_connection_however_many_are_asked_for; crates/downpour-daemon/tests/server.rs::{a_connection_count_is_refused_at_zero_and_bounded_above,a_requested_connection_count_is_clamped_rather_than_believed}; crates/downpour-engine/tests/writer_service.rs::a_payload_larger_than_one_queue_block_is_split_rather_than_refused"
+          "proof": "crates/downpour-cli/tests/dp_add.rs::dp_add_with_four_connections_segments_the_transfer_and_lands_byte_exact and ::dp_add_below_the_split_floor_uses_one_connection_however_many_are_asked_for; crates/downpour-daemon/tests/server.rs::{a_connection_count_is_refused_at_zero_and_bounded_above,a_requested_connection_count_is_clamped_rather_than_believed}; crates/downpour-engine/tests/writer_service.rs::a_payload_larger_than_one_queue_block_is_split_rather_than_refused; crates/downpour-cli/tests/dp_add.rs::a_segmented_transfer_whose_digest_disagrees_is_not_given_the_final_name"
         }
       ]
     },
@@ -3946,6 +3946,30 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3 and was not touched. S3 is 8/15 tasks and 3/5 exit criteria met again, this time against proofs that fail in the direction they claim. Not yet done from the gate review: B-40, which is the decision about whether wiring the segmented pool into the daemon is an S3 or an S4 task — the daemon still runs SingleStream and refuses connections > 1. Then S3-T9 through S3-T14 as planned, starting with T9's cross-process resume and B-37's no-follow reopen. This branch needs all four GitHub jobs green before it merges, Windows especially, since it changes worker scheduling."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Closed B-40 as S3-T16 on feat/s3-daemon-segmented-path. The daemon now runs transfers through the segmented pool instead of refusing every connection count above one; the state actor gained the I-4 completion sequence, since ADR-0019 already makes it the owner of the part file, journal and interval map. Part-file and journal creation and the no-follow target guard are shared with the single-stream path rather than written twice. One connection still routes to SingleStream, because that path owns S2 retry, If-Range resume and re-probe and the pool cannot yet replace them. Wiring the pool to a real transfer immediately found B-43: GrantWriter refused any payload above 256 KiB, so an 8 MiB loopback download died at offset 4813824 on a 363414-byte body chunk, invisible to every fixture small enough not to reach the bound. Mutations: forcing connections to 1 makes the segmented CLI proof red at one ranged request; skipping verification and renaming directly initially passed the whole workspace, which was a real hole rather than a no-op, so a digest-mismatch case was added and that mutation now turns it red. Local: workspace 333/333 with 3 skipped, release sim 15/15, release corpus 95/95.",
+      "tasks_touched": [
+        "S3-T16",
+        "B-40",
+        "B-43"
+      ],
+      "files_touched": [
+        "crates/downpour-daemon/src/server.rs",
+        "crates/downpour-daemon/tests/server.rs",
+        "crates/downpour-engine/src/segmented.rs",
+        "crates/downpour-engine/src/writer_service.rs",
+        "crates/downpour-engine/src/download.rs",
+        "crates/downpour-engine/src/storage_sink.rs",
+        "crates/downpour-engine/src/lib.rs",
+        "crates/downpour-engine/tests/writer_service.rs",
+        "crates/downpour-cli/tests/dp_add.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3 is 9/16 tasks and 3/5 exit criteria. Two branches are open for review: fix/s3-segmented-concurrency (PR 41, all four jobs green) and feat/s3-daemon-segmented-path, which stacks on it. Next is S3-T9: destroy in-memory state, reconcile on daemon restart, resume from the durable interval map without re-requesting completed bytes, and close B-37 with a no-follow reopen in the same change. The segmented path has no resume of its own yet, which is why one connection still routes to SingleStream."
     }
   ],
   "metrics": {
