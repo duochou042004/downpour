@@ -2236,6 +2236,13 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "A refusal test is only evidence if the thing it refuses would otherwise have succeeded, and a fixture too small to reach the check silently guarantees it would not"
+    },
+    {
+      "id": "B-47",
+      "text": "FIXED 2026-08-10, and it was mine. A temporary eprintln debug probe — PROBE segmented failure — was added to crates/downpour-engine/src/segmented.rs while diagnosing B-43 and got committed in the S3-T16 change. Nothing caught it: clippy allows print_stdout and print_stderr by default, the engine crate deny list covered unwrap, expect, panic, todo, unimplemented and unreachable but not printing, and the file compiled and passed 333 tests with it in place. A debug print in a library is noise on a user terminal that no log level can turn off, and in the daemon it goes nowhere useful at all. The seven library crates now deny print_stdout and print_stderr in the same cfg_attr(not(test)) block that already denies the panic family, which is the existing house pattern; binaries and tests are untouched, because printing is their interface. Verified by reinstating the exact probe and watching clippy refuse it. The general point is the one the harness makes about corpus cases: the fix is not deleting the line, it is the guard that stops the next one.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A review standard applied to other agents work and not to my own is not a standard; the lint is what makes it one"
     }
   ],
   "session_log": [

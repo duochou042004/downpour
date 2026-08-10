@@ -15,7 +15,12 @@
         clippy::panic,
         clippy::todo,
         clippy::unimplemented,
-        clippy::unreachable
+        clippy::unreachable,
+        // A debug print in a library crate is noise on a user's terminal that no log level can
+        // turn off, and it is how a temporary probe survives review — one did, in this crate's
+        // segmented orchestration, and was committed. Library code reports through `tracing`.
+        clippy::print_stdout,
+        clippy::print_stderr
     )
 )]
 

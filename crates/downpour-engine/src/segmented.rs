@@ -122,7 +122,6 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         // rather than unwind past the actor.
         let transferred = pool.execute_segmented(&remote, &service).await;
         if let Err(source) = transferred {
-            eprintln!("PROBE segmented failure: {source}");
             drop(service.shutdown().await);
             return Err(DownloadError::Segmented { source });
         }
