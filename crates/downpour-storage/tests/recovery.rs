@@ -802,9 +802,15 @@ fn a_part_path_that_is_a_dangling_link_or_a_directory_is_refused_by_name() {
 ///
 /// `reconcile_download` needs SQLite because it arbitrates a checkpoint and records an outcome.
 /// A resuming transfer needs neither: it needs the journal's answer about which bytes are durable,
-/// and the sequence its next append must carry. Exposing that separately is what lets the engine
-/// resume without reaching for the daemon's database, and it is the same computation, so the two
-/// cannot drift into disagreeing about what is durable.
+/// and the sequence its next append must carry.
+///
+/// Two of the three claims here carry different weight, and it is worth being exact about which.
+/// The literal ranges and the sequence are behavioural: they pin the answer, and a change to how
+/// blocks are merged or counted makes them red. The equality with `reconcile_download` is **not**
+/// — reconciliation calls this same function, so that comparison cannot fail as written. It is
+/// kept as a guard for the day somebody re-forks the two implementations, which is the only way
+/// recovery and resume could ever come to disagree about what is durable, not as evidence that
+/// they agree today.
 #[test]
 fn durable_state_rebuilds_from_the_journal_alone_and_matches_reconciliation() {
     let directory = TestDirectory::new("store-free-rebuild");
