@@ -2267,7 +2267,7 @@
     },
     {
       "id": "B-51",
-      "text": "FIXED 2026-08-10, and it would have made cross-process resume impossible. The engine named recovery journals from a blake3 of the final URL, with a comment saying it did so because no id allocator existed until the daemon owned one; the daemon startup pass looks for <journal_dir>/<download-id>.dpj exactly as docs/04 section 1 lays it out. So the engine wrote journals the daemon own recovery could never find, and every recovered download would have failed as journal-unreadable. StorageLayout::with_transfer_id now lets the allocated id name the journal, the daemon passes its own download id, and the URL hash stays the fallback for callers that have no allocator. Caught by the first end-to-end restart test rather than by reading, which is the argument for writing that test before the plumbing rather than after.",
+      "text": "FIXED 2026-08-10, and it would have made cross-process resume impossible. The engine named recovery journals from a blake3 of the final URL, with a comment saying it did so because no id allocator existed until the daemon owned one; the daemon startup pass looks for <journal_dir>/<download-id>.dpj exactly as docs/04 section 1 lays it out. So the engine wrote journals the daemon own recovery could never find, and every recovered download would have failed as journal-unreadable. StorageLayout::with_transfer_id now lets the allocated id name the journal, the daemon passes its own download id, and the URL hash stays the fallback for callers that have no allocator. Caught by the first end-to-end restart test rather than by reading, which is the argument for writing that test before the plumbing rather than after. Note on the proof: the first version of the restart test did NOT cover this — a completed download is terminal, reconciliation skips it, so the journal name never mattered and reverting the fix left the test green. The assertion that catches it checks, while the transfer is still live, that the journal exists at the path startup recovery will look for; reverting the fix now fails with \"startup recovery looks for <id>.dpj, but the engine wrote <url-hash>.dpj\". Worth remembering that the end-to-end test passing was not evidence for the thing it was written alongside.",
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "Two components deriving the same filename by different rules is not a naming preference; it is a resume that silently never finds anything"
@@ -4163,6 +4163,31 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3-T9 still todo, daemon half of B-25 unblocked but not built. Remaining shape unchanged: probe, then persist DownloadMetadata, then transfer, since persistence needs the probe result and cannot happen at add time; then seed the registry from recover_all at startup, and have download.resume reconcile and call SegmentedDownload::resume, which exists. Note for whoever does it: just gate runs clippy without --locked while CI runs it with, so a lockfile-sensitive failure can pass locally and fail on GitHub. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Built the daemon half of B-25: the daemon now persists a download record after the probe, updates it to Completed or Failed when the transfer ends, opens a MetadataStore, and seeds its registry from that store on recover(). A download the first instance started is found by a second instance given nothing but the same directories. Two blockers surfaced on the way and are fixed in the same change. B-51: the engine named journals from a hash of the final URL while daemon recovery looks for <journal_dir>/<download-id>.dpj, so the engine wrote journals its own recovery could never find and no download could ever have been resumable; StorageLayout::with_transfer_id lets the allocated id name the journal and the URL hash stays the fallback. B-52: the record was written once at probe time and never updated, so a finished transfer stayed Transferring and the next process reconciled it against a renamed-away part file and reported it broken; and recover() seeded only from the reconciliation pass, which skips terminal downloads, so a completed transfer vanished on restart. B-50 records an IPC gap left open deliberately: WireState has no AwaitingRefresh and adding it is an S8 contract change, so it maps to Paused rather than Stalled, which would promise automatic progress the state does not have. Mutations, run through scratchpad file copies rather than git checkout after B-49: removing the terminal record turns the restart test red; naming the journal from the URL again turns it red with the two paths printed side by side — but only after the assertion for it was added, because the first version of the test passed under that mutation, since a completed download is terminal and its journal is never looked for. Local 346/346 with 3 skipped, gate green.",
+      "tasks_touched": [
+        "S3-T9",
+        "B-25",
+        "B-50",
+        "B-51",
+        "B-52"
+      ],
+      "files_touched": [
+        "crates/downpour-daemon/src/server.rs",
+        "crates/downpour-daemon/src/main.rs",
+        "crates/downpour-daemon/Cargo.toml",
+        "crates/downpour-daemon/tests/server.rs",
+        "crates/downpour-engine/src/download.rs",
+        "crates/downpour-engine/src/segmented.rs",
+        "crates/downpour-cli/tests/dp_add.rs",
+        "crates/downpour-cli/tests/daemon_ownership.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3-T9 is close but still todo. What is left is download.resume: the IPC method still returns resume_not_ready, and it now has everything it needs — a persisted identity, a reconciled interval map, SegmentedDownload::resume, and a journal both sides can find. The proof to write with it is the one this session could not construct cheaply: interrupt a transfer so it is left non-terminal, restart, resume, and assert byte-exact with no completed range requested twice. That needs a way to leave a transfer interrupted, which the one-shot server gate does not give because the pool retries past it from a different offset. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {

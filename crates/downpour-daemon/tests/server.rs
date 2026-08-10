@@ -164,6 +164,40 @@ async fn a_download_outlives_the_daemon_instance_that_started_it() {
         panic!("the add was refused: {response:?}");
     };
 
+    // While the transfer is live, its journal must be at the path startup recovery will look for.
+    // Asserted here rather than after completion because a verified download retires its journal,
+    // and asserted at all because the completed-download assertions below cannot see it:
+    // reconciliation skips terminal downloads, so a journal named by the wrong rule would never be
+    // looked for and the mistake would not surface until a restart mid-transfer (B-51).
+    let expected_journal = root
+        .join("journals")
+        .join(format!("{}.dpj", added.id.as_str()));
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            if expected_journal.exists() {
+                return;
+            }
+            if let Ok(entries) = std::fs::read_dir(root.join("journals"))
+                && entries.count() > 0
+            {
+                // Something was written, under a different name. Fail now with what is actually
+                // there rather than timing out with nothing to say.
+                let names: Vec<String> = std::fs::read_dir(root.join("journals"))
+                    .expect("the journal directory is readable")
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect();
+                panic!(
+                    "startup recovery looks for {}, but the engine wrote {names:?}",
+                    expected_journal.display()
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the journal must be named from the allocated download id");
+
     // Wait on the durable record, not on the in-memory one: the claim is about what survives.
     let terminal = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
