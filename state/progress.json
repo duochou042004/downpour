@@ -2229,6 +2229,13 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "I-3 is one of the three invariants the roadmap says every open-source download manager has shipped broken; finding it unenforced on the path that is about to make it reachable is exactly what the resume task was supposed to surface"
+    },
+    {
+      "id": "B-46",
+      "text": "CAUGHT 2026-08-10 during the B-25 groundwork, in a test I had just written. The first version of the journal symlink proof planted a victim containing 37 bytes of plain text. Removing O_NOFOLLOW left it green, because the reopen failed on the header read — the victim was too short to hold a 72-byte header — rather than on the link. The property under test was never exercised. Rewritten so the victim is itself a valid journal carrying the same header, so a reopen that follows the link succeeds and the appended record lands in the victim; that version goes red under the mutation with the assertion naming what it cost. The general shape is worth keeping: a negative test whose fixture cannot reach the guard passes for a reason unrelated to the guard, and the only way to tell is to mutate the guard and watch. Both B-37 storage proofs were checked the same way afterwards and do fail correctly.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A refusal test is only evidence if the thing it refuses would otherwise have succeeded, and a fixture too small to reach the check silently guarantees it would not"
     }
   ],
   "session_log": [

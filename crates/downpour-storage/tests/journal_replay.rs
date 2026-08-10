@@ -180,23 +180,47 @@ fn reopening_a_journal_for_a_different_representation_is_refused() {
 
 /// A journal path is as plantable as a part path, and appending through a link writes this
 /// download's recovery evidence into somebody else's file (B-37, same policy).
+///
+/// The victim is itself a valid journal carrying the same header, deliberately. A victim that
+/// could not pass the header check would make this test green through the header read failing,
+/// which is not the property under test — removing `O_NOFOLLOW` would leave it passing.
 #[test]
 #[cfg(unix)]
 fn a_journal_path_that_is_a_symlink_is_refused_and_its_target_is_untouched() {
-    use downpour_storage::writer::JournalFile;
+    use downpour_storage::writer::{DurableJournal, JournalFile};
 
     let directory = TestDirectory::new();
-    let victim_path = directory.path().join("someone-elses-file");
-    let victim_bytes = b"not this download's recovery evidence".to_vec();
-    fs::write(&victim_path, &victim_bytes).expect("write the victim");
+    let victim_path = directory.path().join("someone-elses-journal.dpj");
+    {
+        let mut victim = JournalFile::create(&victim_path, resume_header()).expect("create");
+        victim
+            .append(&block_record(0, 0, 8))
+            .expect("victim record");
+        victim.sync_data().expect("victim sync");
+    }
+    let victim_bytes = fs::read(&victim_path).expect("read the victim");
+
     let path = directory.path().join("linked.dpj");
     std::os::unix::fs::symlink(&victim_path, &path).expect("plant the symlink");
 
-    JournalFile::open_existing(&path, &resume_header())
-        .expect_err("a journal path that is a symlink must be refused");
+    let mut reopened = match JournalFile::open_existing(&path, &resume_header()) {
+        Err(_) => {
+            assert_eq!(
+                fs::read(&victim_path).expect("the victim is still readable"),
+                victim_bytes,
+                "the refusal must not have touched the target"
+            );
+            return;
+        }
+        // Followed the link. Show what that costs rather than only that it happened: the next
+        // append lands in the victim.
+        Ok(reopened) => reopened,
+    };
+    reopened.append(&block_record(1, 8, 8)).expect("append");
+    reopened.sync_data().expect("sync");
     assert_eq!(
         fs::read(&victim_path).expect("the victim is still readable"),
         victim_bytes,
-        "the symlink target was appended to"
+        "this download's recovery evidence was appended to somebody else's journal"
     );
 }
