@@ -1012,8 +1012,8 @@
         {
           "id": "S3-C1",
           "text": "N connections give measurably higher throughput on an uncapped server",
-          "met": false,
-          "evidence": "WITHDRAWN 2026-08-10 by a gate review, not by a regression. tests/sim/tests/fixed_connection_throughput.rs::four_independent_connections_beat_one_by_an_explicit_margin passes and its numbers are real, but it gives all four 16-byte segments identical per-byte budgets, so every segment finishes at the same virtual instant. That is the one schedule in which FixedWorkerPool::execute_segmented's drain-on-completion never fires, so the proof cannot observe B-38. Restore this criterion only against a scenario whose segments finish at different times and which asserts in-flight concurrency directly, not only wall-clock time.",
+          "met": true,
+          "evidence": "Two proofs, because one schedule is not the claim. tests/sim/tests/fixed_connection_throughput.rs::four_independent_connections_beat_one_by_an_explicit_margin holds the equal-finish case: 64 ms of wire time with one request against 16 ms with four disjoint ones. tests/sim/tests/segmented_concurrency.rs::a_finished_segment_never_stops_the_peers_that_are_still_transferring holds the case that schedule cannot see: eight grants go live together, seven park at a gate and the eighth completes, and the pool must still have at least seven requests in flight after it reassigns the idle worker. Staggered by synchronisation rather than by clock, because start_paused auto-advances virtual time while a task waits on the state-actor thread and the two schedules collapse into one. Restoring the drain-every-peer scheduler turns the named proof red at 7 stopped in-flight requests; dropping the restart of the shortened source turns it red too.",
           "invariants": []
         },
         {
@@ -1028,8 +1028,8 @@
         {
           "id": "S3-C3",
           "text": "Connections are reused after a segment completes, verified by handshake count",
-          "met": false,
-          "evidence": "WITHDRAWN 2026-08-10 by a gate review. crates/downpour-engine/tests/worker_pool.rs::a_finished_worker_reuses_its_http11_connection_for_a_new_split is not deterministic: GitHub run 31333180377 passed all four jobs at 9f2ab1e, and run 31333565469 failed the Windows job at bc01d55, whose only change is 19 lines of state/progress.json. Same Rust, green then red, asserting left 2 right 1 on the connection identity. See B-39: nothing in the engine binds a worker to a connection, so the assertion is over reqwest's default idle-pool checkout order. Restore this criterion only against an assertion the engine can actually control.",
+          "met": true,
+          "evidence": "crates/downpour-engine/tests/worker_pool.rs::a_completed_segment_costs_no_new_handshake_and_a_split_costs_exactly_one against the real H1H2Backend and pathology server. Two workers, four ranged requests, exactly three handshakes: worker 0's second request rides the connection it finished on, and the single reconnect belongs to the peer whose segment was split, which cannot keep a response that is being shortened. The probe runs on its own client so its connection cannot be donated to the pool and flatter the count. The count is taken after the transfer, not at a mid-transfer instant. Adding Connection: close in crates/downpour-http/src/h1h2.rs makes it red at 4 handshakes against 3. Stable at 10/10 under a full parallel workspace run, where the identity-comparing proof it replaces failed 8 times out of 10.",
           "invariants": []
         },
         {
@@ -1107,7 +1107,7 @@
           "id": "S3-T4",
           "title": "Prove finished HTTP/1.1 connections are reused by counting handshakes",
           "status": "done",
-          "proof": "tests/corpus/tests/pathology_server.rs::connection_observation_distinguishes_reuse_from_new_handshakes; crates/downpour-engine/tests/worker_pool.rs::a_finished_worker_reuses_its_http11_connection_for_a_new_split and a_split_fences_partial_source_bytes_before_reassigning_its_remainder",
+          "proof": "tests/corpus/tests/pathology_server.rs::connection_observation_distinguishes_reuse_from_new_handshakes; crates/downpour-engine/tests/worker_pool.rs::a_completed_segment_costs_no_new_handshake_and_a_split_costs_exactly_one",
           "files": [
             "tests/corpus/src/server.rs",
             "tests/corpus/cases/connections/",
@@ -2187,6 +2187,20 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "An exit criterion about connection count that no user can exercise is a criterion about a library, and the roadmap does not say so"
+    },
+    {
+      "id": "B-41",
+      "text": "FIXED 2026-08-10 in the same change as B-38. crates/downpour-engine did not declare tokio's `macros` feature although worker_pool.rs has always used tokio::select!. `cargo build -p downpour-engine` failed on develop with E0433 `cannot find select in tokio`; it only ever compiled because another workspace member enables `macros` and cargo unifies features. CI runs --workspace exclusively, so nothing caught it. Worth knowing that the same hole exists for any other under-declared feature in this workspace, and that a per-crate build is the only thing that finds it.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A crate that compiles only because of its neighbours is a crate that breaks the day it is built alone, published, or moved"
+    },
+    {
+      "id": "B-42",
+      "text": "FOUND 2026-08-10 while mutation-auditing the B-38 fix, and deliberately left open. Scheduler::record_stopped_attempt flushes before it snapshots, so a stopped attempt's bytes are measured after its ownership is fenced. Removing that flush passes every test in the workspace. It is a no-op in every scenario reachable today, not a gap in the guard: WriterService::allocate flushes before any ownership change (ADR-0019 step 3), and the pool only sends a cancellation after an allocate has already run, so a stopped worker's staged bytes are committed before the measurement. The ordering that would need it is narrow and currently unreachable: the source stages one more write after that allocate's flush and before its task observes the cancellation. Its bytes would then be staged rather than Complete at the snapshot, would be omitted from that attempt's report, and would be committed by the *next* allocate's flush with no report to attribute them to, so the per-attempt sum would fall short of the representation length while the file itself stayed byte-exact. Reaching it deterministically needs an origin that can stage a write at a point it cannot currently observe. Recorded rather than removed, because deleting a load-bearing line that no test can defend is how the ordering gets reintroduced later by someone reading it as dead weight.",
+      "found_in_stage": "S3",
+      "target_stage": "S4",
+      "rationale": "The S2 review's lesson was that a mutation surviving is a question, not an answer; this one was chased to a reachability argument rather than filed as either a hole or a pass"
     }
   ],
   "session_log": [
@@ -3891,6 +3905,33 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3 and was not touched. S3 is now 8/15 tasks and 1/5 exit criteria met after withdrawing C1 and C3. Gate is NOT ready. Order that unblocks the most: fix B-38 first (cancel only the split source, respawn any live grant without a task), because B-39's handshake count is meaningless until it is fixed and C1 cannot be re-proven without it; then re-prove C1 on a staggered-finish schedule asserting in-flight concurrency; then re-prove C3 on accepted-handshake count; then decide B-40's owner stage. S3-T9 through S3-T15 remain untouched and unblocked by this review."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Fixed B-38 and B-39 on fix/s3-segmented-concurrency, PROVE before BUILD. The pool stopped every running worker whenever any worker completed, drained to empty, then spawned exactly one worker and waited for it, so a transfer ran one request at a time after the first segment finished. A live grant genuinely cannot be shortened underneath its own response, so that constraint moved into the allocator: SegmentAllocator::allocate now takes the set of quiesced workers and will only split one of them, and split_candidate names the single peer a scheduler must stop. The shortened source is restarted on the half it kept. Committed the failing sim scenario first (073943d), red at 7 stopped in-flight requests. Mutation-checked five ways: restoring the drain makes segmented_concurrency red at 7 stopped; making the allocator ignore the quiesced set makes both the only-if proof and the 10000-case oracle red; Connection: close makes the handshake proof red at 4 against 3; dropping the shortened-source restart makes two proofs red; removing the fence flush before measuring a stopped attempt passes, and was chased to a reachability argument rather than filed either way (B-42). Replaced the connection-identity proof, which asserted reqwest's idle-pool checkout order: it failed 8 of 10 full-workspace parallel runs on Linux, reproducing the Windows CI flake locally. The replacement counts handshakes after the transfer and is 10/10 stable. Also fixed the FakeProtocol counter in worker_pool.rs, which counted a cancelled request as active forever and would have hidden the pool exceeding its worker ceiling. Fixed B-41: downpour-engine never declared tokio's macros feature and only built through workspace unification. Local: workspace 328/328 with 3 skipped, release sim 15/15, release corpus 95/95, fmt, clippy, doctests and check-progress clean.",
+      "tasks_touched": [
+        "S3-C1",
+        "S3-C3",
+        "S3-T4",
+        "B-38",
+        "B-39",
+        "B-41",
+        "B-42"
+      ],
+      "files_touched": [
+        "crates/downpour-engine/src/lib.rs",
+        "crates/downpour-engine/src/worker_pool.rs",
+        "crates/downpour-engine/src/writer_service.rs",
+        "crates/downpour-engine/Cargo.toml",
+        "crates/downpour-engine/tests/segment_allocator_prop.rs",
+        "crates/downpour-engine/tests/worker_service.rs",
+        "crates/downpour-engine/tests/worker_pool.rs",
+        "tests/sim/tests/segmented_concurrency.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3 and was not touched. S3 is 8/15 tasks and 3/5 exit criteria met again, this time against proofs that fail in the direction they claim. Not yet done from the gate review: B-40, which is the decision about whether wiring the segmented pool into the daemon is an S3 or an S4 task — the daemon still runs SingleStream and refuses connections > 1. Then S3-T9 through S3-T14 as planned, starting with T9's cross-process resume and B-37's no-follow reopen. This branch needs all four GitHub jobs green before it merges, Windows especially, since it changes worker scheduling."
     }
   ],
   "metrics": {
