@@ -406,6 +406,16 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             ));
         }
     }
+    if let Some(limit) = case.expect.max_served_connections {
+        let seen = server.served_connection_count();
+        if seen > limit {
+            failures.push(format!(
+                "expected the transfer to fit inside {limit} live connection(s) but {seen} \
+                 carried a request; the engine finished by opening more sockets rather than by \
+                 reusing the ones the origin's budget allowed"
+            ));
+        }
+    }
     if let Some(expected) = case.expect.min_capped_responses {
         let seen = server.capped_response_count();
         if seen < expected {

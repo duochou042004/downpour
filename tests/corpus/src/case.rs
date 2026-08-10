@@ -18,7 +18,7 @@ use serde::Deserialize;
 use crate::content::{Content, GENERATOR_V1};
 use crate::server::{
     Framing, IfRangeBehaviour, Mutation, MutationEffect, Protocol, RangeBehaviour,
-    RedirectLocation, ServerSpec,
+    RedirectLocation, ServerSpec, TightenCap,
 };
 
 /// One corpus case.
@@ -224,6 +224,20 @@ pub struct ServerCase {
     /// and the one I-7 names when it says concurrency falls back on `429`.
     #[serde(default)]
     pub cap_status: Option<u16>,
+    /// Change `max_concurrent_connections` to a new value once this many requests have been
+    /// served.
+    ///
+    /// A limit that moves under a plan the engine already committed to. Distinct from a steady
+    /// cap: at the low value the engine would never have segmented this far, and at the high one
+    /// nothing is ever refused.
+    #[serde(default)]
+    pub tighten_cap: Option<TightenCapCase>,
+    /// Accept at most this many connections in total, ever, dropping every one after them.
+    ///
+    /// A budget rather than a concurrency limit: it does not clear when a peer finishes, so
+    /// waiting cannot recover it and only reuse of an already-open connection can.
+    #[serde(default)]
+    pub max_total_connections: Option<usize>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     #[serde(default)]
     pub inconsistent_total_after: Option<usize>,
@@ -236,6 +250,16 @@ pub struct ServerCase {
     /// connection is still good writes into a closed socket.
     #[serde(default)]
     pub close_after_requests: Option<usize>,
+}
+
+/// A concurrency cap that changes part way through the transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TightenCapCase {
+    /// How many requests are served under the original cap before it changes.
+    pub after_requests: usize,
+    /// The cap that applies from then on.
+    pub to: usize,
 }
 
 /// The local preconditions a case sets up before the transfer runs.
@@ -564,6 +588,19 @@ pub struct Expect {
     /// was told `429` and recovered, so without this the case stays green with the cap removed.
     #[serde(default)]
     pub min_capped_responses: Option<usize>,
+    /// No more than this many connections may have carried a request.
+    ///
+    /// The only upper bound among the connection observations, and the only one that can say
+    /// "the transfer finished inside the origin's budget". Every floor is satisfied by an engine
+    /// that opened far too many and had the excess dropped, which is the opposite of the
+    /// behaviour a connection budget requires.
+    ///
+    /// Counted as accepted minus refused, not as accepted: the kernel completes the handshake
+    /// before the server can decide anything, so a connection the origin dropped is one the
+    /// engine opened and got nothing from — it must not count against a budget the origin itself
+    /// enforced.
+    #[serde(default)]
+    pub max_served_connections: Option<usize>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -755,6 +792,11 @@ impl Case {
         ServerSpec {
             max_concurrent_connections: self.server.max_concurrent_connections,
             cap_status: self.server.cap_status,
+            tighten_cap: self.server.tighten_cap.map(|tighten| TightenCap {
+                after_requests: tighten.after_requests,
+                to: tighten.to,
+            }),
+            max_total_connections: self.server.max_total_connections,
             inconsistent_total_after: self.server.inconsistent_total_after,
             close_without_responding: self.server.close_without_responding,
             close_after_requests: self.server.close_after_requests,

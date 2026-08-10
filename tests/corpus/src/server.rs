@@ -229,6 +229,20 @@ pub struct ServerSpec {
     /// Only HTTP/1.1 enforces it this way; over h2c the cap still drops, because no case needs the
     /// polite shape there and a half-implemented capability is worse than an absent one.
     pub cap_status: Option<u16>,
+    /// Replace `max_concurrent_connections` with a new value once a number of requests have been
+    /// served.
+    ///
+    /// A limit that moves under a plan the engine has already committed to: another tenant
+    /// arrived, a load balancer shifted, a leaky-bucket allowance was spent. Distinct from a
+    /// steady cap in both directions — at the tightened value the engine would never have
+    /// segmented this wide, and at the original one nothing is ever refused.
+    pub tighten_cap: Option<TightenCap>,
+    /// Accept at most this many connections in total, ever.
+    ///
+    /// A budget, not a concurrency limit. It does not clear when a peer finishes, so an engine
+    /// whose only recovery is to back off and reconnect can never get in again; the transfer can
+    /// only finish through the connections it already holds.
+    pub max_total_connections: Option<usize>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     ///
     /// The segmented shape of a representation changing underneath a transfer, and the most
@@ -284,11 +298,22 @@ impl Default for ServerSpec {
             behaviour: Vec::new(),
             max_concurrent_connections: None,
             cap_status: None,
+            tighten_cap: None,
+            max_total_connections: None,
             inconsistent_total_after: None,
             close_without_responding: 0,
             close_after_requests: None,
         }
     }
+}
+
+/// A concurrency cap that changes part way through the transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TightenCap {
+    /// Requests served under the original cap before the new one applies.
+    pub after_requests: usize,
+    /// The cap from then on.
+    pub to: usize,
 }
 
 /// What a server states in `Repr-Digest`.
@@ -574,9 +599,27 @@ impl PathologyServer {
                     let requests = Arc::clone(&requests);
                     let budget = Arc::clone(&budget);
                     let (connection_id, active_connection) = connections.accepted();
-                    let over_cap = spec
-                        .max_concurrent_connections
+                    // The cap in force *now*, which a case may have moved part way through the
+                    // transfer. Read per connection rather than once at startup, because a limit
+                    // that changes under a committed plan is itself one of the pathologies.
+                    let served = requests.lock().map_or(0, |log| log.len());
+                    let concurrency_cap = match spec.tighten_cap {
+                        Some(tighten) if served >= tighten.after_requests => Some(tighten.to),
+                        _ => spec.max_concurrent_connections,
+                    };
+                    let over_cap = concurrency_cap
                         .is_some_and(|cap| connections.active.load(Ordering::SeqCst) > cap);
+                    // A lifetime budget counts every connection ever accepted, so unlike a
+                    // concurrency cap it never clears when a peer finishes.
+                    let over_budget = spec
+                        .max_total_connections
+                        .is_some_and(|budget| connections.accepted.load(Ordering::SeqCst) > budget);
+                    if over_budget {
+                        connections.refused.fetch_add(1, Ordering::SeqCst);
+                        drop(active_connection);
+                        drop(stream);
+                        continue;
+                    }
                     // Two ways an origin enforces the same cap. Without `cap_status` it does not
                     // answer and does not refuse politely: the socket is accepted by the kernel
                     // and then dropped, with nothing to parse. With one, the excess connection is
@@ -743,6 +786,18 @@ impl PathologyServer {
     #[must_use]
     pub fn capped_response_count(&self) -> usize {
         self.connections.capped.load(Ordering::SeqCst)
+    }
+
+    /// Connections that reached the server rather than being dropped by a cap or a budget.
+    ///
+    /// The kernel completes the handshake before this server can decide anything, so
+    /// [`Self::accepted_connection_count`] counts sockets the origin then threw away. A case
+    /// bounding how many connections a transfer *used* has to exclude those, or the bound is
+    /// unsatisfiable against any origin that refuses anything.
+    #[must_use]
+    pub fn served_connection_count(&self) -> usize {
+        self.accepted_connection_count()
+            .saturating_sub(self.refused_connection_count())
     }
 
     /// Number of accepted connections whose serving task is still alive.

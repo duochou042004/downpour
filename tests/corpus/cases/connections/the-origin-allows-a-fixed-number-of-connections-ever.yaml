@@ -26,7 +26,7 @@ expect:
   # And it was never exceeded. An upper bound rather than a lower one, because the claim here is
   # that the whole transfer fitted inside two sockets — a case asserting only "at least two" would
   # be satisfied by an engine that opened ten and had eight dropped.
-  max_connections: 2
+  max_served_connections: 2
   # Two connections carried the probe and four workers' worth of ranges between them, so the
   # engine must have reused them rather than opened one per request.
   min_requests: 5
