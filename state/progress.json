@@ -1213,8 +1213,8 @@
         {
           "id": "S3-T10",
           "title": "Implement off, sample and full block verification on cross-process resume",
-          "status": "todo",
-          "proof": null,
+          "status": "done",
+          "proof": "crates/downpour-storage/tests/recovery.rs::{block_verification_on_resume_detects_corruption_without_blessing_or_rewriting_it,sampling_is_the_default_and_selects_deterministically}",
           "files": [
             "crates/downpour-storage/src/recovery.rs",
             "crates/downpour-storage/tests/recovery.rs"
@@ -2043,10 +2043,10 @@
     },
     {
       "id": "B-19",
-      "text": "RETARGETED to S3 on 2026-08-05, not closed: still genuinely unimplemented, and grep confirms verify_on_resume appears in docs/04 §3.4 prose and in no Rust file. It was carrying target_stage S2, which made the S2 gate look like it owed work it does not: the roadmap's S2 deliverables and its seven exit criteria never name this behaviour, and recovery trusting the journal's BlockComplete records is the documented `off` mode, which is the correct default. Moving it stops a phantom obligation from sitting on a closing stage. Original: docs/04 section 3.4's verify_on_resume config (off / sample 1% / full) is not implemented. Recovery trusts the journal's BlockComplete records without rehashing part bytes, which is the documented `off` behaviour. The per-block BLAKE3 digests are already recorded, so sampling is cheap to add; compaction already verifies every surviving digest before it blesses merged bytes.",
+      "text": "CLOSED 2026-08-10 by S3-T10. Its earlier wording said recovery trusting the journal \"is the documented `off` mode, which is the correct default\". That is wrong and is repaired here rather than left to be read again: docs/04 section 3.4 is normative and names `sample` as the default, with `off` as the fastest opt-out. Treating `off` as the default would have made the shipped behaviour quietly weaker than the spec while looking compliant. verify_on_resume now exists as off, sample and full. Sample selection is derived from the transfer id and the block sequence rather than an RNG, so the same journal always samples the same blocks — reproducible for a user reporting a fault, and full is then a superset of what sample checked. A block whose part bytes no longer hash to its recorded BLAKE3 is excluded before the interval map is built, so its range returns to Pending and is fetched again; nothing is rehashed into the journal and the journal is not rewritten, because recomputing a digest from bytes that just failed would bless the corruption into durable evidence. Original: docs/04 section 3.4's verify_on_resume config (off / sample 1% / full) is not implemented.",
       "found_in_stage": "S2",
       "target_stage": "S3",
-      "rationale": "S2-T7 delivers reconciliation; the optional post-hardware-fault verification mode is a separate behaviour with its own proof, and shipping the default silently would make `sample` look implemented"
+      "rationale": "The backlog said off was the correct default and the normative spec says sample; a backlog that contradicts the spec is how the weaker behaviour ships looking finished"
     },
     {
       "id": "B-20",

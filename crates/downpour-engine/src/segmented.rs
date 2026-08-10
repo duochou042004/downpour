@@ -23,7 +23,7 @@ use url::Url;
 
 use downpour_storage::journal::FileHeader;
 use downpour_storage::part_file::PartFile;
-use downpour_storage::recovery::durable_state;
+use downpour_storage::recovery::{VerifyOnResume, durable_state_with};
 use downpour_storage::writer::{DurableWriter, JournalFile};
 use downpour_types::RemoteObject;
 
@@ -173,9 +173,14 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         let validator_hash = crate::download::validator_hash_of(&remote.validator);
         let journal_path = journal_path_for(layout.journal_dir(), transfer_id);
 
+        let part_path = part_path_of(&final_path);
+        // docs/04 §3.4's default. A block whose bytes no longer hash to what the journal recorded
+        // is not durable, and resume is exactly when that matters: the alternative is fetching
+        // around a range the file no longer holds and finishing at the right size with a hole.
         let durable = tokio::task::spawn_blocking({
             let journal_path = journal_path.clone();
-            move || durable_state(&journal_path)
+            let part_path = part_path.clone();
+            move || durable_state_with(&journal_path, &part_path, VerifyOnResume::default())
         })
         .await
         .map_err(|error| DownloadError::Io {
@@ -200,7 +205,6 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         let allocator = SegmentAllocator::resume(intervals, DEFAULT_MIN_SPLIT_BYTES)
             .map_err(|source| DownloadError::Allocator { source })?;
 
-        let part_path = part_path_of(&final_path);
         let header = FileHeader::new(transfer_id, total_length, 0, validator_hash);
         let writer = tokio::task::spawn_blocking({
             let part_path = part_path.clone();

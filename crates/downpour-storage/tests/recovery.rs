@@ -846,3 +846,115 @@ fn durable_state_rebuilds_from_the_journal_alone_and_matches_reconciliation() {
         vec![(8, 16), (24, 32)]
     );
 }
+
+/// docs/04 §3.4 — `verify_on_resume`, and what it means to detect corruption without blessing it.
+///
+/// The journal records a BLAKE3 per block precisely so this is possible later. A block whose part
+/// bytes no longer hash to what the journal recorded is not durable, whatever the record says: the
+/// file was changed underneath us, or the hardware lost it. Recovery must stop calling it
+/// `Complete` so the range is fetched again.
+///
+/// What it must *not* do is rehash the part bytes and record the new digest, which would bless the
+/// corruption into durable evidence, or rewrite the journal at all — the journal is the thing that
+/// caught the fault and is wanted intact for a bug report.
+#[test]
+fn block_verification_on_resume_detects_corruption_without_blessing_or_rewriting_it() {
+    use downpour_storage::recovery::{VerifyOnResume, durable_state_with};
+
+    let directory = TestDirectory::new("verify-on-resume");
+    let part_path = commit_durable_blocks(&directory, &[(0, b"aaaaaaaa"), (16, b"cccccccc")]);
+    let journal_before = fs::read(directory.journal()).expect("the journal is readable");
+
+    // A hardware fault, or something else writing into the file: the bytes change, the journal
+    // does not.
+    {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut part = OpenOptions::new()
+            .write(true)
+            .open(&part_path)
+            .expect("the part file opens");
+        part.seek(SeekFrom::Start(16)).expect("seek");
+        part.write_all(b"XXXXXXXX")
+            .expect("corrupt the second block");
+    }
+
+    // `off` trusts the journal, which is the documented behaviour and the reason the default is
+    // not `off`: the corruption survives into the rebuilt map.
+    let trusting = durable_state_with(&directory.journal(), &part_path, VerifyOnResume::Off)
+        .expect("a healthy journal rebuilds");
+    assert_eq!(
+        complete_ranges(trusting.intervals()),
+        vec![(0, 8), (16, 24)],
+        "off must trust the journal, or the comparison below proves nothing"
+    );
+
+    // `full` verifies every block, so the corrupted one stops being durable and its range goes
+    // back to pending to be fetched again.
+    let verified = durable_state_with(&directory.journal(), &part_path, VerifyOnResume::Full)
+        .expect("a healthy journal rebuilds");
+    assert_eq!(
+        complete_ranges(verified.intervals()),
+        vec![(0, 8)],
+        "a block whose bytes no longer match its recorded digest is not durable"
+    );
+    // Covered by a pending interval rather than equal to one: the map merges adjacent pending
+    // ranges, so the refuted block joins the hole beside it.
+    assert!(
+        pending_ranges(verified.intervals())
+            .iter()
+            .any(|(start, end)| *start <= 16 && *end >= 24),
+        "the corrupted range must be fetched again: {:?}",
+        pending_ranges(verified.intervals())
+    );
+    assert_eq!(
+        verified.covered_bytes(),
+        8,
+        "the refuted block must stop counting toward coverage"
+    );
+
+    assert_eq!(
+        fs::read(directory.journal()).expect("the journal is readable"),
+        journal_before,
+        "verification must not rewrite the journal; it is the evidence that caught the fault"
+    );
+}
+
+/// `sample` is the default, and it is the default that decides what most users get.
+///
+/// Selection is derived from the journal's transfer id and each block's sequence rather than from
+/// an RNG, so the same journal always samples the same blocks. That is what makes this testable at
+/// all, and it also means a user who reports a fault can be asked to run `full` and get a superset
+/// of what `sample` already checked.
+#[test]
+fn sampling_is_the_default_and_selects_deterministically() {
+    use downpour_storage::recovery::{VerifyOnResume, samples_block};
+
+    assert_eq!(
+        VerifyOnResume::default(),
+        VerifyOnResume::Sample,
+        "docs/04 §3.4 states sample is the default"
+    );
+
+    let transfer = [7_u8; 16];
+    let first: Vec<u64> = (0..1000)
+        .filter(|seq| samples_block(transfer, *seq))
+        .collect();
+    let again: Vec<u64> = (0..1000)
+        .filter(|seq| samples_block(transfer, *seq))
+        .collect();
+    assert_eq!(first, again, "selection must not vary between runs");
+    assert!(
+        !first.is_empty() && first.len() < 100,
+        "roughly one block in a hundred, got {} of 1000",
+        first.len()
+    );
+
+    let other: Vec<u64> = (0..1000)
+        .filter(|seq| samples_block([9_u8; 16], *seq))
+        .collect();
+    assert_ne!(
+        first, other,
+        "two downloads must not sample the same block positions, or one unlucky pattern would \
+         hide the same way in every file"
+    );
+}
