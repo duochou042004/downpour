@@ -1321,6 +1321,13 @@
             "I-13",
             "I-14"
           ]
+        },
+        {
+          "id": "S3-T16",
+          "title": "Wire the daemon's transfer path to the segmented worker pool",
+          "status": "done",
+          "blocked_by": "S3-T8",
+          "proof": "crates/downpour-cli/tests/dp_add.rs::dp_add_with_four_connections_segments_the_transfer_and_lands_byte_exact and ::dp_add_below_the_split_floor_uses_one_connection_however_many_are_asked_for; crates/downpour-daemon/tests/server.rs::{a_connection_count_is_refused_at_zero_and_bounded_above,a_requested_connection_count_is_clamped_rather_than_believed}; crates/downpour-engine/tests/writer_service.rs::a_payload_larger_than_one_queue_block_is_split_rather_than_refused"
         }
       ]
     },
@@ -2201,6 +2208,13 @@
       "found_in_stage": "S3",
       "target_stage": "S4",
       "rationale": "The S2 review's lesson was that a mutation surviving is a question, not an answer; this one was chased to a reachability argument rather than filed as either a hole or a pass"
+    },
+    {
+      "id": "B-43",
+      "text": "FIXED 2026-08-10 by S3-T16, and only found because the pool was wired to a real transfer. GrantWriter::write refused any payload above MAX_WRITE_BLOCK_BYTES (256 KiB) with BlockTooLarge, which the sink turned into a fatal TransferError::Sink. Every test until now used fixtures small enough that no single body chunk reached the bound; an 8 MiB download over loopback delivered a 363414-byte chunk and the whole transfer failed at offset 4813824. The handle now splits an oversized payload across several bounded commands, so the queue stays bounded in bytes — which is what the limit is actually for — and the BlockTooLarge variant is gone rather than left as an unreachable error with a test that could no longer fail. The general lesson is worth keeping: a bound expressed in bytes must be enforced by chunking somewhere, and 'the caller will not exceed it' is not enforcement when the caller is the network.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A limit that turns a normal-sized network chunk into a failed download is a bug that only appears at realistic sizes, which is exactly the class small fixtures cannot find"
     }
   ],
   "session_log": [

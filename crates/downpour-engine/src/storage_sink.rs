@@ -163,40 +163,13 @@ impl StorageSink {
     ) -> Result<Self, SinkError> {
         let (backing, artifacts) = match total_length {
             Some(total_length) => {
-                let part =
-                    PartFile::create(target, total_length).map_err(|error| part_error(0, error))?;
-                let part_path = part.path().to_path_buf();
-                // Block size 0: a single stream has no fixed granularity, since a block is
-                // whatever the transport happened to deliver. Nothing reads this field — replay
-                // and compaction both work from the records — so recording a made-up value would
-                // be worse than recording the absence of one.
-                let header = FileHeader::new(transfer_id, total_length, 0, validator_hash);
-                // The part file was just created exclusively, which proves no other owner holds
-                // this target. A journal still sitting at this download's path is therefore
-                // orphaned — it has no part file to protect, and nothing can be resumed from it —
-                // so it is replaced rather than allowed to block.
-                //
-                // Without this, one failed download poisons its URL forever: the journal it
-                // correctly kept as evidence collides with the next attempt's exclusive create.
-                // That is B-30, and it is the same user-facing fault as B-29 reached from the
-                // other side — there a SUCCESSFUL download's journal blocked the next one.
-                let journal_path = journal_path_for(journal_dir, transfer_id);
-                let journal = match JournalFile::create(&journal_path, header.clone()) {
-                    Ok(journal) => journal,
-                    Err(WriterError::JournalAlreadyExists { .. }) => {
-                        tracing::info!(
-                            path = %journal_path.display(),
-                            "replacing an orphaned recovery journal: its part file is gone"
-                        );
-                        std::fs::remove_file(&journal_path)
-                            .map_err(|source| SinkError::Io { offset: 0, source })?;
-                        JournalFile::create(&journal_path, header)
-                            .map_err(|error| writer_error(0, error))?
-                    }
-                    Err(error) => return Err(writer_error(0, error)),
-                };
-                let writer = DurableWriter::try_new(part, journal, 0)
-                    .map_err(|error| writer_error(0, error))?;
+                let (writer, artifacts) = create_journalled_artifacts(
+                    target,
+                    journal_dir,
+                    total_length,
+                    transfer_id,
+                    validator_hash,
+                )?;
 
                 let mut intervals = IntervalMap::new(total_length);
                 // The whole representation, to the one worker a single stream has. A zero-length
@@ -209,13 +182,7 @@ impl StorageSink {
                             source: std::io::Error::other(error.to_string()),
                         })?;
                 }
-                (
-                    Backing::Journalled { writer, intervals },
-                    Artifacts {
-                        part_path,
-                        journal_path: Some(journal_path),
-                    },
-                )
+                (Backing::Journalled { writer, intervals }, artifacts)
             }
             None => {
                 let part =
@@ -343,6 +310,59 @@ impl SinkTarget for StorageSink {
     async fn sync(&mut self) -> Result<(), SinkError> {
         self.on_writer(Backing::sync).await
     }
+}
+
+/// Create one download's exclusive part file and recovery journal.
+///
+/// Shared by the single-stream sink and the segmented state actor so both reach the same files by
+/// the same rules: the part file beside the target so the eventual rename is same-filesystem, the
+/// journal named from the transfer id, and creation exclusive on both. A collision means another
+/// owner holds this download, and proceeding would interleave two writers into one file.
+pub fn create_journalled_artifacts(
+    target: &Path,
+    journal_dir: &Path,
+    total_length: u64,
+    transfer_id: [u8; 16],
+    validator_hash: [u8; 32],
+) -> Result<(DurableWriter<PartFile, JournalFile>, Artifacts), SinkError> {
+    let part = PartFile::create(target, total_length).map_err(|error| part_error(0, error))?;
+    let part_path = part.path().to_path_buf();
+    // Block size 0: neither path has a fixed granularity — a block is whatever the transport
+    // happened to deliver, or whatever a worker accepted before its next flush. Nothing reads this
+    // field, since replay and compaction both work from the records, so recording a made-up value
+    // would be worse than recording the absence of one.
+    let header = FileHeader::new(transfer_id, total_length, 0, validator_hash);
+    // The part file was just created exclusively, which proves no other owner holds this target. A
+    // journal still sitting at this download's path is therefore orphaned — it has no part file to
+    // protect, and nothing can be resumed from it — so it is replaced rather than allowed to block.
+    //
+    // Without this, one failed download poisons its URL forever: the journal it correctly kept as
+    // evidence collides with the next attempt's exclusive create. That is B-30, and it is the same
+    // user-facing fault as B-29 reached from the other side, where a SUCCESSFUL download's journal
+    // blocked the next one.
+    let journal_path = journal_path_for(journal_dir, transfer_id);
+    let journal = match JournalFile::create(&journal_path, header.clone()) {
+        Ok(journal) => journal,
+        Err(WriterError::JournalAlreadyExists { .. }) => {
+            tracing::info!(
+                path = %journal_path.display(),
+                "replacing an orphaned recovery journal: its part file is gone"
+            );
+            std::fs::remove_file(&journal_path)
+                .map_err(|source| SinkError::Io { offset: 0, source })?;
+            JournalFile::create(&journal_path, header).map_err(|error| writer_error(0, error))?
+        }
+        Err(error) => return Err(writer_error(0, error)),
+    };
+    let writer =
+        DurableWriter::try_new(part, journal, 0).map_err(|error| writer_error(0, error))?;
+    Ok((
+        writer,
+        Artifacts {
+            part_path,
+            journal_path: Some(journal_path),
+        },
+    ))
 }
 
 fn journal_path_for(journal_dir: &Path, transfer_id: [u8; 16]) -> PathBuf {

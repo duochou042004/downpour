@@ -15,6 +15,11 @@ use downpour_http::TransportMode;
 use downpour_ipc::LocalListener;
 
 const SIZE: u64 = 256 * 1024;
+/// Four workers need four grants at or above `DEFAULT_MIN_SPLIT_BYTES` (1 MiB), so the smallest
+/// representation this pool will divide four ways is 8 MiB. Below the floor a split costs more in
+/// round trips than it saves, which is why `SIZE` downloads on one connection however many are
+/// asked for — see the companion assertion below.
+const SEGMENTED_SIZE: u64 = 8 * 1024 * 1024;
 
 fn spec() -> ServerSpec {
     ServerSpec {
@@ -293,7 +298,12 @@ fn dp_reports_a_version_and_a_help_text() {
 /// that the product path and the engine path are the same path.
 #[tokio::test(flavor = "multi_thread")]
 async fn dp_add_with_four_connections_segments_the_transfer_and_lands_byte_exact() {
-    let server = PathologyServer::start(spec()).await.expect("server starts");
+    let server = PathologyServer::start(ServerSpec {
+        content: Content::new(42, SEGMENTED_SIZE),
+        ..ServerSpec::default()
+    })
+    .await
+    .expect("server starts");
     let scratch = Scratch::new("segmented");
     let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
 
@@ -309,11 +319,11 @@ async fn dp_add_with_four_connections_segments_the_transfer_and_lands_byte_exact
     let bytes = std::fs::read(scratch.path().join("content")).expect("final file is readable");
     assert_eq!(
         u64::try_from(bytes.len()).expect("length fits u64"),
-        SIZE,
+        SEGMENTED_SIZE,
         "the segmented path produced a file of the wrong length"
     );
     assert_eq!(
-        Content::new(42, SIZE).first_mismatch(0, &bytes),
+        Content::new(42, SEGMENTED_SIZE).first_mismatch(0, &bytes),
         None,
         "silent corruption through the segmented daemon path"
     );
@@ -323,7 +333,11 @@ async fn dp_add_with_four_connections_segments_the_transfer_and_lands_byte_exact
     let ranged = server
         .requests()
         .iter()
-        .filter(|request| request.header("range").is_some_and(|value| value != "bytes=0-0"))
+        .filter(|request| {
+            request
+                .header("range")
+                .is_some_and(|value| value != "bytes=0-0")
+        })
         .count();
     assert!(
         ranged >= 4,
@@ -338,5 +352,47 @@ async fn dp_add_with_four_connections_segments_the_transfer_and_lands_byte_exact
         server.maximum_simultaneous_connections() >= 2,
         "a segmented transfer must have had more than one connection open at once, peak was {}",
         server.maximum_simultaneous_connections()
+    );
+}
+
+/// The other half of the ceiling rule: asking for connections does not create them.
+///
+/// A representation too small to divide at `DEFAULT_MIN_SPLIT_BYTES` runs on one connection
+/// however many were requested. Splitting it would cost more round trips and handshakes than the
+/// parallelism could return (`docs/03-transfer-engine-spec.md` §4.2).
+#[tokio::test(flavor = "multi_thread")]
+async fn dp_add_below_the_split_floor_uses_one_connection_however_many_are_asked_for() {
+    let server = PathologyServer::start(spec()).await.expect("server starts");
+    let scratch = Scratch::new("below-floor");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
+
+    let run = dp_add_with(
+        &server.entry_url(),
+        &scratch,
+        &daemon,
+        &["--connections", "8"],
+    );
+
+    assert_eq!(run.code, Some(0), "stderr was: {}", run.stderr);
+    let bytes = std::fs::read(scratch.path().join("content")).expect("final file is readable");
+    assert_eq!(Content::new(42, SIZE).first_mismatch(0, &bytes), None);
+    let ranged = server
+        .requests()
+        .iter()
+        .filter(|request| {
+            request
+                .header("range")
+                .is_some_and(|value| value != "bytes=0-0")
+        })
+        .count();
+    assert_eq!(
+        ranged,
+        1,
+        "a 256 KiB representation is below the 1 MiB split floor and must be fetched once: {:?}",
+        server
+            .requests()
+            .iter()
+            .map(|request| request.header("range"))
+            .collect::<Vec<_>>()
     );
 }

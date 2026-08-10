@@ -23,11 +23,13 @@ use downpour_intervals::{Interval, IntervalMap, IntervalMapError, IntervalState,
 use thiserror::Error;
 
 pub mod download;
+pub mod segmented;
 pub mod storage_sink;
 pub mod worker_pool;
 pub mod writer_service;
 
 pub use download::{DownloadError, SingleStream, StorageLayout};
+pub use segmented::SegmentedDownload;
 pub use storage_sink::{Artifacts, StorageSink};
 
 /// Default lower bound for either half of a split grant.

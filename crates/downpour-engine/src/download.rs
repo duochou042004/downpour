@@ -206,36 +206,9 @@ impl<B: TransferProtocol> SingleStream<B> {
 
         // Already sanitised by the probe, so it is exactly one path component and cannot escape
         // `target_dir` (S1-C3). Joining is therefore safe by construction rather than by check.
-        let name = remote
-            .suggested_filename
-            .clone()
-            .unwrap_or_else(|| "download".to_owned());
-        let final_path = target_dir.join(&name);
+        let final_path = final_path_for(target_dir, &remote);
 
-        // Checked before anything is created, so a refusal leaves the directory exactly as it
-        // was. Refusing rather than picking a "(1)" suffix is deliberate for S1: silently
-        // replacing a file the user already has is unrecoverable, and choosing a new name is a
-        // policy decision that belongs with the rest of the local-collision handling in S2.
-        //
-        // `symlink_metadata` does not follow links, and that is the whole reason it is used here.
-        // `try_exists` and `exists` both follow: for a symlink whose destination does not exist
-        // they report the path as free, and it is not free — the rename at the end of a download
-        // replaces the link itself, so proceeding destroys something the user put there without
-        // ever saying so. Anything at this path at all, file or directory or link, broken or not,
-        // belongs to the user. Found by local/a-dangling-symlink-occupies-the-target.
-        match tokio::fs::symlink_metadata(&final_path).await {
-            Ok(_) => return Err(DownloadError::TargetExists { path: final_path }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            // A check that could not answer must never be read as "nothing is there". Permission
-            // denied on a parent, a symlink loop, or a name too long all arrive here, and the
-            // previous `unwrap_or(false)` turned every one of them into permission to proceed.
-            Err(source) => {
-                return Err(DownloadError::Io {
-                    path: final_path,
-                    source,
-                });
-            }
-        }
+        refuse_occupied_target(&final_path).await?;
 
         // Creating the durable artifacts is blocking work — preallocation, an exclusive create,
         // a header write and two syncs — so it does not run on the executor.
@@ -519,6 +492,27 @@ pub enum DownloadError {
     /// The probe rejected the URL or the response.
     #[error(transparent)]
     Probe(#[from] ProbeError),
+    /// The segmented worker pool could not run this transfer to full coverage.
+    #[error("segmented transfer failed: {source}")]
+    Segmented {
+        /// Scheduling or worker failure.
+        #[source]
+        source: crate::worker_pool::PoolError,
+    },
+    /// The byte space could not be prepared for segmentation.
+    #[error("segment allocator refused this representation: {source}")]
+    Allocator {
+        /// Allocator configuration failure.
+        #[source]
+        source: crate::AllocatorError,
+    },
+    /// The download-state actor failed to start, store, or complete this transfer.
+    #[error("download-state actor failed: {source}")]
+    Writer {
+        /// Actor, storage or verification failure.
+        #[source]
+        source: crate::writer_service::WriterServiceError,
+    },
     /// The transfer failed.
     #[error(transparent)]
     Transfer(#[from] TransferError),
@@ -587,6 +581,14 @@ impl DownloadError {
             Self::TargetExists { .. } => "target_exists",
             Self::Sink { .. } => "sink",
             Self::Unverified { .. } => "unverified",
+            // Verification is verification wherever it runs, so the segmented path reports the
+            // same kind for the same refusal rather than a wrapper clients would have to learn.
+            Self::Writer {
+                source: crate::writer_service::WriterServiceError::Unverified { .. },
+            } => "unverified",
+            Self::Segmented { .. } => "segmented_transfer",
+            Self::Allocator { .. } => "allocator",
+            Self::Writer { .. } => "download_state",
             Self::Io { .. } => "io",
         }
     }
@@ -599,7 +601,47 @@ impl DownloadError {
 /// [`SingleStream::download`] call resolve to the same journal path, so a retry collides with its
 /// own predecessor rather than silently accumulating orphans — and the collision is what forces
 /// the cleanup to be explicit.
-fn transfer_id_for(final_url: &Url) -> [u8; 16] {
+/// Where a probed representation's finished file belongs.
+///
+/// The name is already sanitised by the probe, so it is exactly one path component and cannot
+/// escape `target_dir` (S1-C3). Joining is therefore safe by construction rather than by check.
+pub(crate) fn final_path_for(target_dir: &Path, remote: &RemoteObject) -> PathBuf {
+    let name = remote
+        .suggested_filename
+        .clone()
+        .unwrap_or_else(|| "download".to_owned());
+    target_dir.join(&name)
+}
+
+/// Refuse a target that already holds anything at all, before anything is created.
+///
+/// Shared by the single-stream and segmented paths deliberately. Refusing rather than picking a
+/// "(1)" suffix is a policy decision that belongs with the rest of the local-collision handling;
+/// silently replacing a file the user already has is unrecoverable.
+///
+/// `symlink_metadata` does not follow links, and that is the whole reason it is used here.
+/// `try_exists` and `exists` both follow: for a symlink whose destination does not exist they
+/// report the path as free, and it is not free — the rename at the end of a download replaces the
+/// link itself, so proceeding destroys something the user put there without ever saying so.
+/// Anything at this path at all, file or directory or link, broken or not, belongs to the user.
+/// Found by local/a-dangling-symlink-occupies-the-target.
+pub(crate) async fn refuse_occupied_target(final_path: &Path) -> Result<(), DownloadError> {
+    match tokio::fs::symlink_metadata(final_path).await {
+        Ok(_) => Err(DownloadError::TargetExists {
+            path: final_path.to_path_buf(),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        // A check that could not answer must never be read as "nothing is there". Permission
+        // denied on a parent, a symlink loop, or a name too long all arrive here, and reading any
+        // of them as absence is permission to proceed over the user's data.
+        Err(source) => Err(DownloadError::Io {
+            path: final_path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+pub(crate) fn transfer_id_for(final_url: &Url) -> [u8; 16] {
     let digest = blake3::hash(final_url.as_str().as_bytes());
     let mut id = [0_u8; 16];
     id.copy_from_slice(&digest.as_bytes()[..16]);
@@ -611,7 +653,7 @@ fn transfer_id_for(final_url: &Url) -> [u8; 16] {
 /// A representation with no usable validator hashes to zero rather than to something
 /// arbitrary — "nothing to compare against" is the honest record, and it is what a resume must
 /// refuse on.
-fn validator_hash_of(validator: &Validator) -> [u8; 32] {
+pub(crate) fn validator_hash_of(validator: &Validator) -> [u8; 32] {
     match validator {
         Validator::StrongETag(value) => {
             *blake3::hash(format!("etag:{value}").as_bytes()).as_bytes()
