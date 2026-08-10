@@ -235,8 +235,28 @@ pub fn reconcile_download(
     }
 
     // Step 2a — the bytes themselves. Without them nothing else is worth reading.
-    if !metadata.part_path.exists() {
-        return fail(store, &mut metadata, "storage.part-file-missing", now_ms);
+    //
+    // `symlink_metadata` rather than `exists`, which follows: a dangling symlink at this path
+    // reports as absent while a symlink to a real file reports as present, and neither answer is
+    // about the part file. The reopen below refuses a link outright (B-37); this only makes the
+    // diagnosis honest when the path holds something that is not this download's part file.
+    match std::fs::symlink_metadata(&metadata.part_path) {
+        Ok(found) if found.file_type().is_file() => {}
+        Ok(_) => {
+            return fail(
+                store,
+                &mut metadata,
+                "storage.part-file-not-regular",
+                now_ms,
+            );
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return fail(store, &mut metadata, "storage.part-file-missing", now_ms);
+        }
+        // A check that could not answer is not permission to proceed.
+        Err(_) => {
+            return fail(store, &mut metadata, "storage.part-file-unreadable", now_ms);
+        }
     }
     let Some(total_length) = metadata.total_length else {
         // A part file exists for a representation whose length was never recorded. The two
@@ -247,7 +267,19 @@ pub fn reconcile_download(
 
     // Step 2b — the extent, measured before it is restored.
     let part_path = metadata.part_path.clone();
-    let recovered = PartFile::open_existing(&part_path, total_length)?;
+    let recovered = match PartFile::open_existing(&part_path, total_length) {
+        Ok(recovered) => recovered,
+        // Refused between the check above and the open, or planted while the daemon was down.
+        Err(PartFileError::NotARegularFile { .. }) => {
+            return fail(
+                store,
+                &mut metadata,
+                "storage.part-file-not-regular",
+                now_ms,
+            );
+        }
+        Err(error) => return Err(error.into()),
+    };
     let observed_length = recovered.observed_length();
     let extent = if recovered.reextended() {
         PartFileExtent::Reextended {

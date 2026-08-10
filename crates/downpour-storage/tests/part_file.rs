@@ -240,3 +240,78 @@ fn a_growable_part_file_creation_is_exclusive() {
         Err(PartFileError::AlreadyExists { .. })
     ));
 }
+
+/// B-37 — a part file reached through a symlink or reparse point is refused, not written through.
+///
+/// The hazard is not hypothetical arithmetic: recovery reopens the recorded part path read-write
+/// and a resumed transfer writes into it at recorded offsets. If that path is a link to something
+/// the user cares about, the download silently overwrites the victim. Nothing about the resumed
+/// download looks wrong while it happens.
+///
+/// Two properties matter and only one of them is "an error was returned". The other is that the
+/// victim's bytes are untouched, because a refusal that arrives after the first `pwrite` is not a
+/// refusal. The open is therefore no-follow at the syscall, not a check followed by an open: a
+/// check-then-open leaves a window in which the path can be replaced.
+#[test]
+#[cfg(unix)]
+fn a_part_path_that_is_a_symlink_is_refused_and_its_target_is_untouched() {
+    let directory = TestDirectory::new("nofollow-symlink");
+    let dir = directory.path();
+    let victim_path = dir.join("something-the-user-cares-about");
+    let victim_bytes = b"the user's data, which this download does not own".to_vec();
+    std::fs::write(&victim_path, &victim_bytes).expect("write the victim");
+    let part_path = dir.join("download.dppart");
+    std::os::unix::fs::symlink(&victim_path, &part_path).expect("plant the symlink");
+
+    let error = PartFile::open_existing(&part_path, 4096)
+        .expect_err("a part path that is a symlink must be refused");
+    assert!(
+        matches!(error, PartFileError::NotARegularFile { .. }),
+        "the refusal must name the reason so recovery can report it: {error:?}"
+    );
+
+    assert_eq!(
+        std::fs::read(&victim_path).expect("the victim is still readable"),
+        victim_bytes,
+        "the symlink target was modified"
+    );
+    assert!(
+        std::fs::symlink_metadata(&part_path)
+            .expect("the link is still there")
+            .file_type()
+            .is_symlink(),
+        "the link itself must be left alone as evidence"
+    );
+}
+
+/// The same refusal on Windows, where the mechanism is a reparse point rather than a symlink.
+///
+/// Creating a symlink on Windows needs either Developer Mode or `SeCreateSymbolicLinkPrivilege`,
+/// so this skips rather than fails when it cannot plant one — a test that silently passes because
+/// it could not set up its own hazard would be worse than one that says so.
+#[test]
+#[cfg(windows)]
+fn a_part_path_that_is_a_reparse_point_is_refused_and_its_target_is_untouched() {
+    let directory = TestDirectory::new("nofollow-reparse");
+    let dir = directory.path();
+    let victim_path = dir.join("something-the-user-cares-about");
+    let victim_bytes = b"the user's data, which this download does not own".to_vec();
+    std::fs::write(&victim_path, &victim_bytes).expect("write the victim");
+    let part_path = dir.join("download.dppart");
+    if std::os::windows::fs::symlink_file(&victim_path, &part_path).is_err() {
+        eprintln!("skipping: this account cannot create symbolic links");
+        return;
+    }
+
+    let error = PartFile::open_existing(&part_path, 4096)
+        .expect_err("a part path that is a reparse point must be refused");
+    assert!(
+        matches!(error, PartFileError::NotARegularFile { .. }),
+        "the refusal must name the reason so recovery can report it: {error:?}"
+    );
+    assert_eq!(
+        std::fs::read(&victim_path).expect("the victim is still readable"),
+        victim_bytes,
+        "the reparse-point target was modified"
+    );
+}

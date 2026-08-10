@@ -713,3 +713,87 @@ fn reconciliation_preserves_the_recorded_identity() {
     assert_eq!(after.priority, before.priority);
     assert_eq!(after.queue_position, before.queue_position);
 }
+
+/// B-37 at the layer that would act on it: reconciliation refuses a linked part path.
+///
+/// `PartFile::open_existing` refuses the link itself, but recovery is what decides whether a
+/// download is resumable, and a download it declares resumable is one a daemon will write into.
+/// So the refusal has to arrive as a stable state and error kind rather than as a panic or an
+/// I/O error indistinguishable from a transient one — and the victim has to still be there.
+#[test]
+#[cfg(unix)]
+fn a_download_whose_part_path_is_a_symlink_is_failed_and_the_target_is_untouched() {
+    let directory = TestDirectory::new("symlinked-part-path");
+    let part_path = commit_durable_blocks(&directory, &[(0, b"aaaaaaaa")]);
+    let mut store = open_store(&directory, &part_path);
+
+    // Stand in the way the hazard actually arrives: the daemon is down, and between its death and
+    // its restart the part file is replaced by a link to something else.
+    let victim_path = directory.path().join("something-the-user-cares-about");
+    let victim_bytes = b"not this download's to overwrite".to_vec();
+    fs::write(&victim_path, &victim_bytes).expect("write the victim");
+    fs::remove_file(&part_path).expect("remove the real part file");
+    std::os::unix::fs::symlink(&victim_path, &part_path).expect("plant the symlink");
+
+    let reconciliation = reconcile_download(&mut store, sample_id(), &directory.journal(), NOW_MS)
+        .expect("reconciliation must reach a decision rather than fail to run");
+
+    assert_eq!(reconciliation.state(), DownloadState::Failed);
+    assert_eq!(
+        reconciliation
+            .error_kind()
+            .map(downpour_storage::metadata::DownloadErrorKind::as_str),
+        Some("storage.part-file-not-regular"),
+        "the refusal needs a stable kind a client can switch on"
+    );
+    assert_eq!(
+        fs::read(&victim_path).expect("the victim is still readable"),
+        victim_bytes,
+        "recovery wrote through the symlink"
+    );
+    assert!(
+        fs::symlink_metadata(&part_path)
+            .expect("the link is still there")
+            .file_type()
+            .is_symlink(),
+        "the link itself is evidence and is left alone"
+    );
+}
+
+/// The presence check answers about the part file, not about whatever the path leads to.
+///
+/// `exists()` follows links and cannot distinguish these two. A dangling symlink reads as absent,
+/// so the download is failed as "missing" and a later create would follow the link and write
+/// through it — the same family as B-30 and B-37 reached from a third side. A directory reads as
+/// present, so recovery goes on to open it and reports whatever errno that produced, which is
+/// indistinguishable from a transient fault. Both are "something is at this path and it is not
+/// this download's part file", and both must say so.
+#[test]
+#[cfg(unix)]
+fn a_part_path_that_is_a_dangling_link_or_a_directory_is_refused_by_name() {
+    for (tag, plant) in [("dangling-link", 0_u8), ("directory", 1)] {
+        let directory = TestDirectory::new(tag);
+        let part_path = commit_durable_blocks(&directory, &[(0, b"aaaaaaaa")]);
+        let mut store = open_store(&directory, &part_path);
+        fs::remove_file(&part_path).expect("remove the real part file");
+        if plant == 0 {
+            std::os::unix::fs::symlink(directory.path().join("nothing-here"), &part_path)
+                .expect("plant a dangling symlink");
+        } else {
+            fs::create_dir(&part_path).expect("plant a directory");
+        }
+
+        let reconciliation =
+            reconcile_download(&mut store, sample_id(), &directory.journal(), NOW_MS)
+                .expect("reconciliation must reach a decision rather than fail to run");
+
+        assert_eq!(reconciliation.state(), DownloadState::Failed, "{tag}");
+        assert_eq!(
+            reconciliation
+                .error_kind()
+                .map(downpour_storage::metadata::DownloadErrorKind::as_str),
+            Some("storage.part-file-not-regular"),
+            "{tag}: the refusal must name what is wrong, not report an opaque I/O failure"
+        );
+    }
+}
