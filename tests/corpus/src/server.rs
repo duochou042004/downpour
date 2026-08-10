@@ -219,6 +219,14 @@ pub struct ServerSpec {
     /// `429`. The engine has to notice the drop rather than wait out a timeout, and must not
     /// treat "the origin allows four" as "four is the right number" (I-7).
     pub max_concurrent_connections: Option<usize>,
+    /// Accept and immediately close this many connections, with no response at all.
+    ///
+    /// What a load balancer with no healthy backend does, and what a firewall dropping a flow
+    /// looks like from the client: the TCP handshake succeeds, so a client that treats "connected"
+    /// as "working" has already committed, and then the peer hangs up before a single byte of a
+    /// response. Distinct from a truncated body, where a response started and stopped — here there
+    /// is nothing to parse, no status, and no partial content to keep.
+    pub close_without_responding: usize,
     /// Close the connection after serving this many requests on it, without an error.
     ///
     /// The `close-after-N` pathology: a keep-alive that the origin silently stops honouring.
@@ -257,6 +265,7 @@ impl Default for ServerSpec {
             if_range: IfRangeBehaviour::default(),
             behaviour: Vec::new(),
             max_concurrent_connections: None,
+            close_without_responding: 0,
             close_after_requests: None,
         }
     }
@@ -336,6 +345,8 @@ impl RecordedRequest {
 /// would let every attempt fail forever, which would prove the opposite of what the case intends.
 #[derive(Debug)]
 struct TransientBudget {
+    /// Connections still owed an immediate hang-up.
+    silent: AtomicU32,
     body: AtomicU32,
     status: AtomicU32,
     /// Body bytes served so far, across every connection. Mid-transfer mutations trigger on it.
@@ -438,6 +449,9 @@ impl FirstRangeGate {
 impl TransientBudget {
     fn new(spec: &ServerSpec) -> Self {
         Self {
+            silent: AtomicU32::new(
+                u32::try_from(spec.close_without_responding).unwrap_or(u32::MAX),
+            ),
             body: AtomicU32::new(spec.transient_body_failures),
             status: AtomicU32::new(spec.transient_status_failures),
             bytes_served: std::sync::atomic::AtomicU64::new(0),
@@ -551,6 +565,14 @@ impl PathologyServer {
                         let _active_connection = active_connection;
                         match spec.protocol {
                             Protocol::Http11 => {
+                                // Accepted, then hung up before any response. Claimed from a
+                                // budget so the pathology is finite and the download can recover,
+                                // which is what tells "the engine retried" apart from "the server
+                                // eventually gave up".
+                                if TransientBudget::claim(&budget.silent) {
+                                    drop(stream);
+                                    return;
+                                }
                                 serve_http11(
                                     stream,
                                     &spec,

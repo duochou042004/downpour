@@ -216,6 +216,9 @@ pub struct ServerCase {
     /// with no status and no reason. Answering would make it the `429` pathology instead.
     #[serde(default)]
     pub max_concurrent_connections: Option<usize>,
+    /// Accept and immediately close this many connections, with no response at all.
+    #[serde(default)]
+    pub close_without_responding: usize,
     /// Close the connection after this many requests on it, without an error.
     ///
     /// A keep-alive the origin silently stops honouring. A client that assumes its pooled
@@ -733,6 +736,7 @@ impl Case {
     pub fn server_spec(&self) -> ServerSpec {
         ServerSpec {
             max_concurrent_connections: self.server.max_concurrent_connections,
+            close_without_responding: self.server.close_without_responding,
             close_after_requests: self.server.close_after_requests,
             protocol: match self.server.protocol {
                 ProtocolCase::Http11 => Protocol::Http11,

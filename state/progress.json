@@ -4247,11 +4247,27 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3 is 11/16 tasks and 3/5 exit criteria. S3-T11 is open with connections at 5 of 20: fifteen more distinct pathologies, and the runner and server can now express them. The docs/09 section 3.2 list names per-IP caps, per-connection caps, 429 and silent drops; 429 and Retry-After already have a case, so the remaining ground is per-connection byte caps, connection reuse limits, half-open and idle-timeout drops, and slow-loris style stalls, each needing its own server capability. One thing to fix while doing them: the segmented path uses RetryPolicy::default rather than fast_for_tests, so a concurrency case that also injects transient failures will be slow until the pool takes a policy. Then T12 ranges 17 of 25, T13, T14, T15. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Third connections pathology: a connection accepted and hung up before any response, which is a load balancer with no healthy backend or a firewall dropping the flow. Deliberately distinct from transient-reset-is-retried rather than a parameter variant of it — there a response started and was cut off mid-body, and an engine recovers by keeping what arrived and asking for the rest; here nothing arrived, there is no status line and no partial content, so an engine that only knows how to resume a partial body fails. The dropped connection carries no request the server can record, so the request count cannot see this pathology at all and the connection count is what proves it fired. Mutation: answering instead of hanging up reports that only one connection was accepted. connections is now 6 of 20, corpus 79 of 159. Local 349/349 with 3 skipped.",
+      "tasks_touched": [
+        "S3-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/cases/connections/a-connection-closed-before-any-response-is-retried.yaml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3-T11 open at 6 of 20 connections cases. Fourteen remain and each needs its own server capability rather than a YAML variant; the ones already sketched are per-connection byte caps, connection reuse limits, half-open and idle-timeout drops, and slow-loris stalls. Two constraints found while doing these and worth knowing before the next batch: the engine per-request timeout is fixed at 300 seconds and is not reachable from a case, so any pathology whose observable is a timeout — a silent accept that never answers, a slow-loris stall — cannot be written until that is configurable; and the segmented path uses RetryPolicy::default rather than fast_for_tests, so a concurrency case that also injects transient failures will be slow. Then T12 ranges 17 of 25, T13, T14, T15. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 78,
-    "corpus_cases_passing": 78,
+    "corpus_cases_total": 79,
+    "corpus_cases_passing": 79,
     "sim_seeds_fixed": 19,
     "invariants_covered": 10,
     "invariants_total": 14,

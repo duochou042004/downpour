@@ -1,0 +1,22 @@
+id: a-connection-closed-before-any-response-is-retried
+category: connections
+description: >
+  The first connection is accepted and then hung up before a single byte of a response — a load
+  balancer with no healthy backend, or a firewall dropping the flow. The TCP handshake succeeded,
+  so a client that treats "connected" as "working" has already committed, and there is nothing to
+  parse: no status line, no headers, no partial body to keep.
+  Distinct from `transient-reset-is-retried`, where a response started and was cut off mid-body.
+  That case can be survived by keeping what arrived and asking for the rest; this one cannot,
+  because nothing arrived. An engine that only recovers by resuming a partial body fails here.
+references: ["docs/03-transfer-engine-spec.md §7", "docs/09-testing-strategy.md §3.2"]
+
+server:
+  content: { size: 256KiB, seed: 142 }
+  close_without_responding: 1
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # The dropped connection carried no request the server could record, so the request count alone
+  # cannot see this pathology — the connection count is what does.
+  min_connections: 2
