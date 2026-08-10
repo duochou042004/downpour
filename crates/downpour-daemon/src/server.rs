@@ -37,6 +37,44 @@ pub enum DaemonStateError {
     Unavailable,
 }
 
+/// Rebuild the probed identity a resume must replay, from what was recorded (I-8).
+///
+/// `None` when the working URL is not reconstructible: a signed URL is persisted with its query
+/// stripped and a keyring locator beside it, and resuming against the public form would send a
+/// request the origin refuses. That path is S8.
+fn recorded_remote(metadata: &DownloadMetadata) -> Option<downpour_types::RemoteObject> {
+    let reference = metadata
+        .identity
+        .final_url
+        .as_ref()
+        .unwrap_or(&metadata.identity.current_url);
+    if reference.secret_ref().is_some() {
+        return None;
+    }
+    let final_url = url::Url::parse(reference.public_url().as_str()).ok()?;
+    let mut redirect_chain = Vec::with_capacity(metadata.identity.redirect_chain.len());
+    for hop in &metadata.identity.redirect_chain {
+        redirect_chain.push(url::Url::parse(hop.public_url().as_str()).ok()?);
+    }
+    Some(downpour_types::RemoteObject {
+        final_url,
+        redirect_chain,
+        total_length: metadata.total_length,
+        range_support: metadata.identity.range_support.clone(),
+        validator: metadata.identity.validator.clone(),
+        digest: metadata.identity.server_digest.clone(),
+        protocol: metadata.identity.protocol,
+        suggested_filename: metadata.identity.suggested_filename.clone(),
+        content_type: metadata
+            .identity
+            .content_type
+            .as_ref()
+            .and_then(|text| text.parse().ok()),
+        probed_at: std::time::UNIX_EPOCH
+            + std::time::Duration::from_millis(metadata.identity.probed_at_ms),
+    })
+}
+
 /// Move a download's durable record to a terminal state.
 ///
 /// Best effort by design: the bytes are already on disk and the transfer is over, so a store that
@@ -503,6 +541,154 @@ impl TransferDaemon {
         })
     }
 
+    /// Resume a download a previous process left interrupted.
+    ///
+    /// The identity comes from the record, not from a fresh probe: it is what I-8 asks to be
+    /// persisted and replayed, and the validator inside it is what I-3 compares against when the
+    /// resumed transfer asks for a range. Re-probing here would substitute a validator that
+    /// trivially matches whatever the server is serving now.
+    fn resume(&self, id: DownloadId) -> Response {
+        let stored = match stored_id(&id) {
+            Ok(stored) => stored,
+            Err(_) => return rpc_error("not_found", "download was not found", false, Some(id)),
+        };
+        let metadata = {
+            let store = match self.store.lock() {
+                Ok(store) => store,
+                Err(_) => {
+                    return rpc_error(
+                        "state_unavailable",
+                        "daemon transfer state is unavailable",
+                        true,
+                        Some(id),
+                    );
+                }
+            };
+            match store.load_download(stored) {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => {
+                    return rpc_error("not_found", "download was not found", false, Some(id));
+                }
+                Err(_) => {
+                    return rpc_error(
+                        "state_unavailable",
+                        "daemon transfer state is unavailable",
+                        true,
+                        Some(id),
+                    );
+                }
+            }
+        };
+
+        if matches!(
+            metadata.state,
+            DownloadState::Completed | DownloadState::Failed
+        ) {
+            return rpc_error(
+                "not_resumable",
+                "download has already reached a terminal state",
+                false,
+                Some(id),
+            );
+        }
+        let Some(remote) = recorded_remote(&metadata) else {
+            // A URL whose working form lives in the keyring cannot be rebuilt yet, and resuming
+            // against the query-stripped public form would send a request the origin refuses.
+            // Signed-URL refresh is S8; refusing is the honest answer until then.
+            return rpc_error(
+                "identity_incomplete",
+                "recorded identity cannot be replayed without its secret URL",
+                false,
+                Some(id),
+            );
+        };
+
+        let layout = StorageLayout::new(
+            metadata
+                .target_path
+                .parent()
+                .map_or_else(|| self.config.target_dir.clone(), PathBuf::from),
+            &self.config.journal_dir,
+        )
+        .with_transfer_id(stored.as_bytes());
+
+        update_state(
+            &self.registry,
+            &id,
+            WireState::Transferring,
+            metadata.covered_bytes,
+            metadata.total_length,
+            None,
+        );
+        let registry = Arc::clone(&self.registry);
+        let store = Arc::clone(&self.store);
+        let transport_mode = self.config.transport_mode;
+        let task_id = id.clone();
+        tokio::spawn(async move {
+            let outcome = match H1H2Backend::new(transport_mode) {
+                Ok(backend) => {
+                    SegmentedDownload::new(std::sync::Arc::new(backend), DEFAULT_CONNECTIONS.max(4))
+                        .resume(&remote, &layout)
+                        .await
+                }
+                Err(_) => {
+                    update_state(
+                        &registry,
+                        &task_id,
+                        WireState::Failed,
+                        0,
+                        None,
+                        Some("backend_unavailable".to_owned()),
+                    );
+                    return;
+                }
+            };
+            match outcome {
+                Ok(path) => {
+                    let length = tokio::fs::metadata(path).await.ok().map(|item| item.len());
+                    update_state(
+                        &registry,
+                        &task_id,
+                        WireState::Completed,
+                        length.unwrap_or(0),
+                        length,
+                        None,
+                    );
+                    record_terminal(
+                        &store,
+                        &task_id,
+                        DownloadState::Completed,
+                        length.unwrap_or(0),
+                        None,
+                    );
+                }
+                Err(error) => {
+                    update_state(
+                        &registry,
+                        &task_id,
+                        WireState::Failed,
+                        0,
+                        None,
+                        Some(error.kind().to_owned()),
+                    );
+                    record_terminal(
+                        &store,
+                        &task_id,
+                        DownloadState::Failed,
+                        0,
+                        Some(error.kind()),
+                    );
+                }
+            }
+        });
+
+        Response::Resumed(StateResult {
+            protocol_version: PROTOCOL_VERSION,
+            id,
+            state: WireState::Transferring,
+        })
+    }
+
     fn get(&self, id: DownloadId) -> Response {
         let registry = match self.registry.lock() {
             Ok(registry) => registry,
@@ -572,12 +758,7 @@ impl CommandHandler for TransferDaemon {
         match request {
             Request::DownloadAdd(params) => self.add(params),
             Request::DownloadGet(params) => self.get(params.id),
-            Request::DownloadResume(params) => rpc_error(
-                "resume_not_ready",
-                "cross-process resume is not available until S3-T9",
-                true,
-                Some(params.id),
-            ),
+            Request::DownloadResume(params) => self.resume(params.id),
             Request::SystemStatus(_) => self.status(),
             Request::Hello(_) => rpc_error(
                 "invalid_dispatch",

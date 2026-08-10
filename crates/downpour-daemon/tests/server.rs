@@ -260,3 +260,249 @@ async fn a_download_outlives_the_daemon_instance_that_started_it() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// B-25, end to end: a transfer interrupted by a process exit is finished by the next process.
+///
+/// The interrupted state is built directly rather than by killing a live transfer, because that
+/// is exactly what a killed process leaves behind — durable artifacts with holes, and a record
+/// still saying `Transferring` — and because the pool retries past a one-shot server gate from a
+/// different offset, so there is no cheap way to hold a real transfer open.
+///
+/// Two durable runs with a hole between them and a hole at the end: the shape several workers
+/// leave, not a truncated prefix.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_interrupted_transfer_is_finished_by_the_next_process() {
+    use downpour_corpus::content::Content;
+    use downpour_corpus::server::{PathologyServer, ServerSpec};
+    use downpour_storage::metadata::MetadataStore;
+
+    const LENGTH: u64 = 8 * 1024 * 1024;
+    const DURABLE: &[(u64, u64)] = &[(0, 2 * 1024 * 1024), (4 * 1024 * 1024, 6 * 1024 * 1024)];
+
+    let server = PathologyServer::start(ServerSpec {
+        content: Content::new(23, LENGTH),
+        etag: Some("\"interrupted-v1\"".to_owned()),
+        ..ServerSpec::default()
+    })
+    .await
+    .expect("server starts");
+
+    let root = std::env::temp_dir().join(format!(
+        "downpour-interrupted-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    std::fs::create_dir_all(root.join("target")).expect("target dir");
+    std::fs::create_dir_all(root.join("journals")).expect("journal dir");
+    let config = TransferConfig {
+        target_dir: root.join("target"),
+        journal_dir: root.join("journals"),
+        database_path: root.join("downpour.db"),
+        transport_mode: TransportMode::Http1Only,
+    };
+
+    let id = leave_an_interrupted_download(&config, &server.entry_url(), LENGTH, DURABLE).await;
+
+    // A fresh process. It has the directories and nothing else.
+    let mut daemon = TransferDaemon::new(config).expect("the daemon opens its store");
+    let resumable = daemon.recover().expect("startup recovery runs");
+    assert_eq!(
+        resumable, 1,
+        "an interrupted download must reconcile to a resumable one"
+    );
+    let before = daemon.handle(Request::DownloadGet(downpour_ipc::IdParams {
+        protocol_version: PROTOCOL_VERSION,
+        id: id.clone(),
+    }));
+    let Response::Download(before) = before else {
+        panic!("the recovered download must be reachable: {before:?}");
+    };
+    assert_eq!(
+        before.state,
+        WireState::Paused,
+        "recovery establishes what is true and stops; it does not auto-resume"
+    );
+    assert_eq!(
+        before.covered,
+        DURABLE.iter().map(|(s, e)| e - s).sum::<u64>(),
+        "the recovered record must carry what the journal proved"
+    );
+
+    let requests_before = server.requests().len();
+    let response = daemon.handle(Request::DownloadResume(downpour_ipc::IdParams {
+        protocol_version: PROTOCOL_VERSION,
+        id: id.clone(),
+    }));
+    assert!(
+        matches!(response, Response::Resumed(_)),
+        "resume must be accepted now that the identity and the interval map are both durable: \
+         {response:?}"
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let store = MetadataStore::open(root.join("downpour.db")).expect("the store opens");
+            let records = store.load_downloads().expect("the store reads");
+            if records.first().is_some_and(|record| {
+                record.state == downpour_storage::metadata::DownloadState::Completed
+            }) {
+                return;
+            }
+            drop(store);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the resumed transfer must finish");
+
+    let bytes = std::fs::read(root.join("target").join("content")).expect("the file is there");
+    assert_eq!(
+        Content::new(23, LENGTH).first_mismatch(0, &bytes),
+        None,
+        "silent corruption through the resumed daemon path"
+    );
+
+    // The claim that makes resume worth having: the bytes the journal already proved are not
+    // fetched a second time.
+    for request in &server.requests()[requests_before..] {
+        let Some(range) = request.header("range") else {
+            continue;
+        };
+        let Some((start, end)) = range
+            .strip_prefix("bytes=")
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(a, b)| Some((a.parse::<u64>().ok()?, b.parse::<u64>().ok()? + 1)))
+        else {
+            continue;
+        };
+        for (done_start, done_end) in DURABLE {
+            assert!(
+                start >= *done_end || *done_start >= end,
+                "the resume requested {start}-{end}, overlapping the durable range \
+                 {done_start}-{done_end} the journal already proved"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Write exactly what a process killed mid-transfer leaves behind, and return its id.
+///
+/// The identity comes from a real probe and the durable blocks go through the real
+/// `DurableWriter`, so the journal records and the SQLite row are the ones a resume will actually
+/// read rather than a fixture's idea of them.
+async fn leave_an_interrupted_download(
+    config: &TransferConfig,
+    entry_url: &str,
+    length: u64,
+    durable: &[(u64, u64)],
+) -> downpour_ipc::DownloadId {
+    use downpour_corpus::content::Content;
+    use downpour_http::{H1H2Backend, ProbeRequest, TransferProtocol as _};
+    use downpour_intervals::{IntervalMap, WorkerId};
+    use downpour_storage::journal::FileHeader;
+    use downpour_storage::part_file::PartFile;
+    use downpour_storage::writer::{DurableWriter, JournalFile};
+
+    let backend = H1H2Backend::new(config.transport_mode).expect("backend");
+    let remote = backend
+        .probe(ProbeRequest::new(entry_url.parse().expect("url")))
+        .await
+        .expect("probe");
+
+    let id = downpour_daemon::server::fresh_download_id().expect("mint an id");
+    let stored = downpour_storage::metadata::DownloadId::try_from_bytes(hex_bytes(id.as_str()))
+        .expect("the minted id is storable");
+
+    let final_path = config.target_dir.join(
+        remote
+            .suggested_filename
+            .clone()
+            .unwrap_or_else(|| "download".to_owned()),
+    );
+    let part = PartFile::create(&final_path, length).expect("part file");
+    let part_path = part.path().to_path_buf();
+    let journal_path = config.journal_dir.join(format!("{}.dpj", id.as_str()));
+    let journal = JournalFile::create(
+        &journal_path,
+        FileHeader::new(
+            stored.as_bytes(),
+            length,
+            0,
+            downpour_engine::validator_hash_of(&remote.validator),
+        ),
+    )
+    .expect("journal");
+    let mut writer = DurableWriter::try_new(part, journal, 0).expect("writer");
+    let mut intervals = IntervalMap::new(length);
+    let content = Content::new(23, length);
+    let worker = WorkerId::new(0);
+    for (start, end) in durable {
+        intervals.grant(*start..*end, worker).expect("grant");
+        writer
+            .stage(
+                &mut intervals,
+                worker,
+                *start,
+                &content.range(*start, *end),
+                std::time::Duration::ZERO,
+            )
+            .expect("stage");
+        writer.flush(&mut intervals).expect("commit");
+    }
+    drop(writer);
+
+    let url = downpour_storage::metadata::UrlReference::parse(remote.final_url.as_str(), None)
+        .expect("public url");
+    let origin = downpour_storage::metadata::PublicUrl::parse(&format!(
+        "{}://{}",
+        remote.final_url.scheme(),
+        remote.final_url.authority()
+    ))
+    .expect("origin");
+    let mut store = downpour_storage::metadata::MetadataStore::open(&config.database_path)
+        .expect("store opens");
+    store
+        .save_download(&downpour_storage::metadata::DownloadMetadata {
+            id: stored,
+            // What a process killed mid-transfer leaves: still claiming to be transferring.
+            state: downpour_storage::metadata::DownloadState::Transferring,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            target_path: final_path,
+            part_path,
+            total_length: Some(length),
+            covered_bytes: 0,
+            queue_position: None,
+            priority: 0,
+            error_kind: None,
+            space_reserved: true,
+            url_history: Vec::new(),
+            identity: downpour_storage::metadata::IdentityMetadata {
+                current_url: url.clone(),
+                final_url: Some(url.clone()),
+                redirect_chain: vec![url],
+                page_url: None,
+                origin,
+                validator: remote.validator.clone(),
+                server_digest: remote.digest.clone(),
+                content_type: remote.content_type.as_ref().map(ToString::to_string),
+                suggested_filename: remote.suggested_filename.clone(),
+                request_context_ref: None,
+                probed_at_ms: 3,
+                protocol: remote.protocol,
+                range_support: remote.range_support.clone(),
+            },
+        })
+        .expect("the interrupted record is valid");
+    id
+}
+
+fn hex_bytes(text: &str) -> [u8; 16] {
+    let mut bytes = [0_u8; 16];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).expect("hex");
+    }
+    bytes
+}

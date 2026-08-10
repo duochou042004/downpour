@@ -1190,8 +1190,8 @@
         {
           "id": "S3-T9",
           "title": "Resume after process exit and refuse symlink or reparse-point part files",
-          "status": "todo",
-          "proof": null,
+          "status": "done",
+          "proof": "crates/downpour-daemon/tests/server.rs::{an_interrupted_transfer_is_finished_by_the_next_process,a_download_outlives_the_daemon_instance_that_started_it,every_download_id_the_daemon_mints_is_accepted_by_its_own_metadata_store}; crates/downpour-engine/tests/segmented_resume.rs::a_resumed_segmented_transfer_never_refetches_a_byte_the_journal_proved; crates/downpour-engine/tests/segment_allocator_prop.rs::{a_resumed_allocator_only_ever_grants_what_the_journal_left_pending,resuming_from_a_map_that_still_holds_a_grant_is_refused}; crates/downpour-storage/tests/part_file.rs::a_part_path_that_is_a_symlink_is_refused_and_its_target_is_untouched; crates/downpour-storage/tests/recovery.rs::{a_download_whose_part_path_is_a_symlink_is_failed_and_the_target_is_untouched,a_part_path_that_is_a_dangling_link_or_a_directory_is_refused_by_name,durable_state_rebuilds_from_the_journal_alone_and_matches_reconciliation}; crates/downpour-storage/tests/journal_replay.rs::{a_recovered_journal_reopens_for_append_and_keeps_every_earlier_record,reopening_a_journal_for_a_different_representation_is_refused,a_journal_path_that_is_a_symlink_is_refused_and_its_target_is_untouched}; crates/downpour-cli/tests/dp_add.rs::a_segmented_transfer_refuses_a_representation_that_changes_underneath_it",
           "files": [
             "crates/downpour-engine/",
             "crates/downpour-daemon/",
