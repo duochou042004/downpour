@@ -4288,6 +4288,22 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3 is 11/16 tasks and 3/5 exit criteria. T12 ranges at 18 of 25: the remaining named shapes from the task note are one range returning 200, shifted or overlapping responses between workers, and a later range returning 416, and the ordinal trigger added here — ranged_served — is the mechanism the rest of them need. T11 connections at 6 of 20, with two of the remaining shapes blocked behind B-54. Then T13, T14, T15. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "HANDOFF ENTRY — read this one first. This session began as a review of Codex S3 work and became the work itself. It closed S3-T9 and S3-T10 and opened S3-T11 and S3-T12, across backlog items B-38 through B-54. Nothing is half-applied: the tree is clean, HEAD is identical on both remotes, and every commit had all four GitHub jobs green including Windows. Three PRs are stacked and unmerged and must merge in order 41, then 43, then 44. The method that found everything: write the failing test first and commit it failing; then mutate the behaviour the proof names and require that proof to go red; if it stays green, decide whether it is a no-op or a gap before moving on. That method caught four proofs of my own that could not fail — the connection-identity proof that was really asserting reqwest pool order, the restart test that passed with the journal-naming fix reverted, the journal symlink test whose victim was too short to reach the guard, and a capped-origin corpus case that was vacuous when written. Two failures were mine and are recorded so they are not repeated: B-47, a debug eprintln committed into engine code and now blocked by a lint in all seven library crates, and B-49, restoring after a mutation with git checkout, which discards uncommitted work and once shipped a test without the implementation it tested. Use scratchpad file copies for mutation restore, and commit before mutating.",
+      "tasks_touched": [
+        "S3-T9",
+        "S3-T10",
+        "S3-T11",
+        "S3-T12"
+      ],
+      "files_touched": [
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 11/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume. NEXT UNIT is S3-T11: connections is 6 of 20 and fourteen distinct pathologies remain, each needing its own pathology-server capability rather than a YAML variant, since ADR-0018 forbids padding a floor. The capabilities added here are max_concurrent_connections, close_after_requests, close_without_responding and inconsistent_total_after, plus the observations min_connections and min_refused_connections and a per-case connections field that routes to the segmented path. Two of the remaining connections shapes are blocked behind B-54 and should be skipped rather than faked. AFTER THAT: T12 ranges 18 of 25, whose remaining named shapes are one range returning 200, shifted or overlapping responses between workers, and a later range returning 416 — the ranged_served ordinal trigger is the mechanism they need. Then T13 retention, T14 the digest cost re-measurement on the segmented path, T15 the stage-gate mutation audit. Known constraints: the segmented path uses RetryPolicy::default rather than fast_for_tests so a concurrency case that also injects transient failures is slow; just gate runs clippy without --locked while CI runs it with; and CI only fires on branches matching feature/**, fix/**, docs/** or chore/**."
     }
   ],
   "metrics": {
