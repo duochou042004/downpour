@@ -212,6 +212,18 @@ pub struct ServerSpec {
     pub if_range: IfRangeBehaviour,
     /// Ordered mid-transfer mutations (ADR-0010's `behaviour`), applied as bytes are served.
     pub behaviour: Vec<Mutation>,
+    /// Refuse to serve more than this many connections at once, the way a per-IP cap does.
+    ///
+    /// A capped origin does not politely queue: the connection beyond the cap is accepted by the
+    /// kernel and then dropped without a response, which is what makes this different from a
+    /// `429`. The engine has to notice the drop rather than wait out a timeout, and must not
+    /// treat "the origin allows four" as "four is the right number" (I-7).
+    pub max_concurrent_connections: Option<usize>,
+    /// Close the connection after serving this many requests on it, without an error.
+    ///
+    /// The `close-after-N` pathology: a keep-alive that the origin silently stops honouring.
+    /// A client that assumes its pooled connection is still good sends into a closed socket.
+    pub close_after_requests: Option<usize>,
 }
 
 impl Default for ServerSpec {
@@ -244,6 +256,8 @@ impl Default for ServerSpec {
             corrupt_from: None,
             if_range: IfRangeBehaviour::default(),
             behaviour: Vec::new(),
+            max_concurrent_connections: None,
+            close_after_requests: None,
         }
     }
 }
@@ -336,6 +350,8 @@ struct ConnectionObservation {
     accepted: AtomicUsize,
     active: AtomicUsize,
     maximum_active: AtomicUsize,
+    /// Connections dropped without an answer because the cap was already reached.
+    refused: AtomicUsize,
 }
 
 impl ConnectionObservation {
@@ -518,6 +534,18 @@ impl PathologyServer {
                     let requests = Arc::clone(&requests);
                     let budget = Arc::clone(&budget);
                     let (connection_id, active_connection) = connections.accepted();
+                    if let Some(cap) = spec.max_concurrent_connections
+                        && connections.active.load(Ordering::SeqCst) > cap
+                    {
+                        // A capped origin does not answer and does not refuse politely: the
+                        // socket is accepted by the kernel and then dropped. Answering with a
+                        // status would make this the `429` case, which is a different pathology
+                        // and has its own cases.
+                        connections.refused.fetch_add(1, Ordering::SeqCst);
+                        drop(active_connection);
+                        drop(stream);
+                        continue;
+                    }
                     let range_gate = range_gate.clone();
                     tokio::spawn(async move {
                         let _active_connection = active_connection;
@@ -639,6 +667,16 @@ impl PathologyServer {
     #[must_use]
     pub fn accepted_connection_count(&self) -> usize {
         self.connections.accepted.load(Ordering::SeqCst)
+    }
+
+    /// Connections this server accepted and then dropped without answering, because its
+    /// concurrency cap was already reached.
+    ///
+    /// The only way a capped case can prove the cap actually bit. Without it, a case that simply
+    /// never opened a second connection is indistinguishable from one that was refused.
+    #[must_use]
+    pub fn refused_connection_count(&self) -> usize {
+        self.connections.refused.load(Ordering::SeqCst)
     }
 
     /// Number of accepted connections whose serving task is still alive.
@@ -1036,6 +1074,7 @@ async fn serve_http11(
     range_gate: Option<&FirstRangeGate>,
 ) {
     let mut buffered: Vec<u8> = Vec::new();
+    let mut served_on_connection = 0_usize;
 
     loop {
         // Read until a complete request head has arrived.
@@ -1086,6 +1125,8 @@ async fn serve_http11(
         if let Some(gate) = range_gate {
             gate.hold_if_matches(range_header.as_deref()).await;
         }
+
+        served_on_connection += 1;
 
         let if_range = headers
             .iter()
@@ -1194,7 +1235,12 @@ async fn serve_http11(
             )
             || truncated
             || forced_close
-            || spec.omit_chunked_terminator;
+            || spec.omit_chunked_terminator
+            // close-after-N: the origin stops honouring keep-alive without saying so and without
+            // erroring. The response just served is complete; the connection simply ends.
+            || spec
+                .close_after_requests
+                .is_some_and(|limit| served_on_connection >= limit);
         if must_close {
             let _ = stream.shutdown().await;
             return;

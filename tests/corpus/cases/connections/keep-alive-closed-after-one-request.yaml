@@ -1,0 +1,26 @@
+id: keep-alive-closed-after-one-request
+category: connections
+description: >
+  The origin advertises nothing unusual and simply stops honouring keep-alive: every connection is
+  closed cleanly after one request, with a complete response and no error. A client that assumes
+  its pooled connection is still good writes into a closed socket and sees what looks like a reset.
+  The probe and the body therefore cannot share a connection, so the transfer must survive being
+  told to reconnect between them rather than treating the close as a failure.
+  Distinct from `transient-reset-is-retried`: nothing here is truncated and nothing errors. The
+  response is complete every time; only the connection ends. A client that only handles resets by
+  retrying a broken body has nothing to retry.
+references: ["docs/03-transfer-engine-spec.md §7", "docs/09-testing-strategy.md §3.2"]
+
+server:
+  content: { size: 256KiB, seed: 140 }
+  close_after_requests: 1
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # Probe and body cannot have shared a connection, so at least two requests were made and each
+  # needed its own. One would mean the close never happened.
+  min_requests: 2
+  # Each request needed its own connection. A healthy origin serves both on one, so this is
+  # what tells the pathology apart from an ordinary download.
+  min_connections: 2

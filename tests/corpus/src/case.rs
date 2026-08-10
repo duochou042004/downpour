@@ -43,6 +43,15 @@ pub struct Case {
     /// a target that already exists, a directory nobody may write to, a `.dppart` another process
     /// already owns. None of them can be expressed by a server, which is why they need their own
     /// section rather than another server knob.
+    /// How many connections the engine may use, when the case is about concurrency.
+    ///
+    /// Defaults to one, which is the single-stream path every case used before this existed. A
+    /// connection pathology — a per-IP cap, a per-connection cap, a concurrent-request limit —
+    /// only exists when more than one connection is open, so a whole category of cases about them
+    /// is unreachable without this.
+    #[serde(default)]
+    pub connections: Option<usize>,
+    /// The local preconditions this case sets up before the transfer runs.
     #[serde(default)]
     pub local: LocalCase,
     /// What the server should do.
@@ -201,6 +210,18 @@ pub struct ServerCase {
     /// is what would make an `etag-changed-midway` case pass without any ETag ever changing.
     #[serde(default)]
     pub behaviour: Vec<BehaviourCase>,
+    /// Serve at most this many connections at once, dropping the rest without answering.
+    ///
+    /// A per-IP cap as an origin actually applies one: the socket is accepted and then dropped,
+    /// with no status and no reason. Answering would make it the `429` pathology instead.
+    #[serde(default)]
+    pub max_concurrent_connections: Option<usize>,
+    /// Close the connection after this many requests on it, without an error.
+    ///
+    /// A keep-alive the origin silently stops honouring. A client that assumes its pooled
+    /// connection is still good writes into a closed socket.
+    #[serde(default)]
+    pub close_after_requests: Option<usize>,
 }
 
 /// The local preconditions a case sets up before the transfer runs.
@@ -507,6 +528,21 @@ pub struct Expect {
     /// accidental outcome.
     #[serde(default)]
     pub forbids_if_range: Option<bool>,
+    /// The server must have accepted at least this many transport connections.
+    ///
+    /// What distinguishes a connection pathology from an ordinary download that happens to
+    /// succeed. A probe and a body normally share one keep-alive connection, so a case whose
+    /// point is "the origin stopped honouring keep-alive" is indistinguishable from a healthy
+    /// transfer unless the connection count is asserted.
+    #[serde(default)]
+    pub min_connections: Option<usize>,
+    /// The server must have dropped at least this many connections for exceeding its cap.
+    ///
+    /// The only way a capped case can prove the cap bit. Without it, a client that simply never
+    /// opened a second connection passes identically to one that was refused, and the case would
+    /// stay green if the cap were removed from the server entirely.
+    #[serde(default)]
+    pub min_refused_connections: Option<usize>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -696,6 +732,8 @@ impl Case {
     #[must_use]
     pub fn server_spec(&self) -> ServerSpec {
         ServerSpec {
+            max_concurrent_connections: self.server.max_concurrent_connections,
+            close_after_requests: self.server.close_after_requests,
             protocol: match self.server.protocol {
                 ProtocolCase::Http11 => Protocol::Http11,
                 ProtocolCase::Http2 => Protocol::H2c,

@@ -2278,6 +2278,13 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "A durable record that only ever describes the beginning of a transfer is worse than none, because recovery believes it"
+    },
+    {
+      "id": "B-53",
+      "text": "FIXED 2026-08-10 as the first part of S3-T11, and it was the blocker for the whole category. tests/corpus/src/runner.rs drove SingleStream and nothing else, so every corpus case ran on one connection. A per-IP cap, a per-connection cap and a concurrent-request limit only exist when more than one connection is open, which made the entire connections category unreachable rather than merely unwritten — and a case written for it would have passed while proving nothing. Cases now carry a  field and route to SegmentedDownload when it is above one. Found by writing the capped case and watching the new min_refused_connections assertion report that the cap never bit; without that assertion the case would have been green and vacuous. Note for the remaining cases: the segmented path uses RetryPolicy::default rather than fast_for_tests, so a concurrency case that also injects transient failures will be slow until the pool takes a policy.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A category the harness cannot reach is worse than an empty one, because cases written for it look like coverage"
     }
   ],
   "session_log": [
@@ -4221,11 +4228,30 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3 is 11/16 tasks and 3/5 exit criteria. Remaining: T11 and T12, the corpus floors, which are the largest volume left — connections is 3/20 and ranges is 17/25, so 25 distinct server pathologies to build; T13 retention; T14 the digest cost re-measurement on the segmented path; T15 the stage-gate mutation audit. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Started S3-T11 and found B-53 first: the corpus runner drove SingleStream and nothing else, so every case ran on one connection and the entire connections category was unreachable rather than merely unwritten. A per-IP cap, a per-connection cap and a concurrent-request limit only exist when more than one connection is open, so a case written for that category would have been green and vacuous. Cases now carry a connections field and route to the segmented path above one. Added two server capabilities the category needs — max_concurrent_connections, which accepts and drops the connection beyond the cap without answering as a real capped origin does rather than returning 429, and close_after_requests, a keep-alive the origin silently stops honouring — plus two Expect observations, min_connections and min_refused_connections, which are what tell a connection pathology apart from an ordinary download that happened to succeed. Two cases so far: keep-alive-closed-after-one-request and a-capped-origin-drops-the-connection-beyond-its-limit. Both mutation-checked: removing the cap enforcement reports that the cap never bit, and restoring keep-alive reports that only one connection was accepted. The capped case was vacuous when first written and the new assertion is what caught it. connections is now 5 of 20; corpus 78 of 159. Local 349/349 with 3 skipped.",
+      "tasks_touched": [
+        "S3-T11",
+        "B-53"
+      ],
+      "files_touched": [
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/runner.rs",
+        "tests/corpus/cases/connections/keep-alive-closed-after-one-request.yaml",
+        "tests/corpus/cases/connections/a-capped-origin-drops-the-connection-beyond-its-limit.yaml",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3 is 11/16 tasks and 3/5 exit criteria. S3-T11 is open with connections at 5 of 20: fifteen more distinct pathologies, and the runner and server can now express them. The docs/09 section 3.2 list names per-IP caps, per-connection caps, 429 and silent drops; 429 and Retry-After already have a case, so the remaining ground is per-connection byte caps, connection reuse limits, half-open and idle-timeout drops, and slow-loris style stalls, each needing its own server capability. One thing to fix while doing them: the segmented path uses RetryPolicy::default rather than fast_for_tests, so a concurrency case that also injects transient failures will be slow until the pool takes a policy. Then T12 ranges 17 of 25, T13, T14, T15. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {
-    "corpus_cases_total": 76,
-    "corpus_cases_passing": 76,
+    "corpus_cases_total": 78,
+    "corpus_cases_passing": 78,
     "sim_seeds_fixed": 19,
     "invariants_covered": 10,
     "invariants_total": 14,

@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use downpour_engine::{SingleStream, StorageLayout};
+use downpour_engine::{SegmentedDownload, SingleStream, StorageLayout};
 use downpour_http::{H1H2Backend, TransportMode};
 use downpour_types::RangeSupport;
 
@@ -328,10 +328,21 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
 
     // Fast retry delays: see RetryPolicy::fast_for_tests for why, and note Retry-After is still
     // honoured exactly, so `retry-after-is-honoured` still waits the second the server asked for.
-    let outcome = SingleStream::new(backend)
-        .with_retry_policy(downpour_http::RetryPolicy::fast_for_tests())
-        .download(url, &StorageLayout::new(scratch, &journal_dir))
-        .await;
+    let layout = StorageLayout::new(scratch, &journal_dir);
+    let outcome = match case.connections {
+        // A connection pathology needs more than one connection open to exist at all.
+        Some(connections) if connections > 1 => {
+            SegmentedDownload::new(std::sync::Arc::new(backend), connections)
+                .download(url, &layout)
+                .await
+        }
+        _ => {
+            SingleStream::new(backend)
+                .with_retry_policy(downpour_http::RetryPolicy::fast_for_tests())
+                .download(url, &layout)
+                .await
+        }
+    };
 
     // ---- expectation: final state and error kind
     match (&outcome, case.expect.final_state) {
@@ -380,6 +391,27 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             failures.push(format!(
                 "expected the server to see at least {expected} requests but it saw {seen}; \
                  no retry occurred, so this case proves nothing about recovery"
+            ));
+        }
+    }
+
+    // ---- expectation: the connection pathology actually fired
+    if let Some(expected) = case.expect.min_connections {
+        let seen = server.accepted_connection_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the server to accept at least {expected} connections but it accepted \
+                 {seen}; the connection pathology this case describes did not fire, so the case \
+                 proves nothing about it"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_refused_connections {
+        let seen = server.refused_connection_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the origin's cap to drop at least {expected} connections but it dropped \
+                 {seen}; the cap never bit, so this case would pass with no cap at all"
             ));
         }
     }
