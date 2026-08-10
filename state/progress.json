@@ -2250,6 +2250,13 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "An identifier that is valid at one layer and rejected at the next is not a small bug when the two layers are the IPC surface and the durable record that makes resume possible"
+    },
+    {
+      "id": "B-49",
+      "text": "PROCESS, recorded 2026-08-10 because it cost a red CI and has now happened three times in one session. Mutation-verifying with `git checkout -- <file>` to restore silently discards uncommitted work in that file, because it restores from HEAD rather than from before the mutation. It destroyed the If-Range implementation once, the writer-service Complete command once, and the UUIDv7 minter once — the third time the revert happened after the local gate and before the commit, so a test landed without the implementation it tested and GitHub caught it with a private-function error rather than a failing assertion. The mitigation is mechanical, not attentional: copy the file to a scratch path before mutating and restore from that copy, or commit before mutating. Saying commit first and then not doing it is what happened twice already.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A verification technique that can quietly delete the thing being verified will eventually produce a green mutation run against code that is not there"
     }
   ],
   "session_log": [
@@ -4117,6 +4124,24 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3-T9 still todo. The daemon half of B-25 is now unblocked but not built: TransferDaemon still keeps an in-memory BTreeMap, never opens a MetadataStore, and downpourd never calls recover_all. The remaining shape is probe, then persist DownloadMetadata, then transfer — persistence needs the probe result so it cannot happen at add time — followed by seeding the registry from recover_all at startup and having download.resume reconcile and call SegmentedDownload::resume, which now exists. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Fixed B-48 and hit B-49. B-48: the daemon minted download ids from 128 random bits while the metadata store validates the same sixteen bytes as a UUIDv7, so persistence would have failed for about 98 percent of downloads and passed for the rest; nothing caught it because the daemon persists nothing yet, so the id never crossed a boundary that checked it. Now a real UUIDv7 with a millisecond timestamp prefix, hand-rolled rather than adding a crate, proven over 256 ids because one sample passes by chance about once in sixty-four, and mutating away the version and variant bits turns it red. B-49 is mine and procedural: restoring after a mutation with git checkout discards uncommitted work, and this time it discarded the implementation between the green local gate and the commit, so the test shipped without the code it tests and GitHub caught it as a private-function error. Amended and re-verified with CI exact invocation, cargo clippy --locked, before pushing. All four jobs green including Windows.",
+      "tasks_touched": [
+        "S3-T9",
+        "B-25",
+        "B-48",
+        "B-49"
+      ],
+      "files_touched": [
+        "crates/downpour-daemon/src/server.rs",
+        "crates/downpour-daemon/tests/server.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3-T9 still todo, daemon half of B-25 unblocked but not built. Remaining shape unchanged: probe, then persist DownloadMetadata, then transfer, since persistence needs the probe result and cannot happen at add time; then seed the registry from recover_all at startup, and have download.resume reconcile and call SegmentedDownload::resume, which exists. Note for whoever does it: just gate runs clippy without --locked while CI runs it with, so a lockfile-sensitive failure can pass locally and fail on GitHub. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {
