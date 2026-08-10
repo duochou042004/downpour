@@ -4003,6 +4003,26 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3-T9 is HALF done and still todo: B-37 is closed, B-25 is not. The resume half needs the segmented path to adopt existing durable artifacts instead of creating them exclusively, a download.resume handler that actually resumes rather than returning resume_not_ready, and resumption from the recorded identity with If-Range so I-3 still holds across a process exit. Three PRs are stacked and unmerged: 41, then 43, then 44. A fourth branch on top of three unmerged PRs is an integration risk, so the resume half should start after they land. Then S3-T10 through T14."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Started the B-25 half of S3-T9 and it immediately surfaced B-45, a live I-3 gap. The segmented pool issued every ranged request unconditionally: RangeRequest::resume existed and nothing called it, so no worker request carried If-Range. Harmless while a segmented transfer could only be one fresh session; a corruption the moment a resume writes into the holes of a file whose other bytes came from an earlier representation. Demonstrated rather than argued: with If-Range removed, a four-connection transfer against a server that swaps its ETag after an eighth of the body exits zero and names the file, two versions spliced at exactly the expected size that the length and coverage checks both pass. Now sent on fresh transfers too. Added SegmentAllocator::resume, which rebuilds allocator state from what the journal proved and refuses a map still claiming an owner, since recovery states that no grant survives a restart and this does not assume it. Proofs: a resumed allocator never grants a byte inside a Complete range and every byte the journal did not prove ends up owned; stated over the map rather than by summing grants, because a split is a subset of an earlier grant and summing would count those bytes twice. Mutations: dropping If-Range makes the new corpus case red with the download succeeding; resuming from a fresh map instead of the durable one makes the allocator proof red at the overlap. Local 339/339 with 3 skipped, all four GitHub jobs green including Windows.",
+      "tasks_touched": [
+        "S3-T9",
+        "B-25",
+        "B-45"
+      ],
+      "files_touched": [
+        "crates/downpour-engine/src/lib.rs",
+        "crates/downpour-engine/src/worker_pool.rs",
+        "crates/downpour-engine/tests/segment_allocator_prop.rs",
+        "crates/downpour-engine/tests/worker_pool.rs",
+        "crates/downpour-cli/tests/dp_add.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3-T9 is still todo and now roughly two thirds done: B-37 closed, I-3 enforced on the segmented path, allocator resume in place. What remains for B-25 is the plumbing rather than the invariants: the segmented path must adopt existing durable artifacts instead of creating them exclusively, which needs an open-existing counterpart to create_journalled_artifacts and a journal reopened for append after replay, and download.resume must reconcile and run rather than returning resume_not_ready. The end-to-end proof to write is: kill the daemon mid-transfer, restart, resume, and assert the file is byte-exact and no completed range was requested twice. Four PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {
