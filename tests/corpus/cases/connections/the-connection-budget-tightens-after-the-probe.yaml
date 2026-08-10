@@ -1,0 +1,34 @@
+id: the-connection-budget-tightens-after-the-probe
+category: connections
+description: >
+  The origin allows four connections when the probe asks, and two once the transfer has started.
+  Nothing about the representation changed; the budget did — another tenant arrived, a load
+  balancer shifted, a leaky-bucket allowance was spent. The engine chose to segment on evidence
+  gathered under the old limit, and the limit it planned against no longer exists.
+  The pathology is the *change*, not the cap. A steady cap of two is already
+  `a-capped-origin-drops-the-connection-beyond-its-limit`; with a steady cap of four this case
+  would refuse nothing at all. What makes it distinct is that the engine must survive a limit
+  that moved underneath a plan it had already committed to, and it must do it without a
+  connection it can no longer have — which leaves reusing the ones it already holds.
+references: ["docs/agent/INVARIANTS.md#i-7", "docs/01-idm-teardown.md §3.5", "docs/03-transfer-engine-spec.md §3", "docs/09-testing-strategy.md §3.2"]
+
+connections: 3
+
+server:
+  content: { size: 4MiB, seed: 144 }
+  # Permissive enough that three workers are a legitimate plan when the probe measures it.
+  max_concurrent_connections: 4
+  tighten_cap:
+    # The probe is the one request served under the old budget.
+    after_requests: 1
+    to: 2
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # The engine really did open three, so the plan it made was the one the old cap permitted.
+  # Without this the case cannot tell a tightened cap from a client that opened two all along.
+  min_connections: 3
+  # And the new cap really did bite. With no tightening, a cap of four refuses nothing and this
+  # case would pass against a completely healthy origin.
+  min_refused_connections: 1
