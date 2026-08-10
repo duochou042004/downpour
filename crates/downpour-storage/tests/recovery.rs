@@ -797,3 +797,46 @@ fn a_part_path_that_is_a_dangling_link_or_a_directory_is_refused_by_name() {
         );
     }
 }
+
+/// B-25 — the durable interval map can be rebuilt without a metadata store.
+///
+/// `reconcile_download` needs SQLite because it arbitrates a checkpoint and records an outcome.
+/// A resuming transfer needs neither: it needs the journal's answer about which bytes are durable,
+/// and the sequence its next append must carry. Exposing that separately is what lets the engine
+/// resume without reaching for the daemon's database, and it is the same computation, so the two
+/// cannot drift into disagreeing about what is durable.
+#[test]
+fn durable_state_rebuilds_from_the_journal_alone_and_matches_reconciliation() {
+    let directory = TestDirectory::new("store-free-rebuild");
+    let part_path = commit_durable_blocks(&directory, &[(0, b"aaaaaaaa"), (16, b"cccccccc")]);
+    let mut store = open_store(&directory, &part_path);
+
+    let standalone = downpour_storage::recovery::durable_state(&directory.journal())
+        .expect("a healthy journal rebuilds");
+    let reconciled = reconcile_download(&mut store, sample_id(), &directory.journal(), NOW_MS)
+        .expect("reconciliation runs");
+
+    assert_eq!(
+        complete_ranges(standalone.intervals()),
+        complete_ranges(reconciled.intervals()),
+        "the store-free rebuild must agree with reconciliation about what is durable"
+    );
+    assert_eq!(
+        pending_ranges(standalone.intervals()),
+        pending_ranges(reconciled.intervals()),
+        "and about what is still missing"
+    );
+    assert_eq!(
+        standalone.next_sequence(),
+        reconciled.next_sequence(),
+        "a resumed append that reused a sequence would make replay stop at the reuse"
+    );
+    assert_eq!(
+        complete_ranges(standalone.intervals()),
+        vec![(0, 8), (16, 24)]
+    );
+    assert_eq!(
+        pending_ranges(standalone.intervals()),
+        vec![(8, 16), (24, 32)]
+    );
+}
