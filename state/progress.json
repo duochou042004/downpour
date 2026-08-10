@@ -3977,6 +3977,25 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3 is 9/16 tasks and 3/5 exit criteria. Two branches are open for review: fix/s3-segmented-concurrency (PR 41, all four jobs green) and feat/s3-daemon-segmented-path, which stacks on it. Next is S3-T9: destroy in-memory state, reconcile on daemon restart, resume from the durable interval map without re-requesting completed bytes, and close B-37 with a no-follow reopen in the same change. The segmented path has no resume of its own yet, which is why one connection still routes to SingleStream."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Closed the B-37 half of S3-T9 on feature/s3-cross-process-resume, ahead of the resume half rather than with it: the task note asks for them in one change so the hazard is never live and unfixed, and landing the fix first is strictly safer than landing it alongside the code path that makes it reachable. A recorded part path is reopened read-write and written at recorded offsets, so a link there sends the download through to whatever it names. The refusal is in the open rather than in a check before it, because a stat-then-open leaves a replaceable window: O_NOFOLLOW on Linux, FILE_FLAG_OPEN_REPARSE_POINT plus an attribute refusal on Windows. Removing O_NOFOLLOW makes the proof red with the open landing on the victim and reextended already true. Found and fixed B-44 in the same place: Path::exists() follows, so a dangling symlink read as absent — the answer that lets a later exclusive create follow it — and a directory read as present and produced an opaque errno. Reverting the presence check leaves both symlink proofs green because the no-follow open covers them, so the dangling-link and directory shapes got their own case rather than an unfalsifiable line. Local 336/336 with 3 skipped; all four GitHub jobs green including Windows, which ran the reparse-point case.",
+      "tasks_touched": [
+        "S3-T9",
+        "B-37",
+        "B-44"
+      ],
+      "files_touched": [
+        "crates/downpour-storage/src/part_file.rs",
+        "crates/downpour-storage/src/recovery.rs",
+        "crates/downpour-storage/tests/part_file.rs",
+        "crates/downpour-storage/tests/recovery.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3-T9 is HALF done and still todo: B-37 is closed, B-25 is not. The resume half needs the segmented path to adopt existing durable artifacts instead of creating them exclusively, a download.resume handler that actually resumes rather than returning resume_not_ready, and resumption from the recorded identity with If-Range so I-3 still holds across a process exit. Three PRs are stacked and unmerged: 41, then 43, then 44. A fourth branch on top of three unmerged PRs is an integration risk, so the resume half should start after they land. Then S3-T10 through T14."
     }
   ],
   "metrics": {
