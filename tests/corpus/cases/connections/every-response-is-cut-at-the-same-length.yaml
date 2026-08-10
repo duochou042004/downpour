@@ -15,9 +15,10 @@ references: ["docs/01-idm-teardown.md §3.5", "docs/agent/INVARIANTS.md#i-1", "d
 connections: 2
 
 server:
-  content: { size: 1MiB, seed: 149 }
-  # Half of each worker's 512 KiB grant, so every worker needs exactly two attempts.
-  close_after_body_bytes: 256KiB
+  content: { size: 2MiB, seed: 149 }
+  # Half of each worker's 1 MiB grant, so every worker needs exactly two attempts and the retry
+  # budget is never the thing under test.
+  close_after_body_bytes: 512KiB
 
 expect:
   final_state: completed

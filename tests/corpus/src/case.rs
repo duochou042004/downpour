@@ -18,7 +18,7 @@ use serde::Deserialize;
 use crate::content::{Content, GENERATOR_V1};
 use crate::server::{
     Framing, IfRangeBehaviour, Mutation, MutationEffect, Protocol, RangeBehaviour,
-    RedirectLocation, ServerSpec, TightenCap,
+    RedirectLocation, ServerSpec, SlowSegment, TightenCap,
 };
 
 /// One corpus case.
@@ -260,6 +260,21 @@ pub struct ServerCase {
     /// an answer belonging to a different range.
     #[serde(default)]
     pub duplicate_response_after: Option<usize>,
+    /// Close after this many body bytes on every response, whatever was asked for.
+    ///
+    /// Every attempt advances, which is what separates this from a truncation: the transfer
+    /// finishes only if a retry asks for the remainder rather than for the grant again.
+    #[serde(default)]
+    pub close_after_body_bytes: Option<ByteSize>,
+    /// Cut every response that reaches this offset in the representation, and close.
+    ///
+    /// A point in the *file* rather than in the response, so the ranges before it finish and the
+    /// one across it never can.
+    #[serde(default)]
+    pub drop_at_offset: Option<ByteSize>,
+    /// Serve the segment from this offset onward at a trickle, while its peers run at full speed.
+    #[serde(default)]
+    pub slow_segment: Option<SlowSegmentCase>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     #[serde(default)]
     pub inconsistent_total_after: Option<usize>,
@@ -272,6 +287,22 @@ pub struct ServerCase {
     /// connection is still good writes into a closed socket.
     #[serde(default)]
     pub close_after_requests: Option<usize>,
+}
+
+/// One segment served far more slowly than the others.
+///
+/// Keyed by the offset the response body starts at rather than by which connection it arrives on.
+/// A connection ordinal is not stable — the third socket to be accepted is whichever one the pool
+/// happened to open third, and it may carry a large range, a small one, or a retry — which made
+/// the observed delay count vary between runs. The straggler is a property of the *segment*, which
+/// is also what `docs/01` §3.5 describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlowSegmentCase {
+    /// Responses whose body begins at or after this offset are trickled.
+    pub from_offset: ByteSize,
+    /// How long to pause before each chunk.
+    pub delay_ms: u64,
 }
 
 /// A concurrency cap that changes part way through the transfer.
@@ -636,6 +667,19 @@ pub struct Expect {
     /// is the only way a case can show that a poisoned connection was retired rather than reused.
     #[serde(default)]
     pub max_requests_per_connection: Option<usize>,
+    /// The server must have seen no more than this many requests.
+    ///
+    /// The only upper bound on requests, and the only way to assert that the engine did *not*
+    /// retry. Every other case can show recovery; a case whose point is that recovery was never
+    /// needed has nothing to show unless the absence is asserted.
+    #[serde(default)]
+    pub max_requests: Option<usize>,
+    /// The server must have delayed at least this many body chunks.
+    ///
+    /// Without it a shaper that never fired leaves an ordinary download that passes for the wrong
+    /// reason.
+    #[serde(default)]
+    pub min_delayed_chunks: Option<usize>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -835,6 +879,12 @@ impl Case {
             close_mid_headers: self.server.close_mid_headers,
             hangup_on_reused_request: self.server.hangup_on_reused_request,
             duplicate_response_after: self.server.duplicate_response_after,
+            close_after_body_bytes: self.server.close_after_body_bytes.map(|size| size.0),
+            drop_at_offset: self.server.drop_at_offset.map(|size| size.0),
+            slow_segment: self.server.slow_segment.map(|slow| SlowSegment {
+                from_offset: slow.from_offset.0,
+                delay: std::time::Duration::from_millis(slow.delay_ms),
+            }),
             inconsistent_total_after: self.server.inconsistent_total_after,
             close_without_responding: self.server.close_without_responding,
             close_after_requests: self.server.close_after_requests,

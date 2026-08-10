@@ -271,6 +271,20 @@ pub struct ServerSpec {
     /// at the offset it *asked* for rather than the one the response *describes* corrupts the
     /// file at exactly the right size.
     pub duplicate_response_after: Option<usize>,
+    /// Write at most this many body bytes per response, then close, whatever was asked for.
+    ///
+    /// The `docs/01` §3.5 row "server closes after N bytes regardless of range". Every response
+    /// starts correctly and every attempt therefore advances, which is what separates it from a
+    /// truncation budget: the transfer finishes only if a retry asks for the part it has not
+    /// received rather than for the range it was granted.
+    pub close_after_body_bytes: Option<u64>,
+    /// Cut any response that reaches this offset in the representation, and close.
+    ///
+    /// A point in the *file*, not in the response, so it is fixed across attempts: the ranges
+    /// before it complete, and the one that spans it cannot be finished by repeating.
+    pub drop_at_offset: Option<u64>,
+    /// Serve the segment from an offset onward at a trickle, while its peers run at full speed.
+    pub slow_segment: Option<SlowSegment>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     ///
     /// The segmented shape of a representation changing underneath a transfer, and the most
@@ -331,11 +345,27 @@ impl Default for ServerSpec {
             close_mid_headers: 0,
             hangup_on_reused_request: 0,
             duplicate_response_after: None,
+            close_after_body_bytes: None,
+            drop_at_offset: None,
+            slow_segment: None,
             inconsistent_total_after: None,
             close_without_responding: 0,
             close_after_requests: None,
         }
     }
+}
+
+/// One segment served far more slowly than its peers.
+///
+/// Keyed by where the response body starts, not by which connection carries it: a connection
+/// ordinal is whichever socket the pool opened third, which may be a large range, a small one or
+/// a retry, and the observed delay count varied run to run because of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlowSegment {
+    /// Responses whose body begins at or after this offset are trickled.
+    pub from_offset: u64,
+    /// Pause taken before each chunk.
+    pub delay: std::time::Duration,
 }
 
 /// A concurrency cap that changes part way through the transfer.
@@ -450,6 +480,8 @@ struct ConnectionObservation {
     capped: AtomicUsize,
     /// Extra responses written into a socket that nobody asked for.
     desynced: AtomicUsize,
+    /// Body chunks held back by a shaper.
+    delayed_chunks: AtomicUsize,
 }
 
 impl ConnectionObservation {
@@ -837,6 +869,15 @@ impl PathologyServer {
     #[must_use]
     pub fn desynced_response_count(&self) -> usize {
         self.connections.desynced.load(Ordering::SeqCst)
+    }
+
+    /// Body chunks a shaper held back before writing.
+    ///
+    /// A straggler is invisible in the outcome — the file is the same file — so this is what
+    /// tells the case apart from an ordinary download with one more connection.
+    #[must_use]
+    pub fn delayed_chunk_count(&self) -> usize {
+        self.connections.delayed_chunks.load(Ordering::SeqCst)
     }
 
     /// Connections that reached the server rather than being dropped by a cap or a budget.
@@ -1399,6 +1440,19 @@ async fn serve_http11(
             send_len = full_len / 2;
             forced_close = true;
         }
+        // A fixed number of bytes per response, whatever was asked for. The declared length is
+        // untouched, so the client sees a response that promised more than it delivered.
+        if let Some(cap) = spec.close_after_body_bytes {
+            send_len = send_len.min(cap);
+        }
+        // A fixed point in the representation. Computed from where this response's body starts, so
+        // it is the same offset on every attempt: a range beyond it delivers nothing at all.
+        if let Some(offset) = spec.drop_at_offset
+            && let Some((first, _)) = plan.body
+        {
+            send_len = send_len.min(offset.saturating_sub(first));
+        }
+
         // A HEAD response carries the headers a GET would, Content-Length included, and no body.
         if method.eq_ignore_ascii_case("HEAD") && spec.answer_head {
             send_len = 0;
@@ -1455,8 +1509,10 @@ async fn serve_http11(
         }
 
         let wrote_body = match framing {
-            Framing::Chunked => write_chunked(&mut stream, spec, &plan, send_len).await,
-            _ => write_plain(&mut stream, spec, &plan, send_len).await,
+            Framing::Chunked => {
+                write_chunked(&mut stream, spec, &plan, send_len, &connection).await
+            }
+            _ => write_plain(&mut stream, spec, &plan, send_len, &connection).await,
         };
         if wrote_body.is_err() {
             return;
@@ -1478,8 +1534,10 @@ async fn serve_http11(
                 .fetch_add(1, Ordering::SeqCst);
             let _ = stream.write_all(response.as_bytes()).await;
             let extra = match framing {
-                Framing::Chunked => write_chunked(&mut stream, spec, &plan, send_len).await,
-                _ => write_plain(&mut stream, spec, &plan, send_len).await,
+                Framing::Chunked => {
+                    write_chunked(&mut stream, spec, &plan, send_len, &connection).await
+                }
+                _ => write_plain(&mut stream, spec, &plan, send_len, &connection).await,
             };
             if extra.is_err() || stream.flush().await.is_err() {
                 return;
@@ -1515,13 +1573,22 @@ async fn write_plain(
     spec: &ServerSpec,
     plan: &Plan,
     send_len: u64,
+    connection: &Connection<'_>,
 ) -> std::io::Result<()> {
+    let shaper = shaper_for(spec, plan);
     let mut buffer = vec![0_u8; STREAM_CHUNK];
     let mut written = 0_u64;
     while written < send_len {
         let piece = next_chunk(spec, plan, written, send_len, &mut buffer);
         if piece.is_empty() {
             break;
+        }
+        if let Some(delay) = shaper {
+            connection
+                .observation
+                .delayed_chunks
+                .fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(delay).await;
         }
         stream.write_all(piece).await?;
         written = written.saturating_add(u64::try_from(piece.len()).unwrap_or(0));
@@ -1535,7 +1602,9 @@ async fn write_chunked(
     spec: &ServerSpec,
     plan: &Plan,
     send_len: u64,
+    connection: &Connection<'_>,
 ) -> std::io::Result<()> {
+    let shaper = shaper_for(spec, plan);
     // Several chunks rather than one: a single chunk covering the whole body would not exercise a
     // client's chunk-boundary handling, which is the point of the chunked case.
     let mut buffer = vec![0_u8; 16 * 1024];
@@ -1544,6 +1613,13 @@ async fn write_chunked(
         let piece = next_chunk(spec, plan, written, send_len, &mut buffer);
         if piece.is_empty() {
             break;
+        }
+        if let Some(delay) = shaper {
+            connection
+                .observation
+                .delayed_chunks
+                .fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(delay).await;
         }
         stream
             .write_all(format!("{:x}\r\n", piece.len()).as_bytes())
@@ -1557,6 +1633,13 @@ async fn write_chunked(
         return Ok(());
     }
     stream.write_all(b"0\r\n\r\n").await
+}
+
+/// The pause this response takes before each chunk, when it serves the straggling segment.
+fn shaper_for(spec: &ServerSpec, plan: &Plan) -> Option<std::time::Duration> {
+    let slow = spec.slow_segment?;
+    let (first, _) = plan.body?;
+    (first >= slow.from_offset).then_some(slow.delay)
 }
 
 /// Fill `buffer` with the next piece of the planned body and return the filled slice.

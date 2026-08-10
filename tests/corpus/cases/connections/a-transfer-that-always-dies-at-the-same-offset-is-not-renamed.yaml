@@ -17,11 +17,15 @@ references: ["docs/agent/INVARIANTS.md#i-4", "docs/03-transfer-engine-spec.md §
 connections: 2
 
 server:
-  content: { size: 1MiB, seed: 150 }
+  content: { size: 2MiB, seed: 150 }
   # Inside the second worker's grant, so the first worker's range completes and the second cannot.
-  drop_at_offset: 768KiB
+  drop_at_offset: 1536KiB
 
 expect:
   final_state: failed
-  error_kind: truncated_body
+  # Not truncated_body, which is what the single-stream path reports for the very same server
+  # behaviour: the pool wraps its cause, so a client switching on `kind` cannot tell a server that
+  # cut the body from a scheduler that broke. Asserted as it is rather than as it should be, and
+  # recorded in the backlog — changing a kind is an IPC contract change (docs/08 §3).
+  error_kind: segmented_transfer
   file_renamed: false

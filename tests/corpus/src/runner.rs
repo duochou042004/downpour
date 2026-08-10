@@ -407,6 +407,24 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             ));
         }
     }
+    if let Some(limit) = case.expect.max_requests {
+        let seen = server.request_count();
+        if seen > limit {
+            failures.push(format!(
+                "expected the server to see no more than {limit} requests but it saw {seen}; the \
+                 engine retried, so it did not act on what the origin told it in advance"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_delayed_chunks {
+        let seen = server.delayed_chunk_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the shaper to hold back at least {expected} chunks but it held {seen}; \
+                 no connection was actually slow, so this case is an ordinary download"
+            ));
+        }
+    }
     if let Some(expected) = case.expect.min_desynced_responses {
         let seen = server.desynced_response_count();
         if seen < expected {
