@@ -278,6 +278,12 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
             backend: Arc::clone(&self.backend),
             writer,
             url: remote.final_url.clone(),
+            // I-3. Every ranged request is conditional on the representation the probe recorded,
+            // so a file that changes underneath a transfer produces a 200 this pool refuses rather
+            // than bytes written at offsets that no longer mean anything. Load-bearing the moment
+            // a resume writes into the holes of a file whose other bytes came from an earlier
+            // representation, and free before then.
+            if_range: remote.validator.if_range_value().map(str::to_owned),
             total_length,
             workers: pool_workers,
             tasks: JoinSet::new(),
@@ -482,6 +488,8 @@ struct Scheduler<'a, B> {
     backend: Arc<B>,
     writer: &'a WriterService,
     url: url::Url,
+    /// The recorded validator, replayed on every ranged request (I-3).
+    if_range: Option<String>,
     total_length: u64,
     workers: Vec<WorkerId>,
     tasks: JoinSet<WorkerEvent>,
@@ -517,6 +525,7 @@ impl<B: TransferProtocol + 'static> Scheduler<'_, B> {
             grant,
             self.writer,
             self.url.clone(),
+            self.if_range.clone(),
             self.total_length,
         );
     }
@@ -632,6 +641,10 @@ impl<B: TransferProtocol + 'static> Scheduler<'_, B> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site; bundling these into a struct would only move the list"
+)]
 fn spawn_ranged_worker<B: TransferProtocol + 'static>(
     tasks: &mut JoinSet<WorkerEvent>,
     running: &mut BTreeMap<WorkerId, RunningWorker>,
@@ -639,6 +652,7 @@ fn spawn_ranged_worker<B: TransferProtocol + 'static>(
     grant: Grant,
     writer: &WriterService,
     url: url::Url,
+    if_range: Option<String>,
     total_length: u64,
 ) {
     let worker = grant.worker();
@@ -655,6 +669,7 @@ fn spawn_ranged_worker<B: TransferProtocol + 'static>(
                 task_grant,
                 grant_writer,
                 url,
+                if_range,
                 total_length,
             ) => WorkerEvent::Finished { worker, result },
             _ = cancelled => WorkerEvent::Cancelled { worker },
@@ -728,6 +743,7 @@ async fn run_ranged_worker<B: TransferProtocol + 'static>(
     grant: Grant,
     grant_writer: GrantWriter,
     url: url::Url,
+    if_range: Option<String>,
     total_length: u64,
 ) -> Result<WorkerReport, PoolError> {
     let started = Instant::now();
@@ -746,9 +762,11 @@ async fn run_ranged_worker<B: TransferProtocol + 'static>(
         range.start,
         Some(expected),
     );
-    let outcome = backend
-        .fetch_range(RangeRequest::ranged(url, requested), &mut sink)
-        .await?;
+    let request = match if_range {
+        Some(validator) => RangeRequest::resume(url, requested, validator),
+        None => RangeRequest::ranged(url, requested),
+    };
+    let outcome = backend.fetch_range(request, &mut sink).await?;
     let observed = sink.written();
     if outcome.status != 206
         || outcome.protocol != NegotiatedProtocol::Http11

@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 use downpour_engine::{Allocation, AllocatorError, Grant, SegmentAllocator};
-use downpour_intervals::{Interval, IntervalState, WorkerId};
+use downpour_intervals::{Interval, IntervalMap, IntervalState, WorkerId};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseResult;
 
@@ -557,4 +557,105 @@ proptest! {
             apply(&mut allocator, operation)?;
         }
     }
+}
+
+fn pending_ranges(allocator: &SegmentAllocator) -> Vec<Range<u64>> {
+    allocator
+        .intervals()
+        .iter()
+        .filter(|interval| *interval.state() == IntervalState::Pending)
+        .map(|interval| interval.start()..interval.end())
+        .collect()
+}
+
+/// B-25 — an allocator rebuilt from recovery never hands out bytes the journal already proved.
+///
+/// This is the whole of "resume does not re-request completed bytes", stated where it can be
+/// checked exhaustively rather than inferred from a transfer that happened to be short. Every
+/// grant the resumed allocator issues, for as long as it issues any, must fall entirely inside
+/// what was `Pending` — one byte of overlap with a `Complete` range is a byte fetched twice, and
+/// on a metered connection that is the user's money.
+#[test]
+fn a_resumed_allocator_only_ever_grants_what_the_journal_left_pending() {
+    let mut durable = IntervalMap::new(TOTAL);
+    // The shape recovery produces: complete runs with holes between them, no grants at all.
+    let survivor = WorkerId::new(9);
+    durable.grant(0..TOTAL, survivor).expect("one whole grant");
+    durable.complete(0..8, survivor).expect("a durable prefix");
+    durable
+        .complete(24..40, survivor)
+        .expect("a durable middle");
+    durable
+        .complete(56..64, survivor)
+        .expect("a durable suffix");
+    durable.abandon(survivor);
+
+    let complete: Vec<Range<u64>> = durable
+        .intervals()
+        .iter()
+        .filter(|interval| *interval.state() == IntervalState::Complete)
+        .map(|interval| interval.start()..interval.end())
+        .collect();
+    assert_eq!(complete, vec![0..8, 24..40, 56..64], "fixture shape");
+
+    let mut allocator =
+        SegmentAllocator::resume(durable, MIN_SPLIT).expect("recovery state is resumable");
+    let mut granted: Vec<Range<u64>> = Vec::new();
+    for index in 0..8 {
+        let worker = WorkerId::new(index);
+        let Some(allocation) = allocator
+            .allocate(worker, &everyone())
+            .expect("allocation is valid")
+        else {
+            break;
+        };
+        granted.push(allocation.grant().range().clone());
+    }
+    assert!(!granted.is_empty(), "the pending holes must be grantable");
+
+    for grant in &granted {
+        for done in &complete {
+            assert!(
+                grant.start >= done.end || done.start >= grant.end,
+                "grant {grant:?} overlaps durable range {done:?}: resume would refetch bytes the \
+                 journal already proved"
+            );
+        }
+    }
+
+    // And the only-if direction: everything still missing is reachable, so the refusal above is a
+    // restriction rather than an allocator that grants nothing. Stated over the map rather than by
+    // summing grants, because a split issues a grant that is a subset of an earlier one and the
+    // sum would count those bytes twice.
+    let leftover = pending_ranges(&allocator);
+    assert!(
+        leftover.is_empty(),
+        "bytes the journal did not prove were left ungrantable: {leftover:?}"
+    );
+    let owned: u64 = allocator
+        .intervals()
+        .iter()
+        .filter(|interval| matches!(interval.state(), IntervalState::InProgress { .. }))
+        .map(Interval::len)
+        .sum();
+    assert_eq!(
+        owned,
+        TOTAL - complete.iter().map(|r| r.end - r.start).sum::<u64>(),
+        "every byte the journal did not prove must end up owned by exactly one worker"
+    );
+}
+
+/// Recovery states that no grant survives a restart. The allocator refuses to assume it.
+#[test]
+fn resuming_from_a_map_that_still_holds_a_grant_is_refused() {
+    let mut live = IntervalMap::new(TOTAL);
+    let worker = WorkerId::new(3);
+    live.grant(0..TOTAL, worker).expect("a live grant");
+
+    assert_eq!(
+        SegmentAllocator::resume(live, MIN_SPLIT),
+        Err(AllocatorError::ResumedGrantSurvived { worker }),
+        "an InProgress interval in recovery state means the map did not come from recovery, and \
+         treating it as durable would let two owners believe they hold the same bytes"
+    );
 }

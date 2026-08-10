@@ -2222,6 +2222,13 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "The no-follow open makes the write safe; the presence check is what makes the diagnosis true, and a wrong diagnosis is what routes the next attempt into the same hazard"
+    },
+    {
+      "id": "B-45",
+      "text": "FOUND and FIXED 2026-08-10 while starting the resume half of S3-T9. The segmented worker pool issued every ranged request unconditionally: run_ranged_worker used RangeRequest::ranged, never RangeRequest::resume, so no worker request carried If-Range even though the constructor for it already existed. Harmless while a segmented transfer could only ever be one fresh session, and a live I-3 violation the moment cross-process resume writes into the holes of a file whose other bytes came from an earlier representation. Demonstrated rather than argued: with If-Range removed, a four-connection transfer against a server that swaps its ETag after an eighth of the body SUCCEEDS, exits zero and names the file — two representations spliced at exactly the expected size, which the length check and the coverage check both pass. Now sent on fresh transfers too, not only resumes: the cost is one header, and it turns a representation swapped between the probe and a worker request into a 200 the pool already refuses.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "I-3 is one of the three invariants the roadmap says every open-source download manager has shipped broken; finding it unenforced on the path that is about to make it reachable is exactly what the resume task was supposed to surface"
     }
   ],
   "session_log": [

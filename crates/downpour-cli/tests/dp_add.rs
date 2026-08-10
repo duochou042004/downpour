@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use downpour_corpus::content::Content;
-use downpour_corpus::server::{DigestSpec, PathologyServer, Protocol, RangeBehaviour, ServerSpec};
+use downpour_corpus::server::{
+    DigestSpec, Mutation, MutationEffect, PathologyServer, Protocol, RangeBehaviour, ServerSpec,
+};
 use downpour_daemon::server::{TransferConfig, TransferDaemon, serve_connection};
 use downpour_http::TransportMode;
 use downpour_ipc::LocalListener;
@@ -446,5 +448,79 @@ async fn a_segmented_transfer_whose_digest_disagrees_is_not_given_the_final_name
             .any(|name| name.ends_with(".dppart")),
         "the partial file must survive as resumable evidence: {:?}",
         scratch.entries()
+    );
+}
+
+/// I-3 on the segmented path: a representation that changes mid-transfer is refused, not spliced.
+///
+/// This is the corruption that makes cross-process resume dangerous and is why every ranged
+/// worker request carries `If-Range`. Several workers are fetching disjoint ranges of one file;
+/// the server swaps the representation partway through. Without the conditional, the remaining
+/// workers fetch ranges of the *new* representation and write them at offsets belonging to the
+/// old one, and the finished file is part one version and part another at exactly the expected
+/// size — which the length check passes, the coverage check passes, and only a content hash
+/// would catch.
+///
+/// The server answers a stale `If-Range` with `200` and the whole body, which the pool refuses
+/// because it asked for a range. So the failure is loud and the bytes already on disk stay
+/// resumable.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_segmented_transfer_refuses_a_representation_that_changes_underneath_it() {
+    let server = PathologyServer::start(ServerSpec {
+        content: Content::new(42, SEGMENTED_SIZE),
+        etag: Some("\"v1\"".to_owned()),
+        behaviour: vec![Mutation {
+            at_bytes_served: SEGMENTED_SIZE / 8,
+            then: MutationEffect::SetEtag("\"v2\"".to_owned()),
+        }],
+        ..ServerSpec::default()
+    })
+    .await
+    .expect("server starts");
+    let scratch = Scratch::new("segmented-etag-change");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
+
+    let run = dp_add_with(
+        &server.entry_url(),
+        &scratch,
+        &daemon,
+        &["--connections", "4"],
+    );
+
+    assert_ne!(
+        run.code,
+        Some(0),
+        "a representation change under a segmented transfer must not succeed: {}",
+        run.stdout
+    );
+    assert!(
+        !scratch.entries().contains(&"content".to_owned()),
+        "no file may wear the final name after the representation changed: {:?}",
+        scratch.entries()
+    );
+    // Every ranged request has to have carried the conditional, or the refusal above happened for
+    // some other reason and this case proves nothing about I-3.
+    let requests = server.requests();
+    let ranged: Vec<_> = requests
+        .iter()
+        .filter(|request| {
+            request
+                .header("range")
+                .is_some_and(|value| value != "bytes=0-0")
+        })
+        .collect();
+    assert!(
+        !ranged.is_empty(),
+        "the transfer must have issued ranged requests"
+    );
+    assert!(
+        ranged
+            .iter()
+            .all(|request| request.header("if-range").as_deref() == Some("\"v1\"")),
+        "every ranged request must be conditional on the recorded validator: {:?}",
+        ranged
+            .iter()
+            .map(|request| request.header("if-range"))
+            .collect::<Vec<_>>()
     );
 }
