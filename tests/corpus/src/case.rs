@@ -238,6 +238,28 @@ pub struct ServerCase {
     /// waiting cannot recover it and only reuse of an already-open connection can.
     #[serde(default)]
     pub max_total_connections: Option<usize>,
+    /// End this many responses part way through the header block.
+    ///
+    /// The point on the response timeline between "nothing arrived" and "the body was cut short":
+    /// the client has parsed a status line and some headers, and has no complete message.
+    #[serde(default)]
+    pub close_mid_headers: usize,
+    /// Read and discard this many requests that arrived on a connection which had already
+    /// answered one, without responding to them.
+    ///
+    /// The keep-alive race. Unlike `close_after_requests`, the socket is alive when the client
+    /// picks it out of the pool and dies with a request already written into it. A count rather
+    /// than a switch, because a race is an occasional event: an origin that hangs up on *every*
+    /// reused request cannot be survived by a client that reuses connections at all, and
+    /// adapting to that is pool policy rather than retry (see the backlog).
+    #[serde(default)]
+    pub hangup_on_reused_request: usize,
+    /// After this many responses on a connection, write a second copy of one nobody asked for.
+    ///
+    /// The extra response stays in the socket, so the next request sent on that connection reads
+    /// an answer belonging to a different range.
+    #[serde(default)]
+    pub duplicate_response_after: Option<usize>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     #[serde(default)]
     pub inconsistent_total_after: Option<usize>,
@@ -601,6 +623,19 @@ pub struct Expect {
     /// enforced.
     #[serde(default)]
     pub max_served_connections: Option<usize>,
+    /// The server must have written at least this many responses nobody asked for.
+    ///
+    /// Without it a desync case is an ordinary download: the extra response is invisible in the
+    /// outcome when the engine handles it correctly, which is precisely when the case is green.
+    #[serde(default)]
+    pub min_desynced_responses: Option<usize>,
+    /// No single connection may have carried more than this many requests.
+    ///
+    /// Reuse, asserted from the server's side. A healthy origin carries the probe and the first
+    /// range on one socket, so pinning this to one says something actively prevented that — which
+    /// is the only way a case can show that a poisoned connection was retired rather than reused.
+    #[serde(default)]
+    pub max_requests_per_connection: Option<usize>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -797,6 +832,9 @@ impl Case {
                 to: tighten.to,
             }),
             max_total_connections: self.server.max_total_connections,
+            close_mid_headers: self.server.close_mid_headers,
+            hangup_on_reused_request: self.server.hangup_on_reused_request,
+            duplicate_response_after: self.server.duplicate_response_after,
             inconsistent_total_after: self.server.inconsistent_total_after,
             close_without_responding: self.server.close_without_responding,
             close_after_requests: self.server.close_after_requests,

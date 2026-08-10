@@ -406,6 +406,26 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             ));
         }
     }
+    if let Some(expected) = case.expect.min_desynced_responses {
+        let seen = server.desynced_response_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the server to write at least {expected} response(s) nobody asked for \
+                 but it wrote {seen}; the socket was never desynchronised, so this case is an \
+                 ordinary download"
+            ));
+        }
+    }
+    if let Some(limit) = case.expect.max_requests_per_connection {
+        let seen = server.most_requests_on_one_connection();
+        if seen > limit {
+            failures.push(format!(
+                "expected no connection to carry more than {limit} request(s) but one carried \
+                 {seen}; the connection this case poisons was reused, so nothing prevented the \
+                 stale response from being read as an answer"
+            ));
+        }
+    }
     if let Some(limit) = case.expect.max_served_connections {
         let seen = server.served_connection_count();
         if seen > limit {

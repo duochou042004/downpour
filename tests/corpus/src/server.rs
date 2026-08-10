@@ -243,6 +243,34 @@ pub struct ServerSpec {
     /// whose only recovery is to back off and reconnect can never get in again; the transfer can
     /// only finish through the connections it already holds.
     pub max_total_connections: Option<usize>,
+    /// End this many responses part way through the header block, then close.
+    ///
+    /// The third point on the response timeline. `close_without_responding` is before any byte
+    /// and `transient_body_failures` is after the headers; this is the one in between, where a
+    /// client has a status line and an incomplete set of headers. A truncated header block is not
+    /// a short response — it is not a response — and reading it as one turns a missing
+    /// `Content-Length` into "unknown length" and a cut-off `Content-Range` into "absent".
+    pub close_mid_headers: usize,
+    /// Hang up on this many requests that arrived on a connection which had already answered one.
+    ///
+    /// The keep-alive race: the socket is alive when the client takes it out of its pool and dies
+    /// with a request already written into it. `close_after_requests` is the easier shape, where
+    /// the close happens first and nothing was ever in flight.
+    ///
+    /// Claimed from a budget, so the pathology is finite. Hanging up on every reused request is a
+    /// different thing entirely: a download needs at least a probe and a body, so no client that
+    /// reuses connections can ever finish one, and the only recovery is to stop reusing — pool
+    /// policy, not retry.
+    pub hangup_on_reused_request: usize,
+    /// After this many responses on a connection, write an extra complete response nobody asked
+    /// for.
+    ///
+    /// An appliance that replayed a buffered response, or a balancer that answered a request it
+    /// had already forwarded. The extra response stays in the socket, so the next request on that
+    /// connection reads an answer describing a different range — and an engine that writes a body
+    /// at the offset it *asked* for rather than the one the response *describes* corrupts the
+    /// file at exactly the right size.
+    pub duplicate_response_after: Option<usize>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     ///
     /// The segmented shape of a representation changing underneath a transfer, and the most
@@ -300,6 +328,9 @@ impl Default for ServerSpec {
             cap_status: None,
             tighten_cap: None,
             max_total_connections: None,
+            close_mid_headers: 0,
+            hangup_on_reused_request: 0,
+            duplicate_response_after: None,
             inconsistent_total_after: None,
             close_without_responding: 0,
             close_after_requests: None,
@@ -395,6 +426,10 @@ struct TransientBudget {
     ranged_served: AtomicUsize,
     /// Connections still owed an immediate hang-up.
     silent: AtomicU32,
+    /// Responses still owed a hang-up part way through their header block.
+    mid_headers: AtomicU32,
+    /// Reused connections still owed a hang-up with the request already written into them.
+    reused: AtomicU32,
     body: AtomicU32,
     status: AtomicU32,
     /// Body bytes served so far, across every connection. Mid-transfer mutations trigger on it.
@@ -413,6 +448,8 @@ struct ConnectionObservation {
     refused: AtomicUsize,
     /// Requests answered with the cap's status because the cap was already reached.
     capped: AtomicUsize,
+    /// Extra responses written into a socket that nobody asked for.
+    desynced: AtomicUsize,
 }
 
 impl ConnectionObservation {
@@ -502,6 +539,10 @@ impl TransientBudget {
             ranged_served: AtomicUsize::new(0),
             silent: AtomicU32::new(
                 u32::try_from(spec.close_without_responding).unwrap_or(u32::MAX),
+            ),
+            mid_headers: AtomicU32::new(u32::try_from(spec.close_mid_headers).unwrap_or(u32::MAX)),
+            reused: AtomicU32::new(
+                u32::try_from(spec.hangup_on_reused_request).unwrap_or(u32::MAX),
             ),
             body: AtomicU32::new(spec.transient_body_failures),
             status: AtomicU32::new(spec.transient_status_failures),
@@ -788,6 +829,16 @@ impl PathologyServer {
         self.connections.capped.load(Ordering::SeqCst)
     }
 
+    /// Extra responses this server wrote that no request asked for.
+    ///
+    /// A desync is invisible in the outcome when the engine handles it correctly, which is
+    /// exactly when the case is green — so without this counter the case would pass with the
+    /// capability removed.
+    #[must_use]
+    pub fn desynced_response_count(&self) -> usize {
+        self.connections.desynced.load(Ordering::SeqCst)
+    }
+
     /// Connections that reached the server rather than being dropped by a cap or a budget.
     ///
     /// The kernel completes the handshake before this server can decide anything, so
@@ -810,6 +861,20 @@ impl PathologyServer {
     #[must_use]
     pub fn maximum_simultaneous_connections(&self) -> usize {
         self.connections.maximum_active.load(Ordering::SeqCst)
+    }
+
+    /// The most requests any one connection carried.
+    ///
+    /// Reuse, seen from the server. A healthy origin carries the probe and the first range on one
+    /// socket, so a case asserting this is one is asserting that something stopped that happening.
+    #[must_use]
+    pub fn most_requests_on_one_connection(&self) -> usize {
+        let mut per_connection: std::collections::BTreeMap<u64, usize> =
+            std::collections::BTreeMap::new();
+        for request in self.requests() {
+            *per_connection.entry(request.connection_id).or_default() += 1;
+        }
+        per_connection.into_values().max().unwrap_or(0)
     }
 
     /// Number of recorded requests carried by one accepted connection.
@@ -1272,6 +1337,16 @@ async fn serve_http11(
             return;
         }
 
+        // The keep-alive race: this request arrived on a connection that had already answered
+        // one, and it is the arrival that kills the socket. Recorded first, so the case can see
+        // the request the client committed and never got an answer to.
+        if spec.hangup_on_reused_request > 0
+            && served_on_connection >= 1
+            && TransientBudget::claim(&budget.reused)
+        {
+            return;
+        }
+
         if let Some(gate) = range_gate {
             gate.hold_if_matches(range_header.as_deref()).await;
         }
@@ -1364,6 +1439,17 @@ async fn serve_http11(
         }
         response.push_str("\r\n");
 
+        // Stop inside the header block. Half the bytes rather than a fixed count, so the cut lands
+        // in the middle of a header line whatever the case's headers are, and never on the blank
+        // line that would make the message look complete.
+        if spec.close_mid_headers > 0 && TransientBudget::claim(&budget.mid_headers) {
+            let cut = response.len() / 2;
+            let partial = response.get(..cut).unwrap_or_default();
+            let _ = stream.write_all(partial.as_bytes()).await;
+            let _ = stream.shutdown().await;
+            return;
+        }
+
         if stream.write_all(response.as_bytes()).await.is_err() {
             return;
         }
@@ -1377,6 +1463,27 @@ async fn serve_http11(
         }
         if stream.flush().await.is_err() {
             return;
+        }
+
+        // One request, two responses. The copy is byte-identical to the answer just sent, so
+        // nothing about it is malformed — it is only unasked for. It stays in the socket, and the
+        // next request the client sends on this connection reads it instead of its own answer.
+        if spec
+            .duplicate_response_after
+            .is_some_and(|limit| served_on_connection == limit)
+        {
+            connection
+                .observation
+                .desynced
+                .fetch_add(1, Ordering::SeqCst);
+            let _ = stream.write_all(response.as_bytes()).await;
+            let extra = match framing {
+                Framing::Chunked => write_chunked(&mut stream, spec, &plan, send_len).await,
+                _ => write_plain(&mut stream, spec, &plan, send_len).await,
+            };
+            if extra.is_err() || stream.flush().await.is_err() {
+                return;
+            }
         }
 
         // Any of these three means the response cannot be followed by another on this
