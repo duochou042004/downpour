@@ -15,7 +15,7 @@ references: ["docs/agent/INVARIANTS.md#i-7", "docs/01-idm-teardown.md §3.5", "d
 connections: 3
 
 server:
-  content: { size: 3MiB, seed: 153 }
+  content: { size: 6MiB, seed: 153 }
   concurrent_requests:
     limit: 1
     # Queued, not refused. The client is told nothing at all.

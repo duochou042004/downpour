@@ -416,6 +416,16 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             ));
         }
     }
+    if let Some(expected) = case.expect.min_waited_requests {
+        let seen = server.waited_request_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected at least {expected} request(s) to queue behind the origin's in-flight \
+                 limit but {seen} did; nothing ever overlapped, so this case would pass against \
+                 an engine that never asked for concurrency"
+            ));
+        }
+    }
     if let Some(expected) = case.expect.min_delayed_chunks {
         let seen = server.delayed_chunk_count();
         if seen < expected {

@@ -15,7 +15,9 @@ references: ["docs/agent/INVARIANTS.md#i-7", "RFC 6585 §4", "docs/03-transfer-e
 connections: 3
 
 server:
-  content: { size: 3MiB, seed: 154 }
+  # Large enough that the allocator really issues three grants: at 3 MiB it issues two, and a
+  # limit of two in flight is then never reached.
+  content: { size: 6MiB, seed: 154 }
   concurrent_requests:
     limit: 2
     then: reject

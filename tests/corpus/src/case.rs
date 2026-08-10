@@ -17,8 +17,8 @@ use serde::Deserialize;
 
 use crate::content::{Content, GENERATOR_V1};
 use crate::server::{
-    Framing, IfRangeBehaviour, Mutation, MutationEffect, Protocol, RangeBehaviour,
-    RedirectLocation, ServerSpec, SlowSegment, TightenCap,
+    ConcurrentRequests, Framing, IfRangeBehaviour, Mutation, MutationEffect, Protocol,
+    RangeBehaviour, RedirectLocation, ServerSpec, SlowSegment, TightenCap,
 };
 
 /// One corpus case.
@@ -275,6 +275,15 @@ pub struct ServerCase {
     /// Serve the segment from this offset onward at a trickle, while its peers run at full speed.
     #[serde(default)]
     pub slow_segment: Option<SlowSegmentCase>,
+    /// Limit how many requests may be in flight at once, across every connection.
+    ///
+    /// A limit on work rather than on sockets: it clears when a peer finishes, not when a
+    /// connection closes, so nothing in the connection count reveals it.
+    #[serde(default)]
+    pub concurrent_requests: Option<ConcurrentRequestsCase>,
+    /// Close the listener after this many connections, refusing every later connect at the kernel.
+    #[serde(default)]
+    pub stop_listening_after_connections: Option<usize>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     #[serde(default)]
     pub inconsistent_total_after: Option<usize>,
@@ -303,6 +312,26 @@ pub struct SlowSegmentCase {
     pub from_offset: ByteSize,
     /// How long to pause before each chunk.
     pub delay_ms: u64,
+}
+
+/// A limit on requests in flight, and what the origin does with the ones over it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConcurrentRequestsCase {
+    /// How many requests may be answered at once.
+    pub limit: usize,
+    /// What happens to a request that arrives over the limit.
+    pub then: OverLimitCase,
+}
+
+/// What an origin does with a request beyond its in-flight limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverLimitCase {
+    /// Hold it until a peer finishes. The client is told nothing and sees only latency.
+    Wait,
+    /// Answer `429` and close.
+    Reject,
 }
 
 /// A concurrency cap that changes part way through the transfer.
@@ -680,6 +709,13 @@ pub struct Expect {
     /// reason.
     #[serde(default)]
     pub min_delayed_chunks: Option<usize>,
+    /// At least this many requests must have waited for the origin's in-flight limit.
+    ///
+    /// A queue is invisible in the outcome: the file is identical whether the requests overlapped
+    /// or were issued one at a time. Without this the case cannot tell an engine that queued
+    /// behind the origin from one that never asked for concurrency at all.
+    #[serde(default)]
+    pub min_waited_requests: Option<usize>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -881,6 +917,14 @@ impl Case {
             duplicate_response_after: self.server.duplicate_response_after,
             close_after_body_bytes: self.server.close_after_body_bytes.map(|size| size.0),
             drop_at_offset: self.server.drop_at_offset.map(|size| size.0),
+            concurrent_requests: self
+                .server
+                .concurrent_requests
+                .map(|limit| ConcurrentRequests {
+                    limit: limit.limit,
+                    reject: matches!(limit.then, OverLimitCase::Reject),
+                }),
+            stop_listening_after_connections: self.server.stop_listening_after_connections,
             slow_segment: self.server.slow_segment.map(|slow| SlowSegment {
                 from_offset: slow.from_offset.0,
                 delay: std::time::Duration::from_millis(slow.delay_ms),

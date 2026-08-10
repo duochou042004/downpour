@@ -15,7 +15,8 @@ references: ["docs/03-transfer-engine-spec.md §7", "docs/01-idm-teardown.md §3
 connections: 3
 
 server:
-  content: { size: 3MiB, seed: 155 }
+  # Three grants, so a worker really does need a connection after the listener has gone.
+  content: { size: 6MiB, seed: 155 }
   # The probe's connection and one more, then the listener closes.
   stop_listening_after_connections: 2
 

@@ -285,6 +285,18 @@ pub struct ServerSpec {
     pub drop_at_offset: Option<u64>,
     /// Serve the segment from an offset onward at a trickle, while its peers run at full speed.
     pub slow_segment: Option<SlowSegment>,
+    /// Limit how many requests may be answered at once, across every connection.
+    ///
+    /// A limit on work rather than on sockets. It clears when a peer finishes rather than when a
+    /// connection closes, which is what makes it survivable where a permanent connection cap is
+    /// not: an idle pooled connection still counts against a socket cap forever.
+    pub concurrent_requests: Option<ConcurrentRequests>,
+    /// Close the listener after this many connections have been accepted.
+    ///
+    /// Every later connect is refused by the kernel before this server sees it, which is a
+    /// different signal from an accepted-then-dropped socket and a much faster one: an instant
+    /// error spends a retry budget in milliseconds where a silent drop takes a timeout.
+    pub stop_listening_after_connections: Option<usize>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     ///
     /// The segmented shape of a representation changing underneath a transfer, and the most
@@ -348,11 +360,22 @@ impl Default for ServerSpec {
             close_after_body_bytes: None,
             drop_at_offset: None,
             slow_segment: None,
+            concurrent_requests: None,
+            stop_listening_after_connections: None,
             inconsistent_total_after: None,
             close_without_responding: 0,
             close_after_requests: None,
         }
     }
+}
+
+/// A limit on how many requests may be answered at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConcurrentRequests {
+    /// How many may be answered at once.
+    pub limit: usize,
+    /// Answer the ones over the limit with `429` instead of holding them.
+    pub reject: bool,
 }
 
 /// One segment served far more slowly than its peers.
@@ -466,6 +489,8 @@ struct TransientBudget {
     bytes_served: std::sync::atomic::AtomicU64,
     /// The `ETag` as it stands now, which a mutation may have replaced.
     etag: Mutex<Option<String>>,
+    /// Permits for requests in flight, when a case limits them.
+    in_flight: Option<Semaphore>,
 }
 
 #[derive(Debug, Default)]
@@ -482,6 +507,8 @@ struct ConnectionObservation {
     desynced: AtomicUsize,
     /// Body chunks held back by a shaper.
     delayed_chunks: AtomicUsize,
+    /// Requests that had to wait for the origin's in-flight limit.
+    waited: AtomicUsize,
 }
 
 impl ConnectionObservation {
@@ -580,6 +607,9 @@ impl TransientBudget {
             status: AtomicU32::new(spec.transient_status_failures),
             bytes_served: std::sync::atomic::AtomicU64::new(0),
             etag: Mutex::new(spec.etag.clone()),
+            in_flight: spec
+                .concurrent_requests
+                .map(|limit| Semaphore::new(limit.limit)),
         }
     }
 
@@ -665,6 +695,14 @@ impl PathologyServer {
             let range_gate = range_gate.clone();
             async move {
                 loop {
+                    // Dropping the listener is the whole capability: from here every connect is
+                    // refused by the kernel, before this server is involved at all.
+                    if spec
+                        .stop_listening_after_connections
+                        .is_some_and(|limit| connections.accepted.load(Ordering::SeqCst) >= limit)
+                    {
+                        return;
+                    }
                     let Ok((stream, _peer)) = listener.accept().await else {
                         return;
                     };
@@ -878,6 +916,16 @@ impl PathologyServer {
     #[must_use]
     pub fn delayed_chunk_count(&self) -> usize {
         self.connections.delayed_chunks.load(Ordering::SeqCst)
+    }
+
+    /// Requests that had to wait for a peer to finish before they could be answered.
+    ///
+    /// A queue leaves no trace in the file or in the connection count, so this is the only thing
+    /// that distinguishes an engine queued behind the origin from one that never overlapped its
+    /// requests in the first place.
+    #[must_use]
+    pub fn waited_request_count(&self) -> usize {
+        self.connections.waited.load(Ordering::SeqCst)
     }
 
     /// Connections that reached the server rather than being dropped by a cap or a budget.
@@ -1393,6 +1441,35 @@ async fn serve_http11(
         }
 
         served_on_connection += 1;
+
+        // A limit on requests in flight, held for as long as this response takes. Two enforcements
+        // of the same limit: hold the request until a peer finishes, telling the client nothing,
+        // or answer it and close. The permit is released when `_in_flight` drops at the end of the
+        // iteration, which is what makes this clear on a peer finishing rather than on a socket
+        // closing.
+        let mut _in_flight = None;
+        if let Some(gate) = &budget.in_flight {
+            match gate.try_acquire() {
+                Ok(permit) => _in_flight = Some(permit),
+                Err(_) if spec.concurrent_requests.is_some_and(|limit| limit.reject) => {
+                    connection.observation.capped.fetch_add(1, Ordering::SeqCst);
+                    let response = format!(
+                        "HTTP/1.1 429 {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        reason_phrase(429)
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                    return;
+                }
+                Err(_) => {
+                    connection.observation.waited.fetch_add(1, Ordering::SeqCst);
+                    match gate.acquire().await {
+                        Ok(permit) => _in_flight = Some(permit),
+                        Err(_) => return,
+                    }
+                }
+            }
+        }
 
         let if_range = headers
             .iter()
