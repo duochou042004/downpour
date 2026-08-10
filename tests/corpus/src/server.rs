@@ -219,6 +219,16 @@ pub struct ServerSpec {
     /// `429`. The engine has to notice the drop rather than wait out a timeout, and must not
     /// treat "the origin allows four" as "four is the right number" (I-7).
     pub max_concurrent_connections: Option<usize>,
+    /// Answer every request on a connection beyond the cap with this status, instead of dropping
+    /// the connection.
+    ///
+    /// The polite enforcement of the same cap, and a genuinely different pathology rather than a
+    /// different header: a drop reaches the engine as a transport error, which its retry
+    /// classification already treats as transient, while a status reaches it as a *response* and
+    /// has to be classified. I-7 names `429` as one of the signals concurrency must fall back on.
+    /// Only HTTP/1.1 enforces it this way; over h2c the cap still drops, because no case needs the
+    /// polite shape there and a half-implemented capability is worse than an absent one.
+    pub cap_status: Option<u16>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     ///
     /// The segmented shape of a representation changing underneath a transfer, and the most
@@ -273,6 +283,7 @@ impl Default for ServerSpec {
             if_range: IfRangeBehaviour::default(),
             behaviour: Vec::new(),
             max_concurrent_connections: None,
+            cap_status: None,
             inconsistent_total_after: None,
             close_without_responding: 0,
             close_after_requests: None,
@@ -375,6 +386,8 @@ struct ConnectionObservation {
     maximum_active: AtomicUsize,
     /// Connections dropped without an answer because the cap was already reached.
     refused: AtomicUsize,
+    /// Requests answered with the cap's status because the cap was already reached.
+    capped: AtomicUsize,
 }
 
 impl ConnectionObservation {
@@ -561,19 +574,23 @@ impl PathologyServer {
                     let requests = Arc::clone(&requests);
                     let budget = Arc::clone(&budget);
                     let (connection_id, active_connection) = connections.accepted();
-                    if let Some(cap) = spec.max_concurrent_connections
-                        && connections.active.load(Ordering::SeqCst) > cap
+                    let over_cap = spec
+                        .max_concurrent_connections
+                        .is_some_and(|cap| connections.active.load(Ordering::SeqCst) > cap);
+                    // Two ways an origin enforces the same cap. Without `cap_status` it does not
+                    // answer and does not refuse politely: the socket is accepted by the kernel
+                    // and then dropped, with nothing to parse. With one, the excess connection is
+                    // served — and every request on it is answered with that status.
+                    if over_cap
+                        && (spec.cap_status.is_none() || !matches!(spec.protocol, Protocol::Http11))
                     {
-                        // A capped origin does not answer and does not refuse politely: the
-                        // socket is accepted by the kernel and then dropped. Answering with a
-                        // status would make this the `429` case, which is a different pathology
-                        // and has its own cases.
                         connections.refused.fetch_add(1, Ordering::SeqCst);
                         drop(active_connection);
                         drop(stream);
                         continue;
                     }
                     let range_gate = range_gate.clone();
+                    let observation = Arc::clone(&connections);
                     tokio::spawn(async move {
                         let _active_connection = active_connection;
                         match spec.protocol {
@@ -593,6 +610,10 @@ impl PathologyServer {
                                     &budget,
                                     connection_id,
                                     range_gate.as_deref(),
+                                    Connection {
+                                        over_cap,
+                                        observation: &observation,
+                                    },
                                 )
                                 .await;
                             }
@@ -712,6 +733,16 @@ impl PathologyServer {
     #[must_use]
     pub fn refused_connection_count(&self) -> usize {
         self.connections.refused.load(Ordering::SeqCst)
+    }
+
+    /// Requests this server answered with its cap status because the cap was already reached.
+    ///
+    /// The polite cap's counterpart to [`Self::refused_connection_count`], and load-bearing for
+    /// the same reason: it is what tells a case that recovered from a `429` apart from one whose
+    /// client never opened the extra connection.
+    #[must_use]
+    pub fn capped_response_count(&self) -> usize {
+        self.connections.capped.load(Ordering::SeqCst)
     }
 
     /// Number of accepted connections whose serving task is still alive.
@@ -1107,6 +1138,14 @@ const STREAM_CHUNK: usize = 64 * 1024;
 
 // ---------------------------------------------------------------- HTTP/1.1
 
+/// What this one connection knows about itself, beyond the spec every connection shares.
+struct Connection<'a> {
+    /// This connection was opened while the origin's cap was already met, and the case asked for
+    /// the cap to be enforced by answering rather than by dropping.
+    over_cap: bool,
+    observation: &'a ConnectionObservation,
+}
+
 async fn serve_http11(
     mut stream: TcpStream,
     spec: &ServerSpec,
@@ -1114,6 +1153,7 @@ async fn serve_http11(
     budget: &Arc<TransientBudget>,
     connection_id: u64,
     range_gate: Option<&FirstRangeGate>,
+    connection: Connection<'_>,
 ) {
     let mut buffered: Vec<u8> = Vec::new();
     let mut served_on_connection = 0_usize;
@@ -1162,6 +1202,19 @@ async fn serve_http11(
                 path: path.clone(),
                 headers: headers.clone(),
             });
+        }
+
+        // The polite cap answers before anything else looks at the request: an origin at its
+        // connection limit has not decided to serve this range, it has decided not to.
+        if let Some(status) = spec.cap_status.filter(|_| connection.over_cap) {
+            connection.observation.capped.fetch_add(1, Ordering::SeqCst);
+            let response = format!(
+                "HTTP/1.1 {status} {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                reason_phrase(status)
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.shutdown().await;
+            return;
         }
 
         if let Some(gate) = range_gate {

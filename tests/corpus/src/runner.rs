@@ -406,6 +406,16 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             ));
         }
     }
+    if let Some(expected) = case.expect.min_capped_responses {
+        let seen = server.capped_response_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the origin's cap to answer at least {expected} request(s) with its cap \
+                 status but it answered {seen}; the cap never bit, so this case would pass with \
+                 no cap at all"
+            ));
+        }
+    }
     if let Some(expected) = case.expect.min_refused_connections {
         let seen = server.refused_connection_count();
         if seen < expected {

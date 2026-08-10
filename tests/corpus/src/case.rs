@@ -216,6 +216,14 @@ pub struct ServerCase {
     /// with no status and no reason. Answering would make it the `429` pathology instead.
     #[serde(default)]
     pub max_concurrent_connections: Option<usize>,
+    /// Answer the connection beyond `max_concurrent_connections` with this status instead of
+    /// dropping it.
+    ///
+    /// The other way an origin enforces a cap. A drop produces a transport error; an answer
+    /// produces a *status*, which is a different path through the engine's retry classification
+    /// and the one I-7 names when it says concurrency falls back on `429`.
+    #[serde(default)]
+    pub cap_status: Option<u16>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     #[serde(default)]
     pub inconsistent_total_after: Option<usize>,
@@ -549,6 +557,13 @@ pub struct Expect {
     /// stay green if the cap were removed from the server entirely.
     #[serde(default)]
     pub min_refused_connections: Option<usize>,
+    /// The origin's cap must have answered at least this many requests with its cap status.
+    ///
+    /// The polite cap's equivalent of `min_refused_connections`, and needed for the same reason:
+    /// a client that never opened the extra connection produces exactly the same file as one that
+    /// was told `429` and recovered, so without this the case stays green with the cap removed.
+    #[serde(default)]
+    pub min_capped_responses: Option<usize>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -739,6 +754,7 @@ impl Case {
     pub fn server_spec(&self) -> ServerSpec {
         ServerSpec {
             max_concurrent_connections: self.server.max_concurrent_connections,
+            cap_status: self.server.cap_status,
             inconsistent_total_after: self.server.inconsistent_total_after,
             close_without_responding: self.server.close_without_responding,
             close_after_requests: self.server.close_after_requests,
