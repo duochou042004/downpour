@@ -333,6 +333,7 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
         // A connection pathology needs more than one connection open to exist at all.
         Some(connections) if connections > 1 => {
             SegmentedDownload::new(std::sync::Arc::new(backend), connections)
+                .with_retry_policy(downpour_http::RetryPolicy::fast_for_tests())
                 .download(url, &layout)
                 .await
         }

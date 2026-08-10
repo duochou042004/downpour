@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use downpour_http::{
-    ProbeError, ProbeRequest, RangeOutcome, RangeRequest, RangeSink, TransferError,
+    ProbeError, ProbeRequest, RangeOutcome, RangeRequest, RangeSink, RetryPolicy, TransferError,
     TransferProtocol,
 };
 use url::Url;
@@ -43,6 +43,7 @@ const WRITER_QUEUE_CAPACITY: usize = 32;
 pub struct SegmentedDownload<B> {
     backend: Arc<B>,
     connections: usize,
+    retry_policy: RetryPolicy,
 }
 
 impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
@@ -52,7 +53,19 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         Self {
             backend,
             connections,
+            retry_policy: RetryPolicy::default(),
         }
+    }
+
+    /// Replace the retry curve, for both this path and the single-stream path it falls back to.
+    ///
+    /// Only the delays change; the budget and the classification do not, and `Retry-After` is
+    /// still honoured exactly. The corpus needs it so a segmented case that injects a transient
+    /// failure does not pay the spec's real back-off in wall-clock time (B-53).
+    #[must_use]
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
     }
 
     /// Run one download to its final, verified name.
@@ -73,6 +86,7 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         // Resume for the segmented path is S3-T9.
         if self.connections <= 1 {
             return SingleStream::new(ArcBackend(Arc::clone(&self.backend)))
+                .with_retry_policy(self.retry_policy)
                 .download(url, layout)
                 .await;
         }
@@ -84,12 +98,14 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
             .map_err(DownloadError::from)?;
 
         let pool = FixedWorkerPool::new(Arc::clone(&self.backend), self.connections)
-            .map_err(|source| DownloadError::Segmented { source })?;
+            .map_err(|source| DownloadError::Segmented { source })?
+            .with_retry_policy(self.retry_policy);
         let PoolPlan::Segmented { total_length, .. } = pool.plan(&remote) else {
             // Not segmentable. The single-stream path already owns probe, retry, resume and the
             // completion sequence for this case, so it runs it rather than this module growing a
             // second copy that would drift from it.
             return SingleStream::new(ArcBackend(Arc::clone(&self.backend)))
+                .with_retry_policy(self.retry_policy)
                 .download(url, layout)
                 .await;
         };
@@ -227,7 +243,8 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         .map_err(|source| DownloadError::Resume { source })?;
 
         let pool = FixedWorkerPool::new(Arc::clone(&self.backend), self.connections)
-            .map_err(|source| DownloadError::Segmented { source })?;
+            .map_err(|source| DownloadError::Segmented { source })?
+            .with_retry_policy(self.retry_policy);
         let service = WriterService::start(writer, allocator, WRITER_QUEUE_CAPACITY)
             .map_err(|source| DownloadError::Writer { source })?;
 

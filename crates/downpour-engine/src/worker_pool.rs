@@ -174,6 +174,7 @@ impl From<TransferError> for PoolError {
 pub struct FixedWorkerPool<B> {
     backend: Arc<B>,
     workers: usize,
+    retry_policy: RetryPolicy,
 }
 
 struct RunningWorker {
@@ -198,7 +199,24 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
         if workers == 0 {
             return Err(PoolError::ZeroWorkers);
         }
-        Ok(Self { backend, workers })
+        Ok(Self {
+            backend,
+            workers,
+            retry_policy: RetryPolicy::default(),
+        })
+    }
+
+    /// Replace the retry curve this pool's workers back off on.
+    ///
+    /// The budget and the classification are unchanged; only the delays are. Exists because the
+    /// corpus needs the spec's real waits collapsed to milliseconds — the single-stream path has
+    /// had this since S1, and without it every segmented case that injects a transient failure
+    /// pays the spec's back-off in wall-clock time for nothing (B-53). `Retry-After` is still
+    /// honoured exactly, whatever curve is set.
+    #[must_use]
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
     }
 
     /// Select segmented or whole-stream execution from validated probe evidence.
@@ -307,7 +325,7 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
         let mut ticker = tokio::time::interval(JOURNAL_FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ticker.tick().await;
-        let retry_policy = RetryPolicy::default();
+        let retry_policy = self.retry_policy;
         let mut transient_failures = 0_u32;
 
         loop {
