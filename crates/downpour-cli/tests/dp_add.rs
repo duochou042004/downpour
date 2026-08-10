@@ -115,12 +115,17 @@ impl Drop for DaemonHarness {
 }
 
 fn dp_add(url: &str, scratch: &Scratch, daemon: &DaemonHarness) -> Run {
+    dp_add_with(url, scratch, daemon, &[])
+}
+
+fn dp_add_with(url: &str, scratch: &Scratch, daemon: &DaemonHarness, extra: &[&str]) -> Run {
     let mut command = Command::new(dp_binary());
     command
         .arg("add")
         .arg(url)
         .arg("--output-dir")
         .arg(scratch.path())
+        .args(extra)
         .env("DOWNPOUR_RUNTIME_ROOT", &daemon.runtime_root);
     let output = command.output().expect("dp runs");
     Run {
@@ -277,5 +282,61 @@ fn dp_reports_a_version_and_a_help_text() {
     assert!(
         text.contains("add"),
         "the add subcommand must be discoverable: {text}"
+    );
+}
+
+/// S3-T16 — the daemon actually performs a segmented download.
+///
+/// Until this landed, `downpour-daemon` ran `SingleStream` for every transfer and refused any
+/// connection count above one with `segmented_execution_not_ready`. The allocator, writer service
+/// and worker pool existed and were tested, and no user could reach them (B-40). This is the proof
+/// that the product path and the engine path are the same path.
+#[tokio::test(flavor = "multi_thread")]
+async fn dp_add_with_four_connections_segments_the_transfer_and_lands_byte_exact() {
+    let server = PathologyServer::start(spec()).await.expect("server starts");
+    let scratch = Scratch::new("segmented");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
+
+    let run = dp_add_with(
+        &server.entry_url(),
+        &scratch,
+        &daemon,
+        &["--connections", "4"],
+    );
+
+    assert_eq!(run.code, Some(0), "stderr was: {}", run.stderr);
+    assert_eq!(scratch.entries(), vec!["content"]);
+    let bytes = std::fs::read(scratch.path().join("content")).expect("final file is readable");
+    assert_eq!(
+        u64::try_from(bytes.len()).expect("length fits u64"),
+        SIZE,
+        "the segmented path produced a file of the wrong length"
+    );
+    assert_eq!(
+        Content::new(42, SIZE).first_mismatch(0, &bytes),
+        None,
+        "silent corruption through the segmented daemon path"
+    );
+
+    // The file being right is necessary and not sufficient: a daemon that quietly ran one stream
+    // would produce exactly the same file. The server is what can tell them apart.
+    let ranged = server
+        .requests()
+        .iter()
+        .filter(|request| request.header("range").is_some_and(|value| value != "bytes=0-0"))
+        .count();
+    assert!(
+        ranged >= 4,
+        "four connections must produce at least four ranged requests, saw {ranged}: {:?}",
+        server
+            .requests()
+            .iter()
+            .map(|request| request.header("range"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        server.maximum_simultaneous_connections() >= 2,
+        "a segmented transfer must have had more than one connection open at once, peak was {}",
+        server.maximum_simultaneous_connections()
     );
 }
