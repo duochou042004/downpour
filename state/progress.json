@@ -4204,6 +4204,23 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3 is 10/16 tasks and 3/5 exit criteria. S3-T9 is done. Next by the plan is S3-T10, off/sample/full block verification on cross-process resume, which is now unblocked because resume exists. Then T11 and T12, the corpus floors, which are the largest remaining volume: connections is 3/20 and ranges is 17/25. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Closed B-19 and S3-T10. docs/04 section 3.4 verify_on_resume existed only in prose; recovery trusted every BlockComplete record, which is the documented off behaviour, and B-19 called off the correct default in direct contradiction of the normative spec. Repaired the wording rather than leaving it, because shipping off as the default would have been quietly weaker than the spec while looking compliant. A block whose part bytes no longer hash to their recorded BLAKE3 is now excluded before the interval map is built, so its range returns to Pending and is fetched again — excluded rather than removed afterwards, so the map never exists claiming bytes the file does not hold. Nothing is rehashed into the journal and the journal is not rewritten, since recomputing a digest from bytes that just failed would bless corruption into durable evidence. Sample selection is derived from the transfer id and block sequence rather than an RNG, so the same journal always samples the same blocks and full is a superset of what sample checked; keying on the transfer id stops one unlucky pattern hiding identically in every file. Wired as the default on the segmented resume path. Mutations: skipping the digest comparison makes the corruption proof red; defaulting to off makes the default proof red. Local 349/349 with 3 skipped.",
+      "tasks_touched": [
+        "S3-T10",
+        "B-19"
+      ],
+      "files_touched": [
+        "crates/downpour-storage/src/recovery.rs",
+        "crates/downpour-storage/tests/recovery.rs",
+        "crates/downpour-engine/src/segmented.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3 is 11/16 tasks and 3/5 exit criteria. Remaining: T11 and T12, the corpus floors, which are the largest volume left — connections is 3/20 and ranges is 17/25, so 25 distinct server pathologies to build; T13 retention; T14 the digest cost re-measurement on the segmented path; T15 the stage-gate mutation audit. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {
