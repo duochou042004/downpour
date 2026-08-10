@@ -1,0 +1,28 @@
+id: the-origin-stops-listening-part-way-through
+category: connections
+description: >
+  The origin stops accepting connections while the transfer is running: the backend behind the
+  address went away, the listener was closed, the port is no longer bound. Sockets already
+  established keep working; every new one is refused by the kernel before any server sees it.
+  Distinct from `the-origin-allows-a-fixed-number-of-connections-ever`, which accepts the excess
+  and drops it: there the handshake succeeds and the client waits for a response that never comes,
+  here the connect itself fails immediately. Different signal, and different timing — an instant
+  error costs the retry budget far faster than a silent drop does, so an engine that answers a
+  refused connect by opening another one burns through its budget in milliseconds. Finishing means
+  using the connections it already holds.
+references: ["docs/03-transfer-engine-spec.md §7", "docs/01-idm-teardown.md §3.5", "docs/09-testing-strategy.md §3.2"]
+
+connections: 3
+
+server:
+  content: { size: 3MiB, seed: 155 }
+  # The probe's connection and one more, then the listener closes.
+  stop_listening_after_connections: 2
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # Only the sockets that existed before the listener went away ever carried anything.
+  max_served_connections: 2
+  # And they carried the whole transfer between them, which means they were reused.
+  min_requests: 4

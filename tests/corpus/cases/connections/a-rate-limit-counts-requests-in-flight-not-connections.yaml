@@ -1,0 +1,27 @@
+id: a-rate-limit-counts-requests-in-flight-not-connections
+category: connections
+description: >
+  An API gateway's rate limit: the connections are all welcome, and only two requests may be in
+  flight at once. The third is answered `429` and closed, again and again for as long as the
+  engine keeps three in the air.
+  Distinct from `a-polite-cap-answers-429-instead-of-dropping`, where the limit is on connections
+  and one excess socket is turned away once. Here the limit is on work, so it re-fires on every
+  attempt until the engine stops exceeding it, and it clears the moment a peer finishes rather
+  than when a socket closes. That difference decides whether the transfer can finish at all: an
+  engine that waits for a connection to free will wait forever, because none of them is the thing
+  being counted.
+references: ["docs/agent/INVARIANTS.md#i-7", "RFC 6585 §4", "docs/03-transfer-engine-spec.md §7"]
+
+connections: 3
+
+server:
+  content: { size: 3MiB, seed: 154 }
+  concurrent_requests:
+    limit: 2
+    then: reject
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # The limit really fired.
+  min_capped_responses: 1
