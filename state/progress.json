@@ -2243,6 +2243,13 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "A review standard applied to other agents work and not to my own is not a standard; the lint is what makes it one"
+    },
+    {
+      "id": "B-48",
+      "text": "FIXED 2026-08-10 while opening the daemon half of B-25. TransferDaemon minted download ids from 128 random bits, but those same sixteen bytes are the SQLite primary key and the recovery journal transfer id, and downpour_storage::metadata::DownloadId::try_from_bytes validates them as a UUIDv7. A random id satisfies the version and variant bits by accident roughly once in sixty-four, so persisting would have failed for about 98 percent of downloads with a validation error about UUID bits that has nothing to do with the download — and passed for the rest, which is the worst shape a bug can have. Nothing caught it because the daemon persists nothing yet: the id crossed no boundary where it was checked. Now a real UUIDv7, hand-rolled rather than adding a crate for twenty lines, with the leading 48 bits a millisecond timestamp so ids sort by creation and the primary-key index appends rather than inserting into the middle. Proven over 256 ids, because a single sample passes by chance often enough to be a flaky green.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "An identifier that is valid at one layer and rejected at the next is not a small bug when the two layers are the IPC surface and the durable record that makes resume possible"
     }
   ],
   "session_log": [
@@ -4093,6 +4100,23 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3-T9 still todo, with only the daemon half of B-25 outstanding. The engine can now resume a segmented transfer from durable artifacts given the recorded identity; what no component can yet do is find that identity after a restart. TransferDaemon keeps an in-memory BTreeMap, never writes to a MetadataStore, and downpourd never calls recover_all. Persisting needs the probe result, so it belongs after the probe rather than at add time, which means moving probe-then-persist-then-transfer into the daemon instead of handing the whole call to the engine, and download.resume then reconciling and calling SegmentedDownload::resume. That is a lifecycle restructuring and should be its own change with its own failing test. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Opened the daemon half of B-25 and the first thing it surfaced was B-48. The daemon minted download ids from 128 random bits while the metadata store validates the same sixteen bytes as a UUIDv7, so persistence would have failed for about 98 percent of downloads and succeeded for the rest. Nothing caught it because the daemon persists nothing yet, so the id never crossed a boundary that checked it. Now a real UUIDv7 with a millisecond timestamp prefix, hand-rolled instead of adding a dependency, proven over 256 ids rather than one because a single sample passes by chance about once in sixty-four. Mutating away the version and variant bits turns it red. Local 345/345 with 3 skipped, gate green.",
+      "tasks_touched": [
+        "S3-T9",
+        "B-25",
+        "B-48"
+      ],
+      "files_touched": [
+        "crates/downpour-daemon/src/server.rs",
+        "crates/downpour-daemon/tests/server.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3-T9 still todo. The daemon half of B-25 is now unblocked but not built: TransferDaemon still keeps an in-memory BTreeMap, never opens a MetadataStore, and downpourd never calls recover_all. The remaining shape is probe, then persist DownloadMetadata, then transfer — persistence needs the probe result so it cannot happen at add time — followed by seeding the registry from recover_all at startup and having download.resume reconcile and call SegmentedDownload::resume, which now exists. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {

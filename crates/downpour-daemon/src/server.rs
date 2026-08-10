@@ -299,10 +299,51 @@ pub async fn serve_connection<H: CommandHandler + Send + 'static>(
     }
 }
 
-fn fresh_download_id() -> Result<DownloadId, &'static str> {
+/// Mint a fresh download identifier.
+///
+/// These bytes are not only the IPC id. They become the SQLite primary key and the recovery
+/// journal's transfer id, and the metadata store validates them as a UUIDv7 — so 128 random bits
+/// are not enough, they satisfy the version and variant bits by accident about once in sixty-four.
+///
+/// UUIDv7 rather than v4 because the leading 48 bits are a millisecond timestamp: ids sort by
+/// creation, which keeps the SQLite primary-key index appending rather than inserting into the
+/// middle, and makes a directory of journals readable in the order the downloads started.
+///
+/// # Errors
+///
+/// When the operating system's random source refuses, or the clock is before the Unix epoch.
+pub fn fresh_download_id() -> Result<DownloadId, &'static str> {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system clock is before the Unix epoch")?
+        .as_millis();
+    let millis = u64::try_from(millis).map_err(|_| "system clock is beyond a 48-bit epoch")?;
+
     let token = SessionToken::generate().map_err(|_| "OS random source refused an ID")?;
     let wire = token.to_wire();
-    DownloadId::new(&wire.expose()[..32])
+    let random = wire.expose();
+    let mut bytes = [0_u8; 16];
+    // 48-bit big-endian milliseconds, per RFC 9562 section 5.7.
+    bytes[0..6].copy_from_slice(&millis.to_be_bytes()[2..8]);
+    for (index, byte) in bytes[6..].iter_mut().enumerate() {
+        *byte = u8::from_str_radix(
+            random
+                .get(index * 2..index * 2 + 2)
+                .ok_or("token was shorter than the identifier needs")?,
+            16,
+        )
+        .map_err(|_| "token was not hexadecimal")?;
+    }
+    // Version 7 in the high nibble of byte 6, RFC 4122 variant in the top two bits of byte 8.
+    bytes[6] = (bytes[6] & 0x0f) | 0x70;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    let mut hex = String::with_capacity(32);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(hex, "{byte:02x}").map_err(|_| "identifier could not be rendered")?;
+    }
+    DownloadId::new(&hex)
 }
 
 fn update_state(
