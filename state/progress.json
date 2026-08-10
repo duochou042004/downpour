@@ -4037,6 +4037,27 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3-T9 is still todo and now roughly two thirds done: B-37 closed, I-3 enforced on the segmented path, allocator resume in place. What remains for B-25 is the plumbing rather than the invariants: the segmented path must adopt existing durable artifacts instead of creating them exclusively, which needs an open-existing counterpart to create_journalled_artifacts and a journal reopened for append after replay, and download.resume must reconcile and run rather than returning resume_not_ready. The end-to-end proof to write is: kill the daemon mid-transfer, restart, resume, and assert the file is byte-exact and no completed range was requested twice. Four PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Caught and fixed B-47, which was my own: a temporary eprintln debug probe added while diagnosing B-43 was committed into crates/downpour-engine/src/segmented.rs and shipped in the S3-T16 change. It survived 333 passing tests, fmt, clippy and four green CI jobs, because clippy allows print_stdout and print_stderr by default and the engine deny list covered only the panic family. Fixed on the branch it came from rather than the one on top, so PR 43 is clean in isolation, then merged forward into the resume branch; the merge conflicted only on progress.json backlog entries and was resolved as a union. The guard matters more than the deletion: the seven library crates now deny print_stdout and print_stderr in the same cfg_attr(not(test)) block that already denies unwrap, expect, panic, todo, unimplemented and unreachable. Binaries and tests are untouched, because printing is their interface, and scoping it workspace-wide was tried first and rejected for exactly that reason. Verified by reinstating the exact probe and watching clippy refuse it at segmented.rs:125. Local 342/342 with 3 skipped; both branches green on all four GitHub jobs including Windows.",
+      "tasks_touched": [
+        "B-47"
+      ],
+      "files_touched": [
+        "crates/downpour-engine/src/segmented.rs",
+        "crates/downpour-engine/src/lib.rs",
+        "crates/downpour-storage/src/lib.rs",
+        "crates/downpour-http/src/lib.rs",
+        "crates/downpour-ipc/src/lib.rs",
+        "crates/downpour-daemon/src/lib.rs",
+        "crates/downpour-types/src/lib.rs",
+        "crates/downpour-intervals/src/lib.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. Unchanged from the previous entry: S3-T9 stays todo with B-37, B-44, B-45 and B-46 closed and B-25 outstanding. B-25 now needs the daemon to persist download metadata so a restart can find a transfer at all — TransferDaemon keeps an in-memory BTreeMap and never writes to the MetadataStore that startup recovery reads — plus the segmented path adopting existing artifacts via JournalFile::open_existing and PartFile::open_existing, and download.resume reconciling and running. That persistence piece is the bulk of the remaining work and was not started. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {
