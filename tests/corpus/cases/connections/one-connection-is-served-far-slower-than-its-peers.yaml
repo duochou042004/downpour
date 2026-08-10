@@ -1,0 +1,31 @@
+id: one-connection-is-served-far-slower-than-its-peers
+category: connections
+description: >
+  One connection is served at a trickle while its peers run at full speed — the straggler row of
+  `docs/01-idm-teardown.md` §3.5. A single overloaded backend behind a load balancer, one edge
+  node further away, one flow caught in a shaper.
+  The whole file is the straggler's problem: the peers finish, and the transfer is not done until
+  the slow segment is. What must not happen is the two failure modes on either side of it —
+  abandoning the slow worker's range and leaving a hole, or handing the same range to a second
+  worker while the first is still writing into it, which is an overlapping write (I-2) that no
+  size or coverage check can see afterwards. The byte comparison is what catches the second, and
+  it is imposed on every case rather than declared here.
+references: ["docs/agent/INVARIANTS.md#i-2", "docs/01-idm-teardown.md §3.5", "docs/03-transfer-engine-spec.md §4"]
+
+connections: 3
+
+server:
+  content: { size: 768KiB, seed: 151 }
+  slow_connection:
+    # The third connection to arrive, so the probe and the first peers are unaffected.
+    nth: 3
+    # Per 64 KiB chunk. Enough that it is unambiguously last, short enough for CI.
+    delay_ms: 40
+
+expect:
+  final_state: completed
+  file_renamed: true
+  min_connections: 3
+  # The trickle really happened. Without it a shaper that never fired leaves an ordinary
+  # three-connection download that passes for the wrong reason.
+  min_delayed_chunks: 4
