@@ -4058,6 +4058,22 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. Unchanged from the previous entry: S3-T9 stays todo with B-37, B-44, B-45 and B-46 closed and B-25 outstanding. B-25 now needs the daemon to persist download metadata so a restart can find a transfer at all — TransferDaemon keeps an in-memory BTreeMap and never writes to the MetadataStore that startup recovery reads — plus the segmented path adopting existing artifacts via JournalFile::open_existing and PartFile::open_existing, and download.resume reconciling and running. That persistence piece is the bulk of the remaining work and was not started. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Added downpour_storage::recovery::durable_state, the store-free half of reconciliation: what the journal proves durable and the sequence the next append must carry. reconcile_download now calls it rather than keeping its own copy of the same computation, so recovery and a resuming transfer cannot drift into disagreeing about which bytes are durable — the one disagreement that would let resume skip a range the file does not actually hold. The extraction preserved behaviour: mutating away the observed-length bound still turns the existing S2 case blocks_beyond_a_short_part_file_are_not_trusted red through the new code path. Recorded honestly that the new test is half evidence and half tautology — its literal ranges and sequence are falsifiable, its equality with reconcile_download is not, because they are now the same function, and it is kept as a guard against a future re-fork rather than as proof they agree today. Local 343/343 with 3 skipped, all four GitHub jobs green including Windows.",
+      "tasks_touched": [
+        "S3-T9",
+        "B-25"
+      ],
+      "files_touched": [
+        "crates/downpour-storage/src/recovery.rs",
+        "crates/downpour-storage/tests/recovery.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3-T9 still todo. B-25 now has all three storage primitives it needs — PartFile::open_existing no-follow, JournalFile::open_existing append-with-header-check, and recovery::durable_state — plus SegmentAllocator::resume and If-Range on every ranged request. Two pieces remain and neither is started. First, SegmentedDownload::resume: adopt existing artifacts, seed the allocator from durable_state, run the pool, complete. Second and larger, daemon persistence: TransferDaemon keeps an in-memory BTreeMap, never writes to a MetadataStore, and downpourd never calls recover_all, so a restart cannot find a transfer at all. Persisting requires the probe result, so it belongs after the probe rather than at add time, which means the daemon owns probe then persist then transfer instead of handing the whole thing to the engine. That is a real restructuring and should be its own change. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {
