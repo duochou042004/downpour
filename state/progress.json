@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-10T00:00:00Z",
+  "updated_at": "2026-08-10T19:30:00Z",
   "updated_by": "claude-code",
   "current_stage": "S3",
   "stages": [
@@ -1229,14 +1229,18 @@
         {
           "id": "S3-T11",
           "title": "Grow the connections corpus category from 3 to at least its floor of 20",
-          "status": "todo",
-          "proof": null,
+          "status": "in_progress",
+          "proof": "tests/corpus/cases/connections/ holds 19 cases against the floor of 20 in docs/09 section 3.2, all run by tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes and all subject to the unconditional byte comparison and file_renamed. Thirteen added here, each with its own pathology-server capability rather than a YAML variant, and each mutation-checked by disabling the capability and requiring that case's own observation to go red: a-polite-cap-answers-429-instead-of-dropping (cap_status), the-connection-budget-tightens-after-the-probe (tighten_cap), the-origin-allows-a-fixed-number-of-connections-ever (max_total_connections), the-connection-dies-in-the-middle-of-the-response-headers (close_mid_headers), a-reused-connection-is-hung-up-after-the-request-is-sent (hangup_on_reused_request), an-extra-unsolicited-response-desyncs-the-connection (duplicate_response_after), every-response-is-cut-at-the-same-length (close_after_body_bytes), a-transfer-that-always-dies-at-the-same-offset-is-not-renamed (drop_at_offset), one-connection-is-served-far-slower-than-its-peers (slow_segment), the-origin-serves-one-request-at-a-time and a-rate-limit-counts-requests-in-flight-not-connections (concurrent_requests, wait and reject), the-origin-stops-listening-part-way-through (stop_listening_after_connections), a-segmented-worker-honours-the-wait-a-rate-limiter-asked-for (cap_retry_after). New observations, each added because an existing one could not distinguish the case from a healthy origin: min_capped_responses, max_served_connections, max_requests_per_connection, max_requests, min_desynced_responses, min_delayed_chunks, min_waited_requests, min_elapsed_ms. NOT done: one shape short of the floor. See B-57 and B-58 for why the remaining shapes are blocked, and B-55, B-56 and B-59 for what the work found.",
           "files": [
             "tests/corpus/cases/connections/",
-            "tests/corpus/src/"
+            "tests/corpus/src/case.rs",
+            "tests/corpus/src/server.rs",
+            "tests/corpus/src/runner.rs",
+            "crates/downpour-engine/src/worker_pool.rs",
+            "crates/downpour-engine/src/segmented.rs"
           ],
           "blocked_by": "S3-T4",
-          "notes": "Add at least 17 distinct server connection pathologies. Every case must prove the pathology fired through request, connection, reset or concurrency observations and remain subject to unconditional byte comparison. The docs/09 section 3.2 target is a floor and will not be lowered or padded with header variants.",
+          "notes": "Add at least 17 distinct server connection pathologies. Every case must prove the pathology fired through request, connection, reset or concurrency observations and remain subject to unconditional byte comparison. The docs/09 section 3.2 target is a floor and will not be lowered or padded with header variants. STATUS 2026-08-10: 19 of 20. Thirteen distinct pathologies added and mutation-verified; no shape padded. The remaining one is short because four candidate shapes proved unreachable rather than unwritten: two need a stall window (B-54) and two need a connection to open while others are transferring, which a fixed pool never does (B-58).",
           "invariants": [
             "I-1",
             "I-2",
@@ -2292,6 +2296,41 @@
       "found_in_stage": "S3",
       "target_stage": "S4",
       "rationale": "A normative parameter with no implementation is worse than a missing feature, because the spec reads as though the behaviour exists and nothing contradicts it"
+    },
+    {
+      "id": "B-55",
+      "text": "FIXED 2026-08-10 and it was a regression against S2. crates/downpour-engine/src/worker_pool.rs retryable_worker_failure mapped every TransferError::UnexpectedStatus to None, so one 429 or 503 on one worker failed the whole segmented download. The single-stream path has never done this: download.rs transient_kind_of runs the status through TransientKind::from_status and retry_after_of hands the header to the policy. So the S3 path was strictly less resilient than the S2 path it takes over from, against the signal I-7 names first. The pool now uses the same classification and passes Retry-After through; 401, 403 and 410 still return None because those belong to the refresh flow (I-8). Found by writing a-polite-cap-answers-429-instead-of-dropping, which failed with 'answered 429 where a body was expected' — no amount of reading the retry code would have shown it, because the retry code is correct and it was the classification in front of it that was not.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A cap enforced politely is more common than one enforced by dropping, and the polite one was the fatal case"
+    },
+    {
+      "id": "B-56",
+      "text": "FOUND 2026-08-10, not fixed. A truncated body on the segmented path reports error_kind segmented_transfer; the single-stream path reports truncated_body for the identical server behaviour. Clients switch on kind and never on message (docs/08 section 3), so a client cannot tell 'the server cut the body' from 'the scheduler broke' — and only one of those is worth retrying or reporting to a user. DownloadError::Segmented should report its source's kind when the source is a transfer error. Deliberately not changed here: a kind is API, so it wants the protocol version bump rather than a corpus commit. tests/corpus/cases/connections/a-transfer-that-always-dies-at-the-same-offset-is-not-renamed asserts the current kind with a comment saying it is asserted as it is, not as it should be, so this cannot be fixed without the case being updated.",
+      "found_in_stage": "S3",
+      "target_stage": "S4",
+      "rationale": "Two paths reporting different kinds for one server behaviour makes the kind useless to the client it exists for"
+    },
+    {
+      "id": "B-57",
+      "text": "FOUND 2026-08-10. Two connections-category shapes remain blocked behind B-54's missing stall window, as recorded when that item was opened: a silent connection drop with no FIN, which needs idle-timeout detection per worker, and an origin that accepts a connection and then trickles or never answers. Both are observable only as the hardcoded 300-second request deadline, which no corpus case can wait for. A third shape joined them here: a per-IP cap that QUEUES the connection beyond its limit rather than dropping it. That is what a real cap does, and it deadlocks a client that pools idle connections — the permit is held for the connection's lifetime and an idle pooled connection never releases it — so the only observable is again a five-minute timeout. It was designed, costed and skipped rather than written as a case that could not run.",
+      "found_in_stage": "S3",
+      "target_stage": "S4",
+      "rationale": "Three named pathologies unreachable for one missing parameter is the argument for implementing it, and the list belongs where the implementation is planned"
+    },
+    {
+      "id": "B-58",
+      "text": "FOUND 2026-08-10 by running two cases that could not be made to fire. Any pathology whose trigger is 'a connection opens while other connections are transferring' is unreachable in S3, because the fixed pool opens every connection before any body streams. Two shapes died on this. Peer eviction — a new connection cuts one that is mid-response, which is what a hostile anti-leech origin does — never fires at all: the registry of live bodies is empty at every accept. A cap with a memory, where exceeding it locks the source out for a window, is unreachable at socket level for the same reason; extended to block the source it does fire, and then drops the in-flight requests of every worker at once, so the shared retry budget is spent by however many happened to be mid-request when the window opened and two of three runs failed. Both were removed rather than tuned until green. They become reachable when concurrency is adaptive and the pool adds connections during a transfer, which is S4, and the capabilities are worth rebuilding then.",
+      "found_in_stage": "S3",
+      "target_stage": "S4",
+      "rationale": "A shape that cannot fire is worse than a missing one because the case looks like coverage; recording the class stops the next session rediscovering it"
+    },
+    {
+      "id": "B-59",
+      "text": "FOUND 2026-08-10, and the reason the connections floor is 19 rather than 20 by padding. Two cases written this session were vacuous when first green and were caught by mutation, not by review. keep-alive-is-declined-in-advance asserted that an origin announcing Connection: close needs no recovery; removing the header left every assertion green, because the origin still closed the connection and the engine still used one request per socket — there is no observable difference on this stack between an announced close and a silent one, which makes it a second copy of keep-alive-closed-after-one-request. It was deleted. an-extra-unsolicited-response-desyncs-the-connection asserted only that the extra response had been written; measuring the run showed three requests across three connections, so no request ever met the poisoned socket and the corruption path was never approached. It was repaired with max_requests_per_connection: 1, which is red when the duplicate is removed because a healthy origin carries the probe and the first range on one connection. The lesson for the remaining categories: an assertion that the pathology was ENACTED is not an assertion that it was ENCOUNTERED.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "Two of thirteen new proofs could not fail on first writing, which is the rate to expect and the argument for mutating every one"
     }
   ],
   "session_log": [
@@ -4304,6 +4343,25 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3 is 11/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume. NEXT UNIT is S3-T11: connections is 6 of 20 and fourteen distinct pathologies remain, each needing its own pathology-server capability rather than a YAML variant, since ADR-0018 forbids padding a floor. The capabilities added here are max_concurrent_connections, close_after_requests, close_without_responding and inconsistent_total_after, plus the observations min_connections and min_refused_connections and a per-case connections field that routes to the segmented path. Two of the remaining connections shapes are blocked behind B-54 and should be skipped rather than faked. AFTER THAT: T12 ranges 18 of 25, whose remaining named shapes are one range returning 200, shifted or overlapping responses between workers, and a later range returning 416 — the ranged_served ordinal trigger is the mechanism they need. Then T13 retention, T14 the digest cost re-measurement on the segmented path, T15 the stage-gate mutation audit. Known constraints: the segmented path uses RetryPolicy::default rather than fast_for_tests so a concurrency case that also injects transient failures is slow; just gate runs clippy without --locked while CI runs it with; and CI only fires on branches matching feature/**, fix/**, docs/** or chore/**."
+    },
+    {
+      "at": "2026-08-10T19:30:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "S3-T11, one unit, not finished: the connections corpus category went from 6 cases to 19 against its floor of 20. Thirteen distinct pathologies, each with its own pathology-server capability rather than a YAML variant, each committed failing first and each mutation-checked by disabling the capability and requiring that case's own observation to go red. The work found one regression: the segmented pool treated every HTTP status as fatal, so a single 429 from a politely capped origin failed a whole download that the S2 single-stream path would have survived (B-55, fixed). It closed B-53's note by letting the pool take a retry curve, which the corpus now collapses to milliseconds as it always has for single stream. It left two proofs unclaimed rather than claimed weakly: a keep-alive case whose mutation survived was deleted as a duplicate, and a desync case that was green while proving nothing was repaired with an assertion that is red without the pathology (B-59). Four candidate shapes turned out unreachable rather than unwritten — two need a stall window (B-57) and two need a connection to open mid-transfer, which a fixed pool never does (B-58) — so the category is one short of its floor with the causes recorded rather than padded.",
+      "tasks_touched": [
+        "S3-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/cases/connections/",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/runner.rs",
+        "crates/downpour-engine/src/worker_pool.rs",
+        "crates/downpour-engine/src/segmented.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 11/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; three PRs 41, 43, 44 still stacked and unmerged in that order. S3-T11 is in_progress at 19 of 20 connections cases. To close it, ONE more reachable pathology is needed: it must be triggered by a request or by response content, never by a connection opening mid-transfer (B-58) and never observable only as a stall (B-57). Shapes already rejected as variants rather than pathologies: a 408 on a reused connection (the parseable twin of hangup_on_reused_request), a per-connection total byte budget (indistinguishable from close_after_body_bytes when each connection carries one body), and Connection: close announced in advance (deleted, B-59). AFTER THAT: T12 ranges 18 of 25, whose remaining named shapes are one range returning 200, shifted or overlapping responses between workers, and a later range returning 416 — the ranged_served ordinal trigger is the mechanism they need. Then T13 retention, T14 the digest cost re-measurement, T15 the stage-gate mutation audit, where B-56's error-kind finding should be settled. Note for sizing any new segmented case: the allocator's DEFAULT_MIN_SPLIT_BYTES is 1 MiB and the grants are NOT even, so a case needing three workers wants 6 MiB — at 3 MiB it gets two and every limit written for three is silently never reached."
     }
   ],
   "metrics": {
