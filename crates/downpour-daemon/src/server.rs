@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use downpour_engine::{SingleStream, StorageLayout};
+use downpour_engine::{SegmentedDownload, StorageLayout};
 use downpour_http::{H1H2Backend, TransportMode};
 use downpour_ipc::{
     CommandHandler, DownloadId, DownloadView, ErrorData, LocalStream, PROTOCOL_VERSION, Request,
@@ -18,6 +18,34 @@ use downpour_ipc::{
 };
 use thiserror::Error;
 use url::Url;
+
+/// Connections used when a client does not ask for a number.
+///
+/// One, deliberately: S3's pool is fixed rather than measured, so a default above one would open
+/// connections nobody asked for and no evidence justifies. The adaptive controller that earns a
+/// higher number is S4 (I-7).
+pub const DEFAULT_CONNECTIONS: usize = 1;
+
+/// Hard ceiling on a client-requested connection count.
+///
+/// The user's setting is a ceiling, and this is the ceiling on the ceiling: a client asking for
+/// hundreds of connections is asking to be rate-limited or blocked by the origin, which makes the
+/// download slower and is the failure I-7 exists to prevent.
+pub const MAX_CONNECTIONS: usize = 16;
+
+/// How many connections a client's request actually turns into.
+///
+/// A ceiling, never a target (I-7). `None` means the client expressed no preference and gets
+/// [`DEFAULT_CONNECTIONS`]; zero is not a preference, it is a request for a pool that cannot make
+/// progress, and is refused rather than silently read as one.
+#[must_use]
+pub fn effective_connections(requested: Option<u16>) -> Option<usize> {
+    match requested {
+        Some(0) => None,
+        Some(requested) => Some(usize::from(requested).min(MAX_CONNECTIONS)),
+        None => Some(DEFAULT_CONNECTIONS),
+    }
+}
 
 /// Filesystem and fixed-pool settings owned by one daemon instance.
 #[derive(Clone, Debug)]
@@ -64,25 +92,14 @@ impl TransferDaemon {
                 return rpc_error("invalid_url", "download URL is not HTTP(S)", false, None);
             }
         };
-        match params.options.connections {
-            Some(0) => {
-                return rpc_error(
-                    "invalid_connections",
-                    "connection count must be greater than zero",
-                    false,
-                    None,
-                );
-            }
-            None | Some(1) => {}
-            Some(_) => {
-                return rpc_error(
-                    "segmented_execution_not_ready",
-                    "daemon completion is not yet wired to the segmented worker pool",
-                    false,
-                    None,
-                );
-            }
-        }
+        let Some(connections) = effective_connections(params.options.connections) else {
+            return rpc_error(
+                "invalid_connections",
+                "connection count must be greater than zero",
+                false,
+                None,
+            );
+        };
         let id = match fresh_download_id() {
             Ok(id) => id,
             Err(message) => return rpc_error("id_generation_failed", message, true, None),
@@ -120,7 +137,11 @@ impl TransferDaemon {
         tokio::spawn(async move {
             update_state(&registry, &task_id, WireState::Probing, 0, None, None);
             let outcome = match H1H2Backend::new(transport_mode) {
-                Ok(backend) => SingleStream::new(backend).download(url, &layout).await,
+                Ok(backend) => {
+                    SegmentedDownload::new(std::sync::Arc::new(backend), connections)
+                        .download(url, &layout)
+                        .await
+                }
                 Err(_) => {
                     update_state(
                         &registry,

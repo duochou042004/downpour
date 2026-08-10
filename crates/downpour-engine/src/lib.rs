@@ -12,7 +12,12 @@
         clippy::panic,
         clippy::todo,
         clippy::unimplemented,
-        clippy::unreachable
+        clippy::unreachable,
+        // A debug print in a library crate is noise on a user's terminal that no log level can
+        // turn off, and it is how a temporary probe survives review — one did, in this crate's
+        // segmented orchestration, and was committed. Library code reports through `tracing`.
+        clippy::print_stdout,
+        clippy::print_stderr
     )
 )]
 
@@ -23,11 +28,13 @@ use downpour_intervals::{Interval, IntervalMap, IntervalMapError, IntervalState,
 use thiserror::Error;
 
 pub mod download;
+pub mod segmented;
 pub mod storage_sink;
 pub mod worker_pool;
 pub mod writer_service;
 
 pub use download::{DownloadError, SingleStream, StorageLayout};
+pub use segmented::SegmentedDownload;
 pub use storage_sink::{Artifacts, StorageSink};
 
 /// Default lower bound for either half of a split grant.

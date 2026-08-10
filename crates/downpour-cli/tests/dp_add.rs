@@ -9,12 +9,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use downpour_corpus::content::Content;
-use downpour_corpus::server::{PathologyServer, Protocol, RangeBehaviour, ServerSpec};
+use downpour_corpus::server::{DigestSpec, PathologyServer, Protocol, RangeBehaviour, ServerSpec};
 use downpour_daemon::server::{TransferConfig, TransferDaemon, serve_connection};
 use downpour_http::TransportMode;
 use downpour_ipc::LocalListener;
 
 const SIZE: u64 = 256 * 1024;
+/// Four workers need four grants at or above `DEFAULT_MIN_SPLIT_BYTES` (1 MiB), so the smallest
+/// representation this pool will divide four ways is 8 MiB. Below the floor a split costs more in
+/// round trips than it saves, which is why `SIZE` downloads on one connection however many are
+/// asked for — see the companion assertion below.
+const SEGMENTED_SIZE: u64 = 8 * 1024 * 1024;
 
 fn spec() -> ServerSpec {
     ServerSpec {
@@ -115,12 +120,17 @@ impl Drop for DaemonHarness {
 }
 
 fn dp_add(url: &str, scratch: &Scratch, daemon: &DaemonHarness) -> Run {
+    dp_add_with(url, scratch, daemon, &[])
+}
+
+fn dp_add_with(url: &str, scratch: &Scratch, daemon: &DaemonHarness, extra: &[&str]) -> Run {
     let mut command = Command::new(dp_binary());
     command
         .arg("add")
         .arg(url)
         .arg("--output-dir")
         .arg(scratch.path())
+        .args(extra)
         .env("DOWNPOUR_RUNTIME_ROOT", &daemon.runtime_root);
     let output = command.output().expect("dp runs");
     Run {
@@ -277,5 +287,164 @@ fn dp_reports_a_version_and_a_help_text() {
     assert!(
         text.contains("add"),
         "the add subcommand must be discoverable: {text}"
+    );
+}
+
+/// S3-T16 — the daemon actually performs a segmented download.
+///
+/// Until this landed, `downpour-daemon` ran `SingleStream` for every transfer and refused any
+/// connection count above one with `segmented_execution_not_ready`. The allocator, writer service
+/// and worker pool existed and were tested, and no user could reach them (B-40). This is the proof
+/// that the product path and the engine path are the same path.
+#[tokio::test(flavor = "multi_thread")]
+async fn dp_add_with_four_connections_segments_the_transfer_and_lands_byte_exact() {
+    let server = PathologyServer::start(ServerSpec {
+        content: Content::new(42, SEGMENTED_SIZE),
+        ..ServerSpec::default()
+    })
+    .await
+    .expect("server starts");
+    let scratch = Scratch::new("segmented");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
+
+    let run = dp_add_with(
+        &server.entry_url(),
+        &scratch,
+        &daemon,
+        &["--connections", "4"],
+    );
+
+    assert_eq!(run.code, Some(0), "stderr was: {}", run.stderr);
+    assert_eq!(scratch.entries(), vec!["content"]);
+    let bytes = std::fs::read(scratch.path().join("content")).expect("final file is readable");
+    assert_eq!(
+        u64::try_from(bytes.len()).expect("length fits u64"),
+        SEGMENTED_SIZE,
+        "the segmented path produced a file of the wrong length"
+    );
+    assert_eq!(
+        Content::new(42, SEGMENTED_SIZE).first_mismatch(0, &bytes),
+        None,
+        "silent corruption through the segmented daemon path"
+    );
+
+    // The file being right is necessary and not sufficient: a daemon that quietly ran one stream
+    // would produce exactly the same file. The server is what can tell them apart.
+    let ranged = server
+        .requests()
+        .iter()
+        .filter(|request| {
+            request
+                .header("range")
+                .is_some_and(|value| value != "bytes=0-0")
+        })
+        .count();
+    assert!(
+        ranged >= 4,
+        "four connections must produce at least four ranged requests, saw {ranged}: {:?}",
+        server
+            .requests()
+            .iter()
+            .map(|request| request.header("range"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        server.maximum_simultaneous_connections() >= 2,
+        "a segmented transfer must have had more than one connection open at once, peak was {}",
+        server.maximum_simultaneous_connections()
+    );
+}
+
+/// The other half of the ceiling rule: asking for connections does not create them.
+///
+/// A representation too small to divide at `DEFAULT_MIN_SPLIT_BYTES` runs on one connection
+/// however many were requested. Splitting it would cost more round trips and handshakes than the
+/// parallelism could return (`docs/03-transfer-engine-spec.md` §4.2).
+#[tokio::test(flavor = "multi_thread")]
+async fn dp_add_below_the_split_floor_uses_one_connection_however_many_are_asked_for() {
+    let server = PathologyServer::start(spec()).await.expect("server starts");
+    let scratch = Scratch::new("below-floor");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
+
+    let run = dp_add_with(
+        &server.entry_url(),
+        &scratch,
+        &daemon,
+        &["--connections", "8"],
+    );
+
+    assert_eq!(run.code, Some(0), "stderr was: {}", run.stderr);
+    let bytes = std::fs::read(scratch.path().join("content")).expect("final file is readable");
+    assert_eq!(Content::new(42, SIZE).first_mismatch(0, &bytes), None);
+    let ranged = server
+        .requests()
+        .iter()
+        .filter(|request| {
+            request
+                .header("range")
+                .is_some_and(|value| value != "bytes=0-0")
+        })
+        .count();
+    assert_eq!(
+        ranged,
+        1,
+        "a 256 KiB representation is below the 1 MiB split floor and must be fetched once: {:?}",
+        server
+            .requests()
+            .iter()
+            .map(|request| request.header("range"))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// I-4 on the segmented path: verified before it is named, with no fast path around it.
+///
+/// The pool refuses incomplete coverage on its own, so a truncated segmented transfer never
+/// reaches the rename. A digest mismatch is different: every byte arrived, the interval map is
+/// complete, the length on disk is right, and the file is still not the representation the server
+/// meant to send. Only the completion sequence can tell, which is why removing it leaves every
+/// other test green.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_segmented_transfer_whose_digest_disagrees_is_not_given_the_final_name() {
+    let server = PathologyServer::start(ServerSpec {
+        content: Content::new(42, SEGMENTED_SIZE),
+        // Well-formed, correct algorithm, wrong bytes — the shape a mid-transfer substitution or a
+        // cache serving a stale representation produces.
+        digest: Some(DigestSpec::Literal(
+            "sha-256=:UjfWbtkjaXhFXHo0IdcHqDcgSv5hDkCLnYCPUcYbHnk=:".to_owned(),
+        )),
+        ..ServerSpec::default()
+    })
+    .await
+    .expect("server starts");
+    let scratch = Scratch::new("segmented-digest");
+    let daemon = DaemonHarness::start(scratch.path(), TransportMode::Http1Only).await;
+
+    let run = dp_add_with(
+        &server.entry_url(),
+        &scratch,
+        &daemon,
+        &["--connections", "4"],
+    );
+
+    assert_ne!(run.code, Some(0), "stdout was: {}", run.stdout);
+    assert!(
+        run.stderr.contains("unverified"),
+        "the refusal must name verification, not a generic failure: {}",
+        run.stderr
+    );
+    assert!(
+        !scratch.entries().contains(&"content".to_owned()),
+        "a file that failed verification must not wear the final name: {:?}",
+        scratch.entries()
+    );
+    // The part file is evidence for a later resume and is deliberately not deleted (docs/04 §6).
+    assert!(
+        scratch
+            .entries()
+            .iter()
+            .any(|name| name.ends_with(".dppart")),
+        "the partial file must survive as resumable evidence: {:?}",
+        scratch.entries()
     );
 }

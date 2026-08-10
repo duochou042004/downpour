@@ -428,18 +428,67 @@ async fn worker_handles_advance_sequentially_and_payload_limits_fail_before_io()
     assert_eq!(writer.next_offset(), 5);
     let events_before_rejection = state.lock().unwrap().events.clone();
 
-    let error = writer
-        .write(vec![0; MAX_WRITE_BLOCK_BYTES + 1])
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        WriterServiceError::BlockTooLarge {
-            actual,
-            maximum: MAX_WRITE_BLOCK_BYTES,
-        } if actual == MAX_WRITE_BLOCK_BYTES + 1
-    ));
-    assert_eq!(state.lock().unwrap().events, events_before_rejection);
+    let _ = events_before_rejection;
+    service.shutdown().await.unwrap();
+}
+
+/// A body chunk larger than one queue payload is split, not refused.
+///
+/// A real response does not arrive in convenient pieces: on a fast link a single chunk out of the
+/// HTTP body can be several hundred kilobytes. Refusing it failed the whole transfer with a sink
+/// error, which is how a 256 KiB fixture passed every test while an 8 MiB download over loopback
+/// could not complete. The queue stays bounded in bytes because the handle does the splitting, and
+/// no command it sends exceeds the limit.
+#[tokio::test]
+async fn a_payload_larger_than_one_queue_block_is_split_rather_than_refused() {
+    let worker = WorkerId::new(42);
+    // Two full blocks and a short remainder, so the split loop runs more than once and its last
+    // piece is not block-sized either.
+    let oversized = MAX_WRITE_BLOCK_BYTES * 2 + 7;
+    let total = u64::try_from(oversized).expect("length fits u64");
+    let (service, state, _, _) = service(total, 1, 2);
+    let assigned = service.allocate(worker, quiesced(&[worker])).await.unwrap();
+    let mut writer: GrantWriter = service.writer_for(&grant(&assigned));
+
+    let payload: Vec<u8> = (0..oversized)
+        .map(|index| u8::try_from(index % 251).expect("modulus fits u8"))
+        .collect();
+    let receipt = writer.write(payload.clone()).await.unwrap();
+    assert_eq!(
+        receipt.range(),
+        &(0..total),
+        "the receipt must describe the whole payload, not the last piece of it"
+    );
+    assert_eq!(writer.next_offset(), total);
+
+    // Bounded in bytes, which is the property the limit exists for: three commands, none above
+    // the limit, together covering the payload exactly once and in order.
+    let writes: Vec<(u64, usize)> = state
+        .lock()
+        .unwrap()
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Write { offset, bytes } => Some((*offset, bytes.len())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        writes.len(),
+        3,
+        "expected three bounded writes, got {writes:?}"
+    );
+    assert!(
+        writes.iter().all(|(_, len)| *len <= MAX_WRITE_BLOCK_BYTES),
+        "a queued payload exceeded the byte bound: {writes:?}"
+    );
+    let mut cursor = 0;
+    for (offset, len) in &writes {
+        assert_eq!(*offset, cursor, "writes must be contiguous: {writes:?}");
+        cursor += u64::try_from(*len).expect("length fits u64");
+    }
+    assert_eq!(cursor, total, "the pieces must cover the payload exactly");
+
     service.shutdown().await.unwrap();
 }
 

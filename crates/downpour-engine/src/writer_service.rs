@@ -9,12 +9,15 @@
 use std::collections::BTreeSet;
 use std::io;
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use downpour_intervals::WorkerId;
+use downpour_storage::completion::{CompletionError, Sealed, verify_and_rename};
 use downpour_storage::writer::{
     DurableBlock, DurableData, DurableJournal, DurableWriter, WriterError,
 };
+use downpour_types::ContentDigest;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
@@ -109,14 +112,6 @@ pub enum WriterServiceError {
     /// A zero-capacity channel cannot provide a rendezvous or bounded queue.
     #[error("writer queue capacity must be greater than zero")]
     ZeroQueueCapacity,
-    /// A single queued payload exceeded the documented byte bound.
-    #[error("write block of {actual} bytes exceeds the {maximum}-byte queue payload limit")]
-    BlockTooLarge {
-        /// Submitted payload length.
-        actual: usize,
-        /// Maximum accepted payload length.
-        maximum: usize,
-    },
     /// Sequential cursor arithmetic overflowed the file-offset domain.
     #[error("grant cursor overflow")]
     CursorOverflow,
@@ -161,6 +156,15 @@ pub enum WriterServiceError {
     /// The durable writer rejected or failed a storage operation.
     #[error("durable writer command failed: {0}")]
     Writer(#[from] WriterError),
+    /// The download did not pass verification and was not renamed.
+    #[error("{path} did not pass verification and was not renamed: {source}")]
+    Unverified {
+        /// Part file that stays exactly where it is, as evidence for a later resume.
+        path: PathBuf,
+        /// Which of docs/04 section 6's checks refused.
+        #[source]
+        source: CompletionError,
+    },
 }
 
 type ServiceResult<T> = Result<T, WriterServiceError>;
@@ -198,6 +202,12 @@ enum Command {
     },
     Shutdown {
         reply: Reply<WriterSnapshot>,
+    },
+    Complete {
+        part_path: PathBuf,
+        final_path: PathBuf,
+        digest: Option<ContentDigest>,
+        reply: Reply<Sealed>,
     },
 }
 
@@ -317,6 +327,30 @@ impl WriterService {
         self.send(Command::Snapshot { reply }, receiver).await
     }
 
+    /// Run docs/04 section 6 against this download: verify, seal the journal, then rename.
+    ///
+    /// The actor performs it because ADR-0019 makes the actor the owner of the part file, the
+    /// journal and the canonical interval map, and I-4's sequence needs all three at once. Doing
+    /// it anywhere else would mean moving the writer out from under its own invariant.
+    pub async fn complete(
+        &self,
+        part_path: impl AsRef<Path>,
+        final_path: impl AsRef<Path>,
+        digest: Option<ContentDigest>,
+    ) -> ServiceResult<Sealed> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(
+            Command::Complete {
+                part_path: part_path.as_ref().to_path_buf(),
+                final_path: final_path.as_ref().to_path_buf(),
+                digest,
+                reply,
+            },
+            receiver,
+        )
+        .await
+    }
+
     /// Flush, snapshot, and stop the actor.
     pub async fn shutdown(mut self) -> ServiceResult<WriterSnapshot> {
         let (reply, receiver) = oneshot::channel();
@@ -387,6 +421,14 @@ impl<D: DurableData, J: DurableJournal> StateActor<D, J> {
                 }
                 Command::Snapshot { reply } => {
                     drop(reply.send(Ok(self.snapshot())));
+                }
+                Command::Complete {
+                    part_path,
+                    final_path,
+                    digest,
+                    reply,
+                } => {
+                    drop(reply.send(self.complete(&part_path, &final_path, digest.as_ref())));
                 }
                 Command::Shutdown { reply } => {
                     let result = self.shutdown();
@@ -470,6 +512,39 @@ impl<D: DurableData, J: DurableJournal> StateActor<D, J> {
         self.flush()?;
         Ok(self.snapshot())
     }
+
+    /// I-4, with no fast path around it: length on disk, gap-free coverage, the server's digest
+    /// when one was offered, then the journal seal, then the rename.
+    fn complete(
+        &mut self,
+        part_path: &Path,
+        final_path: &Path,
+        digest: Option<&ContentDigest>,
+    ) -> ServiceResult<Sealed> {
+        // Staged bytes are bytes the journal has not committed, so a coverage check would be
+        // reading a map that claims less than the file holds. Flush first, always.
+        self.flush()?;
+        let total_length = self
+            .allocator
+            .intervals()
+            .last()
+            .map_or(0, downpour_intervals::Interval::end);
+        let next_sequence = self.writer.next_sequence();
+        let intervals = self.allocator.interval_map_mut().clone();
+        verify_and_rename(
+            part_path,
+            final_path,
+            total_length,
+            &intervals,
+            digest,
+            self.writer.journal_mut(),
+            next_sequence,
+        )
+        .map_err(|source| WriterServiceError::Unverified {
+            path: part_path.to_path_buf(),
+            source,
+        })
+    }
 }
 
 /// Worker-facing sequential cursor over one allocator-issued grant.
@@ -491,27 +566,50 @@ impl GrantWriter {
     }
 
     /// Append one owned payload at the current grant cursor.
+    ///
+    /// A payload larger than [`MAX_WRITE_BLOCK_BYTES`] is split across several commands rather
+    /// than refused. A real response does not arrive in convenient pieces — one chunk of an HTTP
+    /// body over a fast link can be several hundred kilobytes — and refusing it fails the whole
+    /// transfer. The queue stays bounded in bytes, which is what the limit is for, because no
+    /// command sent from here ever carries more than the limit.
     pub async fn write(&mut self, bytes: Vec<u8>) -> ServiceResult<WriteReceipt> {
-        if bytes.len() > MAX_WRITE_BLOCK_BYTES {
-            return Err(WriterServiceError::BlockTooLarge {
-                actual: bytes.len(),
-                maximum: MAX_WRITE_BLOCK_BYTES,
-            });
-        }
         let length = u64::try_from(bytes.len()).map_err(|_| WriterServiceError::CursorOverflow)?;
-        let end = self
-            .next_offset
+        let start = self.next_offset;
+        let end = start
             .checked_add(length)
             .ok_or(WriterServiceError::CursorOverflow)?;
+        // Checked against the whole payload before any of it is queued, so an out-of-grant write
+        // is refused as a value rather than half-applied.
         if end > self.grant.range().end {
             return Err(WriterServiceError::BeyondGrant {
-                start: self.next_offset,
+                start,
                 end,
                 grant_start: self.grant.range().start,
                 grant_end: self.grant.range().end,
             });
         }
 
+        let mut durable = Vec::new();
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let tail = rest.split_off(rest.len().min(MAX_WRITE_BLOCK_BYTES));
+            let piece = std::mem::replace(&mut rest, tail);
+            let receipt = self.write_one(piece).await?;
+            durable.extend(receipt.durable);
+        }
+        Ok(WriteReceipt {
+            range: start..end,
+            durable,
+        })
+    }
+
+    /// Queue exactly one bounded command and advance the cursor by what it accepted.
+    async fn write_one(&mut self, bytes: Vec<u8>) -> ServiceResult<WriteReceipt> {
+        let length = u64::try_from(bytes.len()).map_err(|_| WriterServiceError::CursorOverflow)?;
+        let end = self
+            .next_offset
+            .checked_add(length)
+            .ok_or(WriterServiceError::CursorOverflow)?;
         let (reply, receiver) = oneshot::channel();
         self.sender
             .send(Command::Write {
