@@ -284,6 +284,9 @@ pub struct ServerCase {
     /// Close the listener after this many connections, refusing every later connect at the kernel.
     #[serde(default)]
     pub stop_listening_after_connections: Option<usize>,
+    /// `Retry-After` on a response rejected by `concurrent_requests` or by the connection cap.
+    #[serde(default)]
+    pub cap_retry_after: Option<String>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     #[serde(default)]
     pub inconsistent_total_after: Option<usize>,
@@ -716,6 +719,16 @@ pub struct Expect {
     /// behind the origin from one that never asked for concurrency at all.
     #[serde(default)]
     pub min_waited_requests: Option<usize>,
+    /// The run must have taken at least this long.
+    ///
+    /// The only assertion in the corpus that is about the clock, and it exists for the one claim
+    /// an outcome cannot carry: that a wait the server asked for was actually taken. The same file
+    /// arrives whether the engine honoured `Retry-After` or substituted its own curve, so nothing
+    /// else can tell them apart. Safe as a *floor* only because every other delay in a corpus run
+    /// is collapsed to milliseconds; it must never be paired with an upper bound, which would make
+    /// it a performance test on shared CI hardware.
+    #[serde(default)]
+    pub min_elapsed_ms: Option<u64>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -925,6 +938,7 @@ impl Case {
                     reject: matches!(limit.then, OverLimitCase::Reject),
                 }),
             stop_listening_after_connections: self.server.stop_listening_after_connections,
+            cap_retry_after: self.server.cap_retry_after.clone(),
             slow_segment: self.server.slow_segment.map(|slow| SlowSegment {
                 from_offset: slow.from_offset.0,
                 delay: std::time::Duration::from_millis(slow.delay_ms),

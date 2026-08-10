@@ -297,6 +297,8 @@ pub struct ServerSpec {
     /// different signal from an accepted-then-dropped socket and a much faster one: an instant
     /// error spends a retry budget in milliseconds where a silent drop takes a timeout.
     pub stop_listening_after_connections: Option<usize>,
+    /// `Retry-After` to send with a response the cap rejected.
+    pub cap_retry_after: Option<String>,
     /// After this many ranged responses, report a different total in `Content-Range`.
     ///
     /// The segmented shape of a representation changing underneath a transfer, and the most
@@ -362,6 +364,7 @@ impl Default for ServerSpec {
             slow_segment: None,
             concurrent_requests: None,
             stop_listening_after_connections: None,
+            cap_retry_after: None,
             inconsistent_total_after: None,
             close_without_responding: 0,
             close_after_requests: None,
@@ -1453,8 +1456,14 @@ async fn serve_http11(
                 Ok(permit) => _in_flight = Some(permit),
                 Err(_) if spec.concurrent_requests.is_some_and(|limit| limit.reject) => {
                     connection.observation.capped.fetch_add(1, Ordering::SeqCst);
+                    let retry_after = spec
+                        .cap_retry_after
+                        .as_ref()
+                        .map(|after| format!("Retry-After: {after}\r\n"))
+                        .unwrap_or_default();
                     let response = format!(
-                        "HTTP/1.1 429 {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 429 {}\r\n{retry_after}Content-Length: 0\r\nConnection: \
+                         close\r\n\r\n",
                         reason_phrase(429)
                     );
                     let _ = stream.write_all(response.as_bytes()).await;

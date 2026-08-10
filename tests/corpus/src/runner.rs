@@ -329,6 +329,7 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
     // Fast retry delays: see RetryPolicy::fast_for_tests for why, and note Retry-After is still
     // honoured exactly, so `retry-after-is-honoured` still waits the second the server asked for.
     let layout = StorageLayout::new(scratch, &journal_dir);
+    let started = std::time::Instant::now();
     let outcome = match case.connections {
         // A connection pathology needs more than one connection open to exist at all.
         Some(connections) if connections > 1 => {
@@ -344,6 +345,22 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
                 .await
         }
     };
+
+    let elapsed = started.elapsed();
+
+    // ---- expectation: a wait the server asked for was actually taken
+    //
+    // The only clock assertion in the corpus, and a floor only. See Expect::min_elapsed_ms.
+    if let Some(expected) = case.expect.min_elapsed_ms {
+        let seen = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        if seen < expected {
+            failures.push(format!(
+                "expected the transfer to take at least {expected} ms because the server asked \
+                 for that wait, but it took {seen} ms; the engine substituted its own back-off \
+                 for what the rate limiter requested"
+            ));
+        }
+    }
 
     // ---- expectation: final state and error kind
     match (&outcome, case.expect.final_state) {
