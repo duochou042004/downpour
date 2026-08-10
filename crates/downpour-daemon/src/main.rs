@@ -37,14 +37,26 @@ async fn run() -> anyhow::Result<()> {
         .with_context(|| format!("creating runtime root {}", runtime_root.display()))?;
     std::fs::create_dir_all(&journal_dir)
         .with_context(|| format!("creating journal directory {}", journal_dir.display()))?;
+    std::fs::create_dir_all(&data_root)
+        .with_context(|| format!("creating data root {}", data_root.display()))?;
     let target_dir = std::env::current_dir().context("resolving the default target directory")?;
     let listener = LocalListener::bind(&runtime_root).context("binding the local IPC endpoint")?;
     let token = listener.session_token();
-    let daemon = TransferDaemon::new(TransferConfig {
+    let mut daemon = TransferDaemon::new(TransferConfig {
         target_dir,
         journal_dir,
+        database_path: data_root.join("downpour.db"),
         transport_mode: TransportMode::Negotiated,
-    });
+    })
+    .context("opening the daemon metadata store")?;
+
+    // docs/04 §5 step 1 and step 3. Establishes what is true after an unclean shutdown and stops:
+    // nothing is auto-resumed, because the user may be on a metered connection or mid-something,
+    // and resuming ten downloads on boot is a good way to be uninstalled.
+    let recovered = daemon.recover().context("reconciling unclean downloads")?;
+    if recovered > 0 {
+        tracing::info!(recovered, "downloads recovered and left paused");
+    }
     loop {
         let stream = listener
             .accept()

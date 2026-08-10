@@ -97,7 +97,7 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         let final_path = crate::download::final_path_for(layout.target_dir(), &remote);
         crate::download::refuse_occupied_target(&final_path).await?;
         let journal_dir = layout.journal_dir().to_path_buf();
-        let transfer_id = crate::download::transfer_id_for(&remote.final_url);
+        let transfer_id = layout.transfer_id_for_remote(&remote);
         let validator_hash = crate::download::validator_hash_of(&remote.validator);
         let target = final_path.clone();
         let (writer, artifacts) = tokio::task::spawn_blocking(move || {
@@ -169,7 +169,7 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
     ) -> Result<PathBuf, DownloadError> {
         let final_path = crate::download::final_path_for(layout.target_dir(), remote);
         crate::download::refuse_occupied_target(&final_path).await?;
-        let transfer_id = crate::download::transfer_id_for(&remote.final_url);
+        let transfer_id = layout.transfer_id_for_remote(remote);
         let validator_hash = crate::download::validator_hash_of(&remote.validator);
         let journal_path = journal_path_for(layout.journal_dir(), transfer_id);
 

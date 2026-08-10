@@ -40,6 +40,7 @@ pub const JOURNAL_EXTENSION: &str = "dpj";
 pub struct StorageLayout {
     target_dir: PathBuf,
     journal_dir: PathBuf,
+    transfer_id: Option<[u8; 16]>,
 }
 
 impl StorageLayout {
@@ -48,7 +49,28 @@ impl StorageLayout {
         Self {
             target_dir: target_dir.into(),
             journal_dir: journal_dir.into(),
+            transfer_id: None,
         }
+    }
+
+    /// Name this download's journal from an allocated id rather than from its URL.
+    ///
+    /// Without this the journal is named from a hash of the final URL, which is what the engine
+    /// had to do while nothing allocated ids. The daemon does allocate them, and its startup
+    /// recovery looks for `<journal_dir>/<download-id>.dpj` exactly as docs/04 §1 lays it out —
+    /// so a daemon-owned transfer that let the engine derive the name would write a journal its
+    /// own recovery could never find, and no download would ever be resumable (B-51).
+    #[must_use]
+    pub fn with_transfer_id(mut self, transfer_id: [u8; 16]) -> Self {
+        self.transfer_id = Some(transfer_id);
+        self
+    }
+
+    /// The id this download's journal is named from, given its probed identity.
+    #[must_use]
+    pub fn transfer_id_for_remote(&self, remote: &RemoteObject) -> [u8; 16] {
+        self.transfer_id
+            .unwrap_or_else(|| transfer_id_for(&remote.final_url))
     }
 
     /// Where the finished file and its `.dppart` live.
@@ -215,7 +237,7 @@ impl<B: TransferProtocol> SingleStream<B> {
         let journal_dir = layout.journal_dir().to_path_buf();
         let target_for_sink = final_path.clone();
         let total_length = remote.total_length;
-        let transfer_id = transfer_id_for(&remote.final_url);
+        let transfer_id = layout.transfer_id_for_remote(&remote);
         let validator_hash = validator_hash_of(&remote.validator);
         let digest = remote.digest.clone();
         let target = tokio::task::spawn_blocking(move || {

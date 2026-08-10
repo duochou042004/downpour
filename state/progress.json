@@ -2257,6 +2257,27 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "A verification technique that can quietly delete the thing being verified will eventually produce a green mutation run against code that is not there"
+    },
+    {
+      "id": "B-50",
+      "text": "FOUND 2026-08-10 while mapping stored lifecycle states onto the wire. downpour_storage DownloadState has AwaitingRefresh and downpour_ipc WireState does not, so the daemon cannot report a download that is waiting for a fresh URL. Nothing in S3 produces that state — URL refresh is S8 — so it is mapped to Paused with a comment rather than silently to Stalled, which would be wrong in a way a client acts on: Stalled promises automatic progress under backoff and AwaitingRefresh is waiting for a human or the extension. The wire needs the variant before S8 makes the state reachable, and adding one is an IPC contract change that belongs with the protocol version bump rather than here.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A state the daemon can be in and cannot report is a client that shows the wrong thing; collapsing it into a neighbouring state quietly is worse than the gap"
+    },
+    {
+      "id": "B-51",
+      "text": "FIXED 2026-08-10, and it would have made cross-process resume impossible. The engine named recovery journals from a blake3 of the final URL, with a comment saying it did so because no id allocator existed until the daemon owned one; the daemon startup pass looks for <journal_dir>/<download-id>.dpj exactly as docs/04 section 1 lays it out. So the engine wrote journals the daemon own recovery could never find, and every recovered download would have failed as journal-unreadable. StorageLayout::with_transfer_id now lets the allocated id name the journal, the daemon passes its own download id, and the URL hash stays the fallback for callers that have no allocator. Caught by the first end-to-end restart test rather than by reading, which is the argument for writing that test before the plumbing rather than after.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "Two components deriving the same filename by different rules is not a naming preference; it is a resume that silently never finds anything"
+    },
+    {
+      "id": "B-52",
+      "text": "FIXED 2026-08-10 in the same change. The daemon wrote a download record after the probe and never updated it, so a finished transfer stayed Transferring in the store forever. The next process then reconciled it against a part file that had been renamed away and failed it as storage.part-file-missing — a completed download reported as broken. Records now reach Completed or Failed when the transfer ends. Separately, recover() seeded the registry only from downloads reconciliation touched, and reconciliation deliberately skips terminal ones, so a completed download vanished from download.get after a restart; the registry is now seeded from the store, which is what it is a cache of.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A durable record that only ever describes the beginning of a transfer is worse than none, because recovery believes it"
     }
   ],
   "session_log": [

@@ -102,8 +102,10 @@ impl DaemonHarness {
         let daemon = TransferDaemon::new(TransferConfig {
             target_dir: target_dir.to_path_buf(),
             journal_dir,
+            database_path: runtime_root.join("downpour.db"),
             transport_mode: mode,
-        });
+        })
+        .expect("the daemon opens its store");
         let task = tokio::spawn(async move {
             let Ok(stream) = listener.accept().await else {
                 return;

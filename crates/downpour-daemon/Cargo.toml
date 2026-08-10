@@ -19,6 +19,7 @@ downpour-engine = { workspace = true }
 downpour-http = { workspace = true }
 downpour-ipc = { workspace = true }
 downpour-storage = { workspace = true }
+downpour-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing = { workspace = true }
@@ -26,6 +27,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 url = { workspace = true }
 
 [dev-dependencies]
+downpour-corpus = { workspace = true }
 downpour-intervals = { workspace = true }
 downpour-types = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
