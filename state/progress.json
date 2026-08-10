@@ -4074,6 +4074,25 @@
         "state/progress.json"
       ],
       "left_in_progress": "current_stage remains S3, untouched. S3-T9 still todo. B-25 now has all three storage primitives it needs — PartFile::open_existing no-follow, JournalFile::open_existing append-with-header-check, and recovery::durable_state — plus SegmentAllocator::resume and If-Range on every ranged request. Two pieces remain and neither is started. First, SegmentedDownload::resume: adopt existing artifacts, seed the allocator from durable_state, run the pool, complete. Second and larger, daemon persistence: TransferDaemon keeps an in-memory BTreeMap, never writes to a MetadataStore, and downpourd never calls recover_all, so a restart cannot find a transfer at all. Persisting requires the probe result, so it belongs after the probe rather than at add time, which means the daemon owns probe then persist then transfer instead of handing the whole thing to the engine. That is a real restructuring and should be its own change. Three PRs stacked: 41, 43, 44."
+    },
+    {
+      "at": "2026-08-10T00:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "Added SegmentedDownload::resume, the engine half of B-25. Nothing carries in memory across the process boundary: the journal is the only authority for what is durable, the allocator is rebuilt from it through recovery::durable_state and SegmentAllocator::resume, and every byte it proved is unreachable to every grant the resumed transfer issues. The recorded identity is used rather than a fresh probe, because re-probing swaps the validator captured when the existing bytes were fetched for one that trivially matches whatever the server serves now. Both artifacts are reopened no-follow and the journal header is compared rather than trusted, since anything may have happened to those paths while the process was gone; a journal whose length disagrees with the recorded identity is refused rather than resolved in favour of one. The proof leaves two durable runs with a hole between them and a hole at the end — the shape a killed multi-worker transfer leaves, not a single truncated prefix — and asserts no requested range overlaps a durable one, the file is byte-exact, and every ranged request stayed conditional. Mutations: seeding the allocator fresh instead of from the journal makes it red with resume requesting 4194304-6291456, a range the journal already proved; adding a re-probe also makes it red, though by observing the extra unconditional probe request rather than by catching a splice, which is worth knowing about that assertion. Local 344/344 with 3 skipped.",
+      "tasks_touched": [
+        "S3-T9",
+        "B-25"
+      ],
+      "files_touched": [
+        "crates/downpour-engine/src/segmented.rs",
+        "crates/downpour-engine/src/download.rs",
+        "crates/downpour-engine/src/lib.rs",
+        "crates/downpour-engine/src/storage_sink.rs",
+        "crates/downpour-engine/tests/segmented_resume.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "current_stage remains S3, untouched. S3-T9 still todo, with only the daemon half of B-25 outstanding. The engine can now resume a segmented transfer from durable artifacts given the recorded identity; what no component can yet do is find that identity after a restart. TransferDaemon keeps an in-memory BTreeMap, never writes to a MetadataStore, and downpourd never calls recover_all. Persisting needs the probe result, so it belongs after the probe rather than at add time, which means moving probe-then-persist-then-transfer into the daemon instead of handing the whole call to the engine, and download.resume then reconciling and calling SegmentedDownload::resume. That is a lifecycle restructuring and should be its own change with its own failing test. Three PRs stacked: 41, 43, 44."
     }
   ],
   "metrics": {
