@@ -12,6 +12,12 @@ use downpour_intervals::{IntervalState, WorkerId};
 use downpour_storage::journal::FramedRecord;
 use downpour_storage::writer::{DurableData, DurableJournal, DurableWriter, WriterError};
 
+/// The named workers, quiesced. These tests drive the actor directly and never have a request in
+/// flight, so every worker they use may have its grant split.
+fn quiesced(workers: &[WorkerId]) -> std::collections::BTreeSet<WorkerId> {
+    workers.iter().copied().collect()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Event {
     Write { offset: u64, bytes: Vec<u8> },
@@ -216,7 +222,7 @@ fn assert_interval(
 async fn receipts_claim_completion_only_after_the_journal_sync_boundary() {
     let worker = WorkerId::new(1);
     let (service, state, _, _) = service(8, 1, 4);
-    let assigned = service.allocate(worker).await.unwrap();
+    let assigned = service.allocate(worker, quiesced(&[worker])).await.unwrap();
     assert!(assigned.durable().is_empty());
     let mut writer = service.writer_for(&grant(&assigned));
 
@@ -257,11 +263,17 @@ async fn split_is_a_durability_fence_and_stale_bytes_never_reach_storage() {
     let first = WorkerId::new(11);
     let second = WorkerId::new(12);
     let (service, state, _, _) = service(64, 16, 4);
-    let first_assignment = service.allocate(first).await.unwrap();
+    let first_assignment = service
+        .allocate(first, quiesced(&[first, second]))
+        .await
+        .unwrap();
     let mut stale_writer = service.writer_for(&grant(&first_assignment));
     stale_writer.write(vec![0xA1; 8]).await.unwrap();
 
-    let second_assignment = service.allocate(second).await.unwrap();
+    let second_assignment = service
+        .allocate(second, quiesced(&[first, second]))
+        .await
+        .unwrap();
     assert_eq!(second_assignment.durable().len(), 1);
     assert_eq!(second_assignment.durable()[0].range(), &(0..8));
     assert_eq!(allocation(&second_assignment).grant().range(), &(36..64));
@@ -315,7 +327,7 @@ async fn split_is_a_durability_fence_and_stale_bytes_never_reach_storage() {
 async fn abandon_flushes_staged_bytes_before_reclaiming_only_the_remainder() {
     let worker = WorkerId::new(21);
     let (service, state, _, _) = service(16, 1, 4);
-    let assigned = service.allocate(worker).await.unwrap();
+    let assigned = service.allocate(worker, quiesced(&[worker])).await.unwrap();
     let mut writer = service.writer_for(&grant(&assigned));
     writer.write(b"kept".to_vec()).await.unwrap();
 
@@ -353,8 +365,14 @@ async fn the_owned_command_queue_reaches_its_exact_configured_bound() {
     let first = WorkerId::new(31);
     let second = WorkerId::new(32);
     let (service, _, gate, _) = service(64, 16, 1);
-    let first_assignment = service.allocate(first).await.unwrap();
-    let second_assignment = service.allocate(second).await.unwrap();
+    let first_assignment = service
+        .allocate(first, quiesced(&[first, second]))
+        .await
+        .unwrap();
+    let second_assignment = service
+        .allocate(second, quiesced(&[first, second]))
+        .await
+        .unwrap();
     let mut first_writer = service.writer_for(&grant(&first_assignment));
     let mut second_writer = service.writer_for(&grant(&second_assignment));
     gate.enable();
@@ -397,7 +415,7 @@ async fn the_owned_command_queue_reaches_its_exact_configured_bound() {
 async fn worker_handles_advance_sequentially_and_payload_limits_fail_before_io() {
     let worker = WorkerId::new(41);
     let (service, state, _, _) = service(16, 1, 2);
-    let assigned = service.allocate(worker).await.unwrap();
+    let assigned = service.allocate(worker, quiesced(&[worker])).await.unwrap();
     let mut writer: GrantWriter = service.writer_for(&grant(&assigned));
     assert_eq!(writer.next_offset(), 0);
 
@@ -429,7 +447,7 @@ async fn worker_handles_advance_sequentially_and_payload_limits_fail_before_io()
 async fn shutdown_flushes_before_exit_and_cloned_worker_handles_observe_the_stop() {
     let worker = WorkerId::new(51);
     let (service, _, _, drop_gate) = service(8, 1, 2);
-    let assigned = service.allocate(worker).await.unwrap();
+    let assigned = service.allocate(worker, quiesced(&[worker])).await.unwrap();
     let mut writer = service.writer_for(&grant(&assigned));
     writer.write(b"done".to_vec()).await.unwrap();
 
@@ -472,7 +490,7 @@ async fn backend_failures_are_returned_and_zero_capacity_is_refused() {
     let allocator = SegmentAllocator::new(total_length, 1).unwrap();
     let service = WriterService::start(writer, allocator, 1).unwrap();
     let worker = WorkerId::new(61);
-    let assigned = service.allocate(worker).await.unwrap();
+    let assigned = service.allocate(worker, quiesced(&[worker])).await.unwrap();
     let mut worker_writer = service.writer_for(&grant(&assigned));
 
     let error = worker_writer.write(b"fail".to_vec()).await.unwrap_err();

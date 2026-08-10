@@ -36,6 +36,34 @@ struct ProtocolState {
     maximum_active: usize,
 }
 
+/// Decrements on drop, so a request the pool *cancels* stops counting as active immediately.
+/// Decrementing at the end of `fetch_range` instead would leave every cancelled request active
+/// forever and inflate `maximum_active` above the configured worker ceiling.
+struct ActiveRequest {
+    state: Arc<Mutex<ProtocolState>>,
+}
+
+impl ActiveRequest {
+    fn enter(state: &Arc<Mutex<ProtocolState>>, request: ObservedRequest) -> Self {
+        {
+            let mut held = state.lock().unwrap();
+            held.requests.push(request);
+            held.active += 1;
+            let active = held.active;
+            held.maximum_active = held.maximum_active.max(active);
+        }
+        Self {
+            state: Arc::clone(state),
+        }
+    }
+}
+
+impl Drop for ActiveRequest {
+    fn drop(&mut self) {
+        self.state.lock().unwrap().active -= 1;
+    }
+}
+
 #[derive(Clone, Debug)]
 struct FakeProtocol {
     remote: RemoteObject,
@@ -107,16 +135,14 @@ impl TransferProtocol for FakeProtocol {
         request: RangeRequest,
         sink: &mut RangeSink,
     ) -> Result<RangeOutcome, TransferError> {
-        let rendezvous = {
-            let mut state = self.state.lock().unwrap();
-            state.requests.push(ObservedRequest {
+        let _active = ActiveRequest::enter(
+            &self.state,
+            ObservedRequest {
                 range: request.range,
                 if_range: request.if_range.clone(),
-            });
-            state.active += 1;
-            state.maximum_active = state.maximum_active.max(state.active);
-            self.rendezvous.clone()
-        };
+            },
+        );
+        let rendezvous = self.rendezvous.clone();
         if request.range.is_some()
             && let Some(rendezvous) = rendezvous
         {
@@ -154,7 +180,6 @@ impl TransferProtocol for FakeProtocol {
         } else {
             sink.accept(bytes).await
         };
-        self.state.lock().unwrap().active -= 1;
         accepted.map_err(|source| TransferError::Sink {
             url: request.url.clone(),
             source,
@@ -626,8 +651,21 @@ async fn a_split_fences_partial_source_bytes_before_reassigning_its_remainder() 
     );
 }
 
+/// S3-C3 — connections are reused, not re-established, after a segment completes.
+///
+/// The count is taken once the transfer is over. An earlier version of this proof read the
+/// handshake count at a mid-transfer instant and compared connection identifiers, which asserted
+/// reqwest's idle-pool checkout order rather than anything this engine decides; it passed on Linux
+/// and failed on Windows on identical source (B-39). What the engine does control is how many
+/// times it *has* to reconnect, and that is what this measures.
+///
+/// The arithmetic is exact and has no tolerance in it. Two workers open two connections. Worker 0
+/// finishes its half and is given a split of worker 1's, which costs worker 1 its connection
+/// because a response cannot be shortened underneath itself — one reconnect, and one only. Worker
+/// 0's second request must ride its existing connection. Three handshakes for four requests; a
+/// pool that re-established after every completed segment would need four.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_finished_worker_reuses_its_http11_connection_for_a_new_split() {
+async fn a_completed_segment_costs_no_new_handshake_and_a_split_costs_exactly_one() {
     const LENGTH: u64 = 64;
     let content = Content::new(73, LENGTH);
     let server = PathologyServer::start_holding_first_range(
@@ -639,11 +677,18 @@ async fn a_finished_worker_reuses_its_http11_connection_for_a_new_split() {
     )
     .await
     .unwrap();
-    let backend = Arc::new(H1H2Backend::new(TransportMode::Http1Only).unwrap());
-    let remote = backend
+
+    // The probe runs on its own client so the connection it opens cannot be confused with, or
+    // silently donated to, the pool's workers. This test is about the pool's handshakes.
+    let prober = H1H2Backend::new(TransportMode::Http1Only).unwrap();
+    let remote = prober
         .probe(ProbeRequest::new(server.entry_url().parse().unwrap()))
         .await
         .unwrap();
+    let probe_connections = server.accepted_connection_count();
+    let probe_requests = server.requests().len();
+
+    let backend = Arc::new(H1H2Backend::new(TransportMode::Http1Only).unwrap());
     let pool = FixedWorkerPool::new(Arc::clone(&backend), 2).unwrap();
     let (writer, stored, _) = writer_service(LENGTH, 16);
     let writer = Arc::new(writer);
@@ -653,13 +698,16 @@ async fn a_finished_worker_reuses_its_http11_connection_for_a_new_split() {
             .await
     });
 
+    // Establish the scenario before measuring it: worker 1 is genuinely held mid-response, and
+    // worker 0 genuinely finished its own grant, so the reassignment below is a real split of live
+    // work rather than a leftover pending range.
     tokio::time::timeout(
-        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(5),
         server.wait_until_range_held(),
     )
     .await
-    .expect("the slow initial grant must reach the server gate");
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+    .expect("the second grant must reach the server gate");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let snapshot = writer.snapshot().await.unwrap();
             if snapshot.allocator().intervals().iter().any(|interval| {
@@ -673,39 +721,60 @@ async fn a_finished_worker_reuses_its_http11_connection_for_a_new_split() {
         }
     })
     .await
-    .expect("worker 0 must durably finish its initial grant while worker 1 remains held");
+    .expect("worker 0 must durably finish its initial grant while worker 1 is held");
 
-    let accepted_before_reassignment = server.accepted_connection_count();
-    assert_eq!(accepted_before_reassignment, 2);
-    let initial_fast = request_with_range(&server.requests(), "bytes=0-31")
-        .expect("worker 0's initial exact range was recorded");
-    let reassigned = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+    // Wait for the scheduler to actually reassign before releasing the gate. Releasing first lets
+    // worker 1 finish its original grant, and then there is no split to measure.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            if let Some(request) = request_with_range(&server.requests(), "bytes=48-63") {
-                break request;
+            if request_with_range(&server.requests(), "bytes=48-63").is_some() {
+                break;
             }
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("the finished worker must receive a split before the slow peer is released");
-    assert_eq!(
-        reassigned.connection_id(),
-        initial_fast.connection_id(),
-        "the finished worker's new split must use its existing keep-alive connection"
-    );
-    assert_eq!(
-        server.accepted_connection_count(),
-        accepted_before_reassignment,
-        "issuing the split must not perform another handshake"
-    );
+    .expect("worker 0 must be given a split of the held peer's segment");
 
     server.release_held_range();
-    let report = tokio::time::timeout(std::time::Duration::from_secs(2), &mut transfer)
+    let report = tokio::time::timeout(std::time::Duration::from_secs(10), &mut transfer)
         .await
-        .expect("the pool must finish after the controlled peer is released")
+        .expect("the pool must finish once the held peer is released")
         .unwrap()
         .unwrap();
+
+    let ranged_requests = server.requests().len() - probe_requests;
+    let handshakes = server.accepted_connection_count() - probe_connections;
+    assert_eq!(
+        ranged_requests,
+        4,
+        "expected worker 0's grant, worker 1's grant, worker 0's split and worker 1's remainder, \
+         got {:?}",
+        server.requests()
+    );
+    assert_eq!(
+        handshakes, 3,
+        "two workers plus exactly one reconnect for the peer whose segment was split; a pool \
+         that re-established a connection after a completed segment would need {ranged_requests}"
+    );
+    assert_eq!(
+        server.held_range_count(),
+        1,
+        "the gate must have stopped exactly one response"
+    );
+
+    // The reassignment has to be the split it claims to be, or the counts above describe a
+    // different scenario.
+    assert!(
+        request_with_range(&server.requests(), "bytes=48-63").is_some(),
+        "worker 0 must have been given the upper half of worker 1's segment: {:?}",
+        server.requests()
+    );
+    assert!(
+        request_with_range(&server.requests(), "bytes=32-47").is_some(),
+        "worker 1 must have been restarted on the half it kept: {:?}",
+        server.requests()
+    );
     assert_eq!(
         report
             .workers()
@@ -724,7 +793,6 @@ async fn a_finished_worker_reuses_its_http11_connection_for_a_new_split() {
         LENGTH
     );
     assert_eq!(*stored.lock().unwrap(), content.range(0, LENGTH));
-    assert_eq!(server.held_range_count(), 1);
 
     let writer = Arc::try_unwrap(writer).unwrap_or_else(|_| panic!("transfer retained writer"));
     let snapshot = writer.shutdown().await.unwrap();

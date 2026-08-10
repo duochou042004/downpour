@@ -6,6 +6,7 @@
 //! the actor's dedicated thread, while the bounded channel provides explicit back-pressure to
 //! asynchronous workers.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::ops::Range;
 use std::time::Duration;
@@ -168,7 +169,11 @@ type Reply<T> = oneshot::Sender<ServiceResult<T>>;
 enum Command {
     Allocate {
         worker: WorkerId,
+        quiesced: BTreeSet<WorkerId>,
         reply: Reply<AllocationReceipt>,
+    },
+    SplitCandidate {
+        reply: Reply<Option<WorkerId>>,
     },
     Write {
         worker: WorkerId,
@@ -240,10 +245,33 @@ impl WriterService {
     }
 
     /// Request work for one idle worker.
-    pub async fn allocate(&self, worker: WorkerId) -> ServiceResult<AllocationReceipt> {
+    ///
+    /// `quiesced` names the workers with no request in flight, which are the only ones whose
+    /// grants may be split. See [`SegmentAllocator::allocate`].
+    pub async fn allocate(
+        &self,
+        worker: WorkerId,
+        quiesced: BTreeSet<WorkerId>,
+    ) -> ServiceResult<AllocationReceipt> {
         let (reply, receiver) = oneshot::channel();
-        self.send(Command::Allocate { worker, reply }, receiver)
-            .await
+        self.send(
+            Command::Allocate {
+                worker,
+                quiesced,
+                reply,
+            },
+            receiver,
+        )
+        .await
+    }
+
+    /// Ask which worker would have to be stopped before a split could happen.
+    ///
+    /// See [`SegmentAllocator::split_candidate`]. Answered at the actor's serialization point, so
+    /// the answer reflects every durable completion accepted before the question.
+    pub async fn split_candidate(&self) -> ServiceResult<Option<WorkerId>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(Command::SplitCandidate { reply }, receiver).await
     }
 
     /// Create a sequential worker-facing handle for an allocator-issued grant.
@@ -329,8 +357,15 @@ impl<D: DurableData, J: DurableJournal> StateActor<D, J> {
     fn run(mut self, mut receiver: mpsc::Receiver<Command>) {
         while let Some(command) = receiver.blocking_recv() {
             match command {
-                Command::Allocate { worker, reply } => {
-                    drop(reply.send(self.allocate(worker)));
+                Command::Allocate {
+                    worker,
+                    quiesced,
+                    reply,
+                } => {
+                    drop(reply.send(self.allocate(worker, &quiesced)));
+                }
+                Command::SplitCandidate { reply } => {
+                    drop(reply.send(Ok(self.allocator.split_candidate())));
                 }
                 Command::Write {
                     worker,
@@ -363,9 +398,13 @@ impl<D: DurableData, J: DurableJournal> StateActor<D, J> {
         }
     }
 
-    fn allocate(&mut self, worker: WorkerId) -> ServiceResult<AllocationReceipt> {
+    fn allocate(
+        &mut self,
+        worker: WorkerId,
+        quiesced: &BTreeSet<WorkerId>,
+    ) -> ServiceResult<AllocationReceipt> {
         let durable = self.flush()?;
-        let allocation = self.allocator.allocate(worker)?;
+        let allocation = self.allocator.allocate(worker, quiesced)?;
         Ok(AllocationReceipt {
             allocation,
             durable,
