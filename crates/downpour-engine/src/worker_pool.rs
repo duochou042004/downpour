@@ -5,7 +5,7 @@
 //! known, locally addressable representation. Every other input is a one-request whole-stream
 //! fallback.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -229,6 +229,12 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
     }
 
     /// Execute a segmented plan against the sole writer service.
+    ///
+    /// A worker that finishes its segment asks for more work. Pending work is handed over with
+    /// nothing interrupted. When there is none, exactly one peer — the owner of the segment the
+    /// allocator would split — is stopped so its grant can be shortened safely; every other
+    /// connection keeps transferring. See [`SegmentAllocator::allocate`] for why a live grant
+    /// cannot be shortened underneath its own response.
     pub async fn execute_segmented(
         &self,
         remote: &RemoteObject,
@@ -244,63 +250,66 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
         };
         self.ensure_writer_identity(writer, total_length).await?;
 
-        let mut grants = BTreeMap::new();
+        let mut pool_workers = Vec::with_capacity(workers);
         for index in 0..workers {
             let raw = u64::try_from(index).map_err(|_| PoolError::WorkerIdOverflow { index })?;
-            let worker = WorkerId::new(raw);
-            let receipt = writer.allocate(worker).await?;
+            pool_workers.push(WorkerId::new(raw));
+        }
+        let everyone = pool_workers.iter().copied().collect::<BTreeSet<_>>();
+
+        // Nothing is running yet, so every worker is quiesced and each request after the first
+        // splits the largest grant issued so far.
+        let mut grants = BTreeMap::new();
+        for worker in &pool_workers {
+            let receipt = writer.allocate(*worker, everyone.clone()).await?;
             let Some(allocation) = receipt.allocation() else {
                 break;
             };
             if let Some(shortened) = allocation.shortened() {
                 grants.insert(shortened.worker(), shortened.clone());
             }
-            grants.insert(worker, allocation.grant().clone());
+            grants.insert(*worker, allocation.grant().clone());
         }
         if grants.is_empty() {
             return Err(PoolError::IncompleteCoverage);
         }
 
-        let allocated_workers = grants.keys().copied().collect::<Vec<_>>();
-        let mut tasks = JoinSet::new();
-        let mut running = BTreeMap::new();
+        let mut scheduler = Scheduler {
+            backend: Arc::clone(&self.backend),
+            writer,
+            url: remote.final_url.clone(),
+            total_length,
+            workers: pool_workers,
+            tasks: JoinSet::new(),
+            running: BTreeMap::new(),
+            idle: VecDeque::new(),
+            parked: BTreeSet::new(),
+            stopping: None,
+            reports: Vec::new(),
+        };
+        // A worker the representation was too small to give a share of is parked rather than
+        // forgotten, so an abandon that puts bytes back into Pending can still reach it.
+        for worker in scheduler.workers.clone() {
+            if !grants.contains_key(&worker) {
+                scheduler.parked.insert(worker);
+            }
+        }
         for grant in grants.into_values() {
-            spawn_ranged_worker(
-                &mut tasks,
-                &mut running,
-                Arc::clone(&self.backend),
-                grant,
-                writer,
-                remote.final_url.clone(),
-                total_length,
-            );
+            scheduler.spawn(grant);
         }
 
         let mut ticker = tokio::time::interval(JOURNAL_FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ticker.tick().await;
-        let mut reports = Vec::with_capacity(allocated_workers.len());
-        let mut candidate_idle = None;
-        let mut draining_for_reassignment = false;
-        let mut cancelled_attempts: Vec<RunningWorker> = Vec::new();
         let retry_policy = RetryPolicy::default();
         let mut transient_failures = 0_u32;
 
         loop {
-            if tasks.is_empty() {
+            scheduler.service_idle_workers().await?;
+
+            if scheduler.tasks.is_empty() {
                 writer.flush().await?;
                 let snapshot = writer.snapshot().await?;
-                for attempt in cancelled_attempts.drain(..) {
-                    let bytes = completed_bytes_inside(snapshot.allocator(), attempt.grant.range());
-                    if bytes > 0 {
-                        reports.push(WorkerReport {
-                            worker: attempt.grant.worker(),
-                            bytes,
-                            elapsed: attempt.started.elapsed(),
-                        });
-                    }
-                }
-
                 if snapshot
                     .allocator()
                     .intervals()
@@ -309,110 +318,73 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
                 {
                     break;
                 }
-
-                let Some(idle) = candidate_idle.take() else {
-                    return Err(PoolError::IncompleteCoverage);
-                };
-                draining_for_reassignment = false;
-                let receipt = writer.allocate(idle).await?;
-                if let Some(allocation) = receipt.allocation() {
-                    // Run the recipient before restarting a shortened source. Besides avoiding a
-                    // second writer on the source's old response, this gives the idle HTTP/1.1
-                    // worker first use of the keep-alive connection it just finished on.
-                    spawn_ranged_worker(
-                        &mut tasks,
-                        &mut running,
-                        Arc::clone(&self.backend),
-                        allocation.grant().clone(),
-                        writer,
-                        remote.final_url.clone(),
-                        total_length,
-                    );
-                    continue;
-                }
-
-                let snapshot = writer.snapshot().await?;
-                for grant in active_grants(snapshot.allocator()) {
-                    spawn_ranged_worker(
-                        &mut tasks,
-                        &mut running,
-                        Arc::clone(&self.backend),
-                        grant,
-                        writer,
-                        remote.final_url.clone(),
-                        total_length,
-                    );
-                }
-                if tasks.is_empty() {
+                // Nothing is running and no idle worker could be given work. Any interval still
+                // owned by a worker without a task is one this pool must finish itself.
+                let revived = scheduler.revive_untasked_grants(&snapshot);
+                if revived == 0 {
                     return Err(PoolError::IncompleteCoverage);
                 }
+                continue;
             }
 
             tokio::select! {
-                joined = tasks.join_next() => {
+                joined = scheduler.tasks.join_next() => {
                     let Some(joined) = joined else {
-                        self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
+                        scheduler.reclaim_after_failure().await?;
                         return Err(PoolError::IncompleteCoverage);
                     };
                     match joined {
                         Ok(WorkerEvent::Finished { worker, result: Ok(report) }) => {
-                            running.remove(&worker);
-                            reports.push(report);
-                            if candidate_idle.is_none() {
-                                candidate_idle = Some(worker);
-                            }
-                            if !running.is_empty() && !draining_for_reassignment {
-                                draining_for_reassignment = true;
-                                for active in running.values_mut() {
-                                    if let Some(cancel) = active.cancel.take() {
-                                        let _cancelled_before_completion = cancel.send(()).is_ok();
-                                    }
-                                }
-                            }
+                            scheduler.running.remove(&worker);
+                            scheduler.reports.push(report);
+                            scheduler.make_idle(worker);
                         }
                         Ok(WorkerEvent::Finished { worker, result: Err(error) }) => {
-                            let Some(attempt) = running.remove(&worker) else {
-                                self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
+                            let Some(attempt) = scheduler.running.remove(&worker) else {
+                                scheduler.reclaim_after_failure().await?;
                                 return Err(PoolError::IncompleteCoverage);
                             };
                             let Some(kind) = retryable_worker_failure(&error) else {
-                                self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
+                                scheduler.reclaim_after_failure().await?;
                                 return Err(error);
                             };
                             match retry_policy.decide(kind, transient_failures, None) {
                                 RetryDecision::GiveUp => {
-                                    self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
+                                    scheduler.reclaim_after_failure().await?;
                                     return Err(error);
                                 }
                                 RetryDecision::RetryAfter(delay) => {
                                     transient_failures = transient_failures.saturating_add(1);
 
                                     // The failed fetch is gone, but its accepted prefix may still
-                                    // be staged. Fence it before returning only the unwritten
-                                    // suffix to Pending. Live peers are cancelled and drained
-                                    // before allocation can split any of their grants.
+                                    // be staged. Abandon fences it durably and returns only the
+                                    // unwritten suffix to Pending, so the attempt's byte count is
+                                    // exact at this moment and the remainder is available to any
+                                    // idle worker. Peers are untouched: none of them was writing
+                                    // inside this grant.
                                     writer.abandon(worker).await?;
-                                    cancelled_attempts.push(attempt);
-                                    candidate_idle = Some(worker);
-                                    draining_for_reassignment = true;
-                                    for active in running.values_mut() {
-                                        if let Some(cancel) = active.cancel.take() {
-                                            let _cancelled_before_recovery = cancel.send(()).is_ok();
-                                        }
-                                    }
+                                    scheduler.record_stopped_attempt(&attempt).await?;
+                                    scheduler.make_idle(worker);
+                                    scheduler.unpark_everyone();
                                     tokio::time::sleep(delay).await;
                                 }
                             }
                         }
                         Ok(WorkerEvent::Cancelled { worker }) => {
-                            let Some(attempt) = running.remove(&worker) else {
-                                self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
+                            let Some(attempt) = scheduler.running.remove(&worker) else {
+                                scheduler.reclaim_after_failure().await?;
                                 return Err(PoolError::IncompleteCoverage);
                             };
-                            cancelled_attempts.push(attempt);
+                            // Stopped so its segment could be split. Fence what it accepted before
+                            // measuring it: after the split, bytes inside the old grant belong to
+                            // two workers and the count would no longer be attributable.
+                            scheduler.record_stopped_attempt(&attempt).await?;
+                            if scheduler.stopping == Some(worker) {
+                                scheduler.stopping = None;
+                            }
                         }
                         Err(source) => {
-                            self.reclaim_after_failure(&mut tasks, &mut running, writer, &allocated_workers).await?;
+                            scheduler.reclaim_after_failure().await?;
                             return Err(PoolError::WorkerJoin { source });
                         }
                     }
@@ -432,7 +404,8 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
         {
             return Err(PoolError::IncompleteCoverage);
         }
-        reports.sort_by_key(|report| report.worker());
+        let mut reports = scheduler.reports;
+        reports.sort_by_key(WorkerReport::worker);
         Ok(PoolReport {
             plan,
             workers: reports,
@@ -498,19 +471,162 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
         }
         Ok(())
     }
+}
 
-    async fn reclaim_after_failure(
-        &self,
-        tasks: &mut JoinSet<WorkerEvent>,
-        running: &mut BTreeMap<WorkerId, RunningWorker>,
-        writer: &WriterService,
-        workers: &[WorkerId],
-    ) -> Result<(), PoolError> {
-        tasks.abort_all();
-        while tasks.join_next().await.is_some() {}
-        running.clear();
-        for worker in workers {
-            writer.abandon(*worker).await?;
+/// One segmented execution's live scheduling state.
+///
+/// The pool owns worker task lifecycle; the allocator owns byte ownership. This type is the
+/// boundary between them, and its whole job is to keep the two facts that must agree in step:
+/// which workers have a request in flight, and which grants therefore may not be shortened.
+struct Scheduler<'a, B> {
+    backend: Arc<B>,
+    writer: &'a WriterService,
+    url: url::Url,
+    total_length: u64,
+    workers: Vec<WorkerId>,
+    tasks: JoinSet<WorkerEvent>,
+    running: BTreeMap<WorkerId, RunningWorker>,
+    /// Workers holding no grant, in the order they became free.
+    idle: VecDeque<WorkerId>,
+    /// Workers that asked for work and found none to take. They come back when an abandon puts
+    /// bytes back into Pending; until then, waking them would only re-ask the same question.
+    parked: BTreeSet<WorkerId>,
+    /// The one peer stopped so its segment can be split, until its cancellation is observed.
+    stopping: Option<WorkerId>,
+    reports: Vec<WorkerReport>,
+}
+
+impl<B: TransferProtocol + 'static> Scheduler<'_, B> {
+    /// Workers with no request in flight. Only these may have a grant shortened by a split.
+    fn quiesced(&self) -> BTreeSet<WorkerId> {
+        self.workers
+            .iter()
+            .copied()
+            .filter(|worker| !self.running.contains_key(worker))
+            .collect()
+    }
+
+    fn spawn(&mut self, grant: Grant) {
+        let worker = grant.worker();
+        self.idle.retain(|idle| *idle != worker);
+        self.parked.remove(&worker);
+        spawn_ranged_worker(
+            &mut self.tasks,
+            &mut self.running,
+            Arc::clone(&self.backend),
+            grant,
+            self.writer,
+            self.url.clone(),
+            self.total_length,
+        );
+    }
+
+    fn make_idle(&mut self, worker: WorkerId) {
+        self.parked.remove(&worker);
+        if !self.idle.contains(&worker) {
+            self.idle.push_back(worker);
+        }
+    }
+
+    fn unpark_everyone(&mut self) {
+        for worker in std::mem::take(&mut self.parked) {
+            if !self.idle.contains(&worker) {
+                self.idle.push_back(worker);
+            }
+        }
+    }
+
+    /// Give every free worker something to do, stopping at most one peer to make room.
+    ///
+    /// The loop stops as soon as an idle worker cannot be served, because the only way to serve it
+    /// is to wait for the peer this call just stopped.
+    async fn service_idle_workers(&mut self) -> Result<(), PoolError> {
+        while let Some(worker) = self.idle.front().copied() {
+            let quiesced = self.quiesced();
+            let receipt = self.writer.allocate(worker, quiesced).await?;
+            if let Some(allocation) = receipt.allocation() {
+                let grant = allocation.grant().clone();
+                let shortened = allocation.shortened().cloned();
+                self.spawn(grant);
+                // A split shortens a quiesced worker's grant. It has no task by construction, so
+                // it needs one again for the half it kept — otherwise those bytes have an owner
+                // and no fetcher, and the transfer stalls short of complete.
+                if let Some(shortened) = shortened {
+                    self.spawn(shortened);
+                }
+                continue;
+            }
+
+            // No pending work, and nothing already quiesced is large enough to divide.
+            let Some(candidate) = self.writer.split_candidate().await? else {
+                self.idle.pop_front();
+                self.parked.insert(worker);
+                continue;
+            };
+            if !self.running.contains_key(&candidate) {
+                // The allocator declined a quiesced candidate, so nothing here is divisible.
+                self.idle.pop_front();
+                self.parked.insert(worker);
+                continue;
+            }
+            if self.stopping.is_some() {
+                // One peer is already stopping for a split. Stopping a second would cost a
+                // connection for work that has not been asked for yet.
+                break;
+            }
+            if let Some(active) = self.running.get_mut(&candidate)
+                && let Some(cancel) = active.cancel.take()
+            {
+                let _stopped_for_a_split = cancel.send(()).is_ok();
+            }
+            self.stopping = Some(candidate);
+            break;
+        }
+        Ok(())
+    }
+
+    /// Record what a stopped attempt actually delivered, at the moment its ownership is fenced.
+    ///
+    /// Measured here rather than at the end of the transfer because the grant's bytes stop being
+    /// attributable to this attempt as soon as the range is split or reclaimed. Nothing inside a
+    /// grant is `Complete` when it is issued, so every completed byte inside it now is this
+    /// attempt's own.
+    async fn record_stopped_attempt(&mut self, attempt: &RunningWorker) -> Result<(), PoolError> {
+        self.writer.flush().await?;
+        let snapshot = self.writer.snapshot().await?;
+        let bytes = completed_bytes_inside(snapshot.allocator(), attempt.grant.range());
+        if bytes > 0 {
+            self.reports.push(WorkerReport {
+                worker: attempt.grant.worker(),
+                bytes,
+                elapsed: attempt.started.elapsed(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Give a task back to every grant whose worker has none. Returns how many were revived.
+    fn revive_untasked_grants(
+        &mut self,
+        snapshot: &crate::writer_service::WriterSnapshot,
+    ) -> usize {
+        let grants = active_grants(snapshot.allocator());
+        let mut revived = 0;
+        for grant in grants {
+            if !self.running.contains_key(&grant.worker()) {
+                self.spawn(grant);
+                revived += 1;
+            }
+        }
+        revived
+    }
+
+    async fn reclaim_after_failure(&mut self) -> Result<(), PoolError> {
+        self.tasks.abort_all();
+        while self.tasks.join_next().await.is_some() {}
+        self.running.clear();
+        for worker in self.workers.clone() {
+            self.writer.abandon(worker).await?;
         }
         Ok(())
     }

@@ -16,6 +16,7 @@
     )
 )]
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use downpour_intervals::{Interval, IntervalMap, IntervalMapError, IntervalState, WorkerId};
@@ -124,10 +125,22 @@ impl SegmentAllocator {
 
     /// Allocate work to an idle worker using Stage 3's deterministic policy.
     ///
-    /// Pending work wins. When no pending interval remains, the largest active interval is split
-    /// in half if both resulting grants meet [`Self::min_split_bytes`]. Equal-sized candidates are
-    /// resolved toward the lowest offset so replaying the same state produces the same decision.
-    pub fn allocate(&mut self, worker: WorkerId) -> Result<Option<Allocation>, AllocatorError> {
+    /// Pending work wins. When no pending interval remains, the largest interval **owned by a
+    /// quiesced worker** is split in half if both resulting grants meet [`Self::min_split_bytes`].
+    /// Equal-sized candidates are resolved toward the lowest offset so replaying the same state
+    /// produces the same decision.
+    ///
+    /// `quiesced` names the workers that have no request in flight. Shortening the grant of a
+    /// worker whose response is still arriving would make the rest of that response fail against
+    /// a boundary it has never seen, so a scheduler must stop a worker before its segment can be
+    /// split — see [`Self::split_candidate`] for choosing which one. The restriction lives here
+    /// rather than in the scheduler so that "a live grant is never shortened underneath its own
+    /// response" is a property of the allocator instead of a convention the caller must remember.
+    pub fn allocate(
+        &mut self,
+        worker: WorkerId,
+        quiesced: &BTreeSet<WorkerId>,
+    ) -> Result<Option<Allocation>, AllocatorError> {
         if self.intervals.intervals().iter().any(|interval| {
             matches!(
                 interval.state(),
@@ -148,7 +161,7 @@ impl SegmentAllocator {
         let Some(required) = self.min_split_bytes.checked_mul(2) else {
             return Ok(None);
         };
-        let Some((range, source)) = self.preferred_active() else {
+        let Some((range, source)) = self.preferred_active(|owner| quiesced.contains(&owner)) else {
             return Ok(None);
         };
         if range.end - range.start < required {
@@ -184,6 +197,19 @@ impl SegmentAllocator {
         self.intervals.abandon(worker)
     }
 
+    /// The worker whose grant the next split would target, ignoring whether it is quiesced.
+    ///
+    /// A scheduler with an idle worker and no pending work calls this to learn which single peer
+    /// it must stop before [`Self::allocate`] can split anything. `None` means no active interval
+    /// is large enough to split, so the idle worker retires instead — stopping a peer for a
+    /// segment that cannot be divided would cost a connection and buy nothing.
+    #[must_use]
+    pub fn split_candidate(&self) -> Option<WorkerId> {
+        let required = self.min_split_bytes.checked_mul(2)?;
+        let (range, worker) = self.preferred_active(|_| true)?;
+        (range.end - range.start >= required).then_some(worker)
+    }
+
     fn preferred_range(&self, predicate: impl Fn(&IntervalState) -> bool) -> Option<Range<u64>> {
         self.intervals
             .intervals()
@@ -197,12 +223,17 @@ impl SegmentAllocator {
             .map(|interval| interval.start()..interval.end())
     }
 
-    fn preferred_active(&self) -> Option<(Range<u64>, WorkerId)> {
+    fn preferred_active(
+        &self,
+        eligible: impl Fn(WorkerId) -> bool,
+    ) -> Option<(Range<u64>, WorkerId)> {
         self.intervals
             .intervals()
             .iter()
             .filter_map(|interval| match interval.state() {
-                IntervalState::InProgress { worker } => Some((interval, *worker)),
+                IntervalState::InProgress { worker } if eligible(*worker) => {
+                    Some((interval, *worker))
+                }
                 _ => None,
             })
             .max_by(|(left, _), (right, _)| {
