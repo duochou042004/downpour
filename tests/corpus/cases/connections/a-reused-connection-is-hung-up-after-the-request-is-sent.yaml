@@ -1,0 +1,25 @@
+id: a-reused-connection-is-hung-up-after-the-request-is-sent
+category: connections
+description: >
+  The keep-alive race, which is the most common connection failure on the real internet and the
+  hardest to see in a test. The origin serves the first request on a connection correctly, and
+  hangs up on the second — after reading it. The client picked a pooled connection that looked
+  alive, wrote a request into it, and got end-of-file back.
+  Distinct from `keep-alive-closed-after-one-request`, where the origin closes as soon as it has
+  answered: there the socket is already dead when the client reaches for it, and nothing was ever
+  in flight. Here the request was committed before the close, so recovery means deciding that a
+  request the server may have seen is safe to send again. A `GET` is idempotent and it is; the
+  point of the case is that the decision is reached rather than the failure being propagated.
+references: ["docs/03-transfer-engine-spec.md §7", "docs/01-idm-teardown.md §3.5", "docs/09-testing-strategy.md §3.2"]
+
+server:
+  content: { size: 256KiB, seed: 147 }
+  hangup_on_reused_request: true
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # The probe's connection is the one that gets reused, so the body request is the victim: probe,
+  # the request that was swallowed, and the one that succeeded on a fresh connection.
+  min_requests: 3
+  min_connections: 2

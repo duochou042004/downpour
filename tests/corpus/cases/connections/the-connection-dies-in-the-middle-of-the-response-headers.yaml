@@ -1,0 +1,27 @@
+id: the-connection-dies-in-the-middle-of-the-response-headers
+category: connections
+description: >
+  The response starts and stops inside the header block: a status line, part of the headers, and
+  then the connection ends. The client has parsed something — enough to believe a response is
+  arriving — and it is not enough to act on.
+  This is the third point on the response timeline and the only one the corpus did not cover.
+  `a-connection-closed-before-any-response-is-retried` is the point before anything arrives, where
+  there is nothing to parse; `transient-reset-is-retried` is the point after the headers, where
+  the framing is known and a partial body can be kept. Between them is the one that a hand-written
+  parser gets wrong: a half-read header block is not a response, and treating it as one — a
+  missing `Content-Length` read as "unknown length", a truncated `Content-Range` read as absent —
+  turns a transport failure into a wrong belief about the representation.
+references: ["docs/03-transfer-engine-spec.md §7", "docs/agent/INVARIANTS.md#i-1", "docs/09-testing-strategy.md §3.2"]
+
+server:
+  content: { size: 256KiB, seed: 146 }
+  # One response only, so the pathology is finite and recovery is what the case observes.
+  close_mid_headers: 1
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # probe + the half-answered request + the retry. Two would mean nothing was interrupted.
+  min_requests: 3
+  # The interrupted response cost its connection, so the transfer cannot have run on one.
+  min_connections: 2
