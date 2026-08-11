@@ -21,11 +21,11 @@ server:
   cap_range_span: 1MiB
 
 expect:
-  # B-62. When the remainder is re-granted rather than refused, this becomes `completed` with
-  # `file_renamed: true` and a floor of seven requests — six megabytes cannot be fetched a
-  # megabyte at a time in three.
-  final_state: failed
-  error_kind: segmented_transfer
-  file_renamed: false
+  final_state: completed
+  file_renamed: true
   # The cap really narrowed something. Without this the case is an ordinary segmented download.
   min_respanned_ranges: 1
+  # Six megabytes at a megabyte a time cannot be fetched in three requests. The probe plus six is
+  # the floor; more than that is fine, because how the allocator re-grants the remainder is its
+  # business and not this case's.
+  min_requests: 7
