@@ -1,0 +1,28 @@
+id: one-node-in-the-fleet-does-not-honour-ranges
+category: ranges
+description: >
+  The probe proves ranges, three workers ask for their segments, and one of them lands on the one
+  node behind the address that was never configured for ranges. It answers `200` with the whole
+  representation while its peers answer correct `206`s.
+  Every existing case in this category asks whether the *probe* classifies an origin correctly.
+  This one is about a fleet that does not agree with itself, which only exists once more than one
+  request is in flight: the evidence was true, it is still true for two of the three workers, and
+  the third has been handed the entire file starting at byte zero to write at an offset a third of
+  the way in. Accepting it is corruption at exactly the right size, and there is no header
+  anywhere that is wrong — the `200` is the only signal, which is why I-3 makes it a hard stop
+  rather than a hint.
+references: ["docs/agent/INVARIANTS.md#i-3", "docs/agent/INVARIANTS.md#i-6", "docs/01-idm-teardown.md §3.1"]
+
+connections: 3
+
+server:
+  content: { size: 6MiB, seed: 160 }
+  # The probe is the first ranged response; the second is the unlucky worker.
+  ignore_range_at: 2
+
+expect:
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false
+  # The bad node really answered. Without this the case is an ordinary segmented download.
+  min_ranges_ignored: 1

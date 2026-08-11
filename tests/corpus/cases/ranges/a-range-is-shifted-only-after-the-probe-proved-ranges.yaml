@@ -1,0 +1,25 @@
+id: a-range-is-shifted-only-after-the-probe-proved-ranges
+category: ranges
+description: >
+  The probe is answered honestly and every worker's `206` after it describes a range 4096 bytes
+  away from the one that was asked for. The status is right, the header is well formed, the body
+  is the length it claims — and it is the wrong part of the file.
+  `content-range-mismatch` makes this claim at the probe, where it costs nothing: the mismatch is
+  seen before segmentation is permitted and no byte is ever written. Here the evidence was taken
+  cleanly and the shift arrives once workers are live and a part file exists, so the check has to
+  be applied to *every* ranged response and not only to the one that established the capability.
+  An engine that validates `Content-Range` at probe time and trusts it afterwards writes each
+  worker's body 4096 bytes from where it belongs and finishes at exactly the expected size.
+references: ["docs/agent/INVARIANTS.md#i-5", "docs/agent/INVARIANTS.md#i-2", "RFC 9110 §14.4"]
+
+connections: 3
+
+server:
+  content: { size: 6MiB, seed: 161 }
+  shift_ranges_after: 1
+  ranges: { shifted_content_range: { by: 4096 } }
+
+expect:
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false

@@ -1,0 +1,29 @@
+id: a-range-carries-the-right-headers-and-the-wrong-bytes
+category: ranges
+description: >
+  Every header is correct. The status is `206`, the `Content-Range` describes exactly the range
+  that was asked for, the `Content-Length` agrees with it, the total is right — and the bytes in
+  the body are taken from the start of the representation instead of from the requested offset.
+  This is the only case in the category that no header check can catch, and it is the reason the
+  corpus generates its content deterministically rather than storing a fixture. Every other range
+  pathology here is detected by comparing what the server *said* against what was asked; here the
+  server says nothing untrue. What stands between this and a file of exactly the right size full
+  of the wrong bytes is the digest, and the point of the case is that the digest is load-bearing
+  rather than decorative — remove it and the transfer completes, the length matches, the block map
+  is fully covered, and the file is wrong.
+references: ["docs/agent/INVARIANTS.md#i-4", "docs/09-testing-strategy.md §3.3", "docs/adr/0017"]
+
+connections: 3
+
+server:
+  content: { size: 6MiB, seed: 163 }
+  # The server states the truth about the bytes it should be sending, and sends others.
+  digest: computed
+  serve_wrong_offset: true
+
+expect:
+  final_state: failed
+  # Not a range error: nothing about the range was wrong. This is the completion check refusing a
+  # file whose every observable property except its content is correct.
+  error_kind: digest_mismatch
+  file_renamed: false

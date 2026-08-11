@@ -1,0 +1,26 @@
+id: the-origin-serves-from-the-start-of-the-range-to-the-end-of-the-file
+category: ranges
+description: >
+  The origin honours the first byte position and disregards the last: asked for `bytes=0-2097151`
+  it answers `Content-Range: bytes 0-6291455/6291456` and streams from the requested offset to the
+  end of the representation. Common in the wild — plenty of range implementations treat any range
+  as open-ended — and self-consistent, because the header honestly describes the oversized body it
+  is about to send.
+  What makes it a segmented pathology rather than a curiosity is that each worker owns a grant and
+  nothing else. A body that runs past the end of a grant is a write into the next worker's
+  territory, which is the overlapping write I-2 forbids and the one no size or coverage check can
+  see afterwards, because the file ends up exactly the right length with two writers' bytes
+  interleaved in the middle. The allocator is the only allocator: the boundary must hold against
+  the network as well as against the scheduler.
+references: ["docs/agent/INVARIANTS.md#i-2", "RFC 9110 §14.2", "docs/03-transfer-engine-spec.md §4"]
+
+connections: 3
+
+server:
+  content: { size: 6MiB, seed: 164 }
+  ignore_range_end: true
+
+expect:
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false

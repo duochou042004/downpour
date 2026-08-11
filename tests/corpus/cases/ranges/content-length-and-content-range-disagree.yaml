@@ -1,0 +1,25 @@
+id: content-length-and-content-range-disagree
+category: ranges
+description: >
+  A `206` carrying two descriptions of the same body that cannot both be true:
+  `Content-Range: bytes 0-2097151/6291456` spans 2 MiB and `Content-Length: 1048576` promises 1 MiB.
+  RFC 9110 §14.4 requires them to agree, and an appliance that rewrites one header without the
+  other produces exactly this.
+  The existing cases in this category all compare the server's `Content-Range` against the *request*.
+  This one needs no request to detect: the response contradicts itself, and which half a client
+  believes decides what it does. Believe the `Content-Range` and it waits for bytes that will never
+  arrive, or accepts a short body as a full range and leaves a hole. Believe the `Content-Length`
+  and it writes a megabyte where two were granted and reports the segment complete. Neither number
+  may be trusted over the other; the response is not usable.
+references: ["RFC 9110 §14.4", "docs/agent/INVARIANTS.md#i-1", "docs/01-idm-teardown.md §3.3"]
+
+connections: 3
+
+server:
+  content: { size: 6MiB, seed: 165 }
+  halve_content_length_on_ranges: true
+
+expect:
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false
