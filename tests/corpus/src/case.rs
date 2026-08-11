@@ -275,6 +275,14 @@ pub struct ServerCase {
     /// Serve the segment from this offset onward at a trickle, while its peers run at full speed.
     #[serde(default)]
     pub slow_segment: Option<SlowSegmentCase>,
+    /// Honour ranges for this many ranged responses, then answer every one with the whole
+    /// representation.
+    ///
+    /// Range evidence that was real when the probe took it and worthless afterwards. Distinct
+    /// from `ranges: lies`, which never honours one: there the probe refuses to segment, so the
+    /// engine never commits workers to ranges it cannot get.
+    #[serde(default)]
+    pub withdraw_ranges_after: Option<usize>,
     /// Limit how many requests may be in flight at once, across every connection.
     ///
     /// A limit on work rather than on sockets: it clears when a peer finishes, not when a
@@ -712,6 +720,18 @@ pub struct Expect {
     /// reason.
     #[serde(default)]
     pub min_delayed_chunks: Option<usize>,
+    /// At least this many ranged requests must have been answered with the whole representation.
+    #[serde(default)]
+    pub min_ranges_ignored: Option<usize>,
+    /// The server must not have written more than this many body bytes in total.
+    ///
+    /// The only observation that bounds *work* rather than outcome, and the only way to see the
+    /// first half of what I-6 warns about: "downloads the file eight times and assembles
+    /// nonsense". The second half is caught by the byte comparison; the waste is invisible to
+    /// every other assertion here, because a download that fetched the representation once per
+    /// worker and then failed looks exactly like one that failed immediately.
+    #[serde(default)]
+    pub max_body_bytes_served: Option<ByteSize>,
     /// At least this many requests must have waited for the origin's in-flight limit.
     ///
     /// A queue is invisible in the outcome: the file is identical whether the requests overlapped
@@ -939,6 +959,7 @@ impl Case {
                 }),
             stop_listening_after_connections: self.server.stop_listening_after_connections,
             cap_retry_after: self.server.cap_retry_after.clone(),
+            withdraw_ranges_after: self.server.withdraw_ranges_after,
             slow_segment: self.server.slow_segment.map(|slow| SlowSegment {
                 from_offset: slow.from_offset.0,
                 delay: std::time::Duration::from_millis(slow.delay_ms),

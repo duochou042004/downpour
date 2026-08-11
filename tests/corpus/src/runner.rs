@@ -443,6 +443,27 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             ));
         }
     }
+    if let Some(expected) = case.expect.min_ranges_ignored {
+        let seen = server.ignored_range_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected at least {expected} ranged request(s) to be answered with the whole \
+                 representation but {seen} were; range support was never withdrawn, so this case \
+                 is an ordinary segmented download"
+            ));
+        }
+    }
+    if let Some(limit) = case.expect.max_body_bytes_served {
+        let seen = server.body_bytes_served();
+        if seen > limit.0 {
+            failures.push(format!(
+                "expected the origin to serve no more than {} body bytes but it served {seen}; \
+                 the engine fetched far more than the representation, which is the waste I-6 \
+                 names when it says a client downloads the file once per connection",
+                limit.0
+            ));
+        }
+    }
     if let Some(expected) = case.expect.min_delayed_chunks {
         let seen = server.delayed_chunk_count();
         if seen < expected {

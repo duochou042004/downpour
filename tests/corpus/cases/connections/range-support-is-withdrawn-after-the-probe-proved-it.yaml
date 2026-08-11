@@ -17,6 +17,10 @@ description: >
   exactly the right size (I-3, I-6). And the origin must not be made to serve the representation
   once per worker: the waste I-6 names is the observable, so the case bounds the bytes served
   rather than only checking the outcome.
+  What the engine does today is fail the transfer, which satisfies both. It does not do the better
+  thing — re-probe, discover that ranges have gone, and finish on a single stream — and that gap is
+  recorded rather than accepted, because the alternative is asserting behaviour that does not
+  exist. The error kind below is asserted as it is, not as it should be.
 references: ["docs/agent/INVARIANTS.md#i-6", "docs/agent/INVARIANTS.md#i-3", "docs/01-idm-teardown.md §3.1", "docs/09-testing-strategy.md §3.2"]
 
 connections: 4
@@ -32,6 +36,10 @@ expect:
   file_renamed: false
   # The withdrawal really happened: ranged requests were answered with the whole representation.
   min_ranges_ignored: 1
-  # And the origin was not made to serve the file once per worker. Four workers against 8 MiB
-  # would be 32 MiB of waste if every one of them ran a full body to completion.
-  max_body_bytes_served: 16MiB
+  # And the origin was not made to serve the file once per worker. Four workers each running a
+  # full body to completion would be 32 MiB. Measured here at 393 217 bytes — one byte for the
+  # probe and 96 KiB per worker, which is socket-buffer residue written before the engine tore the
+  # response down on its headers, not body the engine consumed. The bound is 2 MiB: five times the
+  # measurement, so a platform with larger socket buffers cannot break it, and a sixteenth of the
+  # regression it exists to catch.
+  max_body_bytes_served: 2MiB

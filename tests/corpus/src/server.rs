@@ -285,6 +285,14 @@ pub struct ServerSpec {
     pub drop_at_offset: Option<u64>,
     /// Serve the segment from an offset onward at a trickle, while its peers run at full speed.
     pub slow_segment: Option<SlowSegment>,
+    /// Honour ranges for this many ranged responses, then answer every one with `200` and the
+    /// whole representation.
+    ///
+    /// Range evidence that was true when the probe took it. Distinct from [`RangeBehaviour::Lies`],
+    /// which never honours a range: there the probe observes the lie and segmentation is never
+    /// permitted, so there is no fan-out to be wrong about. Here the engine has already committed
+    /// its workers, which is the situation I-6's rationale describes.
+    pub withdraw_ranges_after: Option<usize>,
     /// Limit how many requests may be answered at once, across every connection.
     ///
     /// A limit on work rather than on sockets. It clears when a peer finishes rather than when a
@@ -362,6 +370,7 @@ impl Default for ServerSpec {
             close_after_body_bytes: None,
             drop_at_offset: None,
             slow_segment: None,
+            withdraw_ranges_after: None,
             concurrent_requests: None,
             stop_listening_after_connections: None,
             cap_retry_after: None,
@@ -510,6 +519,10 @@ struct ConnectionObservation {
     desynced: AtomicUsize,
     /// Body chunks held back by a shaper.
     delayed_chunks: AtomicUsize,
+    /// Ranged requests answered with the whole representation.
+    ranges_ignored: AtomicUsize,
+    /// Body bytes actually written, across every response.
+    body_bytes: AtomicU64,
     /// Requests that had to wait for the origin's in-flight limit.
     waited: AtomicUsize,
 }
@@ -921,6 +934,22 @@ impl PathologyServer {
         self.connections.delayed_chunks.load(Ordering::SeqCst)
     }
 
+    /// Ranged requests this server answered with the whole representation instead of the range.
+    #[must_use]
+    pub fn ignored_range_count(&self) -> usize {
+        self.connections.ranges_ignored.load(Ordering::SeqCst)
+    }
+
+    /// Body bytes this server actually wrote, summed over every response.
+    ///
+    /// What a case needs to see waste rather than outcome: a transfer that fetched the whole
+    /// representation once per worker and then failed is indistinguishable, in every other
+    /// observation here, from one that failed immediately.
+    #[must_use]
+    pub fn body_bytes_served(&self) -> u64 {
+        self.connections.body_bytes.load(Ordering::SeqCst)
+    }
+
     /// Requests that had to wait for a peer to finish before they could be answered.
     ///
     /// A queue leaves no trace in the file or in the connection count, so this is the only thing
@@ -1154,16 +1183,21 @@ fn plan(
     }
 
     let requested = range_header.and_then(parse_range);
-    let honour = matches!(
-        spec.ranges,
-        RangeBehaviour::Supported
-            | RangeBehaviour::IgnoreButClaim
-            | RangeBehaviour::ShiftedContentRange { .. }
-            | RangeBehaviour::OmitContentRange
-            | RangeBehaviour::LiteralContentRange(_)
-            | RangeBehaviour::UnknownTotalLength
-            | RangeBehaviour::MultipartByteranges
-    );
+    // Evidence the probe took honestly, withdrawn afterwards.
+    let withdrawn = spec
+        .withdraw_ranges_after
+        .is_some_and(|honoured| ranged_served >= honoured);
+    let honour = !withdrawn
+        && matches!(
+            spec.ranges,
+            RangeBehaviour::Supported
+                | RangeBehaviour::IgnoreButClaim
+                | RangeBehaviour::ShiftedContentRange { .. }
+                | RangeBehaviour::OmitContentRange
+                | RangeBehaviour::LiteralContentRange(_)
+                | RangeBehaviour::UnknownTotalLength
+                | RangeBehaviour::MultipartByteranges
+        );
 
     let mut status = 200_u16;
     let mut body = Some((0_u64, total.saturating_sub(1)));
@@ -1496,6 +1530,15 @@ async fn serve_http11(
             current_etag.as_deref(),
             ranged_served,
         );
+        // A ranged request answered with the whole representation. Counted here rather than in
+        // `plan`, which cannot see the observation, and from the status rather than from the spec,
+        // so it is the response that is recorded and not the intention.
+        if range_header.is_some() && plan.status == 200 {
+            connection
+                .observation
+                .ranges_ignored
+                .fetch_add(1, Ordering::SeqCst);
+        }
         budget.serve(spec, bytes_to_write(spec, &plan));
         let mut full_len = planned_body_len(spec, &plan);
         let mut send_len = bytes_to_write(spec, &plan);
@@ -1676,6 +1719,10 @@ async fn write_plain(
                 .fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(delay).await;
         }
+        connection
+            .observation
+            .body_bytes
+            .fetch_add(u64::try_from(piece.len()).unwrap_or(0), Ordering::SeqCst);
         stream.write_all(piece).await?;
         written = written.saturating_add(u64::try_from(piece.len()).unwrap_or(0));
     }
@@ -1707,6 +1754,10 @@ async fn write_chunked(
                 .fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(delay).await;
         }
+        connection
+            .observation
+            .body_bytes
+            .fetch_add(u64::try_from(piece.len()).unwrap_or(0), Ordering::SeqCst);
         stream
             .write_all(format!("{:x}\r\n", piece.len()).as_bytes())
             .await?;
