@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-10T22:30:00Z",
+  "updated_at": "2026-08-10T23:30:00Z",
   "updated_by": "claude-code",
   "current_stage": "S3",
   "stages": [
@@ -2348,7 +2348,7 @@
     },
     {
       "id": "B-62",
-      "text": "FOUND 2026-08-10 by tests/corpus/cases/ranges/the-origin-caps-how-large-a-range-it-will-serve, and it is the most consequential thing S3-T12 turned up. An origin that will not serve a range larger than some size — S3, CloudFront and most CDNs cap range responses — makes a segmented download fail outright with \"worker returned an invalid outcome: ranged response did not match its exact allocator grant\". The response is complete, well formed and honest: it describes exactly the narrower span it sends, the bytes belong precisely where the worker would write them, and only the remainder is missing, which is the same position a truncated body leaves the allocator in and which it already recovers from by returning the unwritten suffix to Pending. The asymmetry is the tell: a response WIDER than its grant is accepted, clamped at the grant boundary and the file comes out byte-exact (the-origin-serves-from-the-start-of-the-range-to-the-end-of-the-file), while a narrower one stops the transfer. The fix is to measure the delivered span from the response rather than assume it from the request and re-grant the difference; it touches grant accounting in crates/downpour-engine/src/worker_pool.rs and deserves its own unit with its own mutation pass rather than being folded into a corpus commit. The case asserts the current failure and names this item, so the behaviour cannot change without the case changing.",
+      "text": "FIXED 2026-08-10. Found by tests/corpus/cases/ranges/the-origin-caps-how-large-a-range-it-will-serve, and it is the most consequential thing S3-T12 turned up. An origin that will not serve a range larger than some size — S3, CloudFront and most CDNs cap range responses — makes a segmented download fail outright with \"worker returned an invalid outcome: ranged response did not match its exact allocator grant\". The response is complete, well formed and honest: it describes exactly the narrower span it sends, the bytes belong precisely where the worker would write them, and only the remainder is missing, which is the same position a truncated body leaves the allocator in and which it already recovers from by returning the unwritten suffix to Pending. The asymmetry is the tell: a response WIDER than its grant is accepted, clamped at the grant boundary and the file comes out byte-exact (the-origin-serves-from-the-start-of-the-range-to-the-end-of-the-file), while a narrower one stops the transfer. The fix is to measure the delivered span from the response rather than assume it from the request and re-grant the difference; it touches grant accounting in crates/downpour-engine/src/worker_pool.rs and deserves its own unit with its own mutation pass rather than being folded into a corpus commit. The case asserts the current failure and names this item, so the behaviour cannot change without the case changing. The fix: crates/downpour-engine/src/worker_pool.rs::described_prefix_of accepts a Content-Range whose first byte is the grant's, whose end is at or before the grant's, and whose total matches, returning how much it described; the worker requires the body to be exactly that and non-empty; and the scheduler abandons the short grant on the SUCCESS path, before making the worker idle, so the unwritten suffix returns to Pending without spending retry budget on an origin that did nothing wrong. Everything else stays refused. Mutation-checked three ways: demanding an exact match again reproduces the original error, removing the abandon fails with 'worker already owns an active grant' — the allocator's own guard, which is also what proves the abandon is ordered before make_idle — and accepting a WIDER span survives, because RangeSink is bound to the grant so a wider body can never be observed and the header/body equality check fires first. That clause is kept and commented as deliberately redundant rather than deleted, because I-2 should be stated where it is decided rather than left emergent from two other checks.",
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "Downpour does not work against a large class of ordinary CDNs, and nothing before this case would have said so"
@@ -2359,6 +2359,13 @@
       "found_in_stage": "S3",
       "target_stage": "S4",
       "rationale": "A legal response the engine does not need should not be able to fail a download"
+    },
+    {
+      "id": "B-64",
+      "text": "FOUND 2026-08-10 while fixing B-62, and it is a gap in the proof rather than in the code. The new path where a worker SUCCEEDS having delivered only a prefix of its grant, and the scheduler returns the remainder to the allocator, is exercised under concurrency only by tests/corpus/cases/ranges/the-origin-caps-how-large-a-range-it-will-serve. The simulation suite covers abandon through the truncation and timeout paths (timeout_and_truncation_resume_only_the_unwritten_suffix) and the allocator through worker_death_and_interleaving_fuzz_preserve_exclusive_byte_ownership, but no scenario drives a partial success while peers are live, and none does it with crash injection. docs/09 puts ordering claims at the simulation layer, so the scenario belongs there: a capped origin, several live workers, a crash between the prefix being fenced and the remainder being re-granted, and the assertion that replay yields a prefix-consistent state with no interval owned twice. Also worth recording from the same work: asserting range_support in a corpus case makes the runner issue a second probe of its own, which shifts every ordinal-triggered server capability by one — that silently sent the widened-range case back down the single-stream path and made it green while proving nothing.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A new ordering path in the allocator proved only by a corpus case is proved at the wrong layer"
     }
   ],
   "session_log": [
@@ -4424,6 +4431,23 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3 is 13/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; PRs 41, 43, 44 stacked and unmerged in that order. Both corpus floors this stage owned are met: connections 20 of 20, ranges 25 of 25, corpus 101 cases total. NEXT UNIT should be B-62 rather than S3-T13. It is the only finding so far that stops a download against ordinary infrastructure: an origin capping range size fails the transfer with 'ranged response did not match its exact allocator grant', while the same discrepancy in the other direction is clamped and completes. The fix is to measure the delivered span from the response instead of assuming it from the request and re-grant the difference, in crates/downpour-engine/src/worker_pool.rs; the corpus case already exists and flips from failed to completed with a floor of seven requests, which is stated in the case file. After that T13 retention, T14 the digest cost re-measurement, T15 the stage-gate mutation audit, where B-56's error-kind finding should be settled. Sizing note: DEFAULT_MIN_SPLIT_BYTES is 1 MiB and the allocator's grants are NOT even, so a case needing three workers wants 6 MiB — at 3 MiB it gets two and every limit written for three is silently never reached."
+    },
+    {
+      "at": "2026-08-10T23:30:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "B-62 fixed: an origin that caps how large a range it will serve no longer fails the download. The worker accepts a response whose Content-Range is a PREFIX of its grant — same first byte, same total, ending at or before the grant's end — for exactly the bytes it delivered, and the scheduler returns the unwritten remainder to the allocator on the success path rather than through retry, because nothing failed and charging a well-behaved origin to the retry budget would fail a download a capped CDN serves perfectly well. Everything else stays refused: a different first byte, a span past the grant, a disagreeing total, a zero-length span. Mutation-checked three ways, and the third survived: accepting a wider span breaks nothing, because RangeSink is bound to the grant so a wider body can never be observed. The clause is kept and commented as deliberately redundant rather than deleted. The same work found that the widened-range case written earlier today could not fail — ungated it widened the probe's own response, the probe concluded Absent, and the transfer never segmented, so the grant boundary it claimed to test was never reached. It is gated behind the probe now and asserts an observation only a worker's request can satisfy.",
+      "tasks_touched": [
+        "S3-T12"
+      ],
+      "files_touched": [
+        "crates/downpour-engine/src/worker_pool.rs",
+        "tests/corpus/cases/ranges/",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/server.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 13/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; PRs 41, 43, 44 stacked and unmerged in that order. Corpus 101 cases, both floors this stage owns are met. B-62 is closed and B-64 is what it left behind: the success-with-partial-grant path is an ORDERING claim proved only by a corpus case, and docs/09 puts ordering at the simulation layer — the scenario wanted is a capped origin with live peers and a crash injected between the prefix being fenced and the remainder being re-granted. That is a reasonable next unit, and it is small. Otherwise T13 retention, T14 the digest cost re-measurement, T15 the stage-gate mutation audit where B-56's error-kind finding should be settled. Two harness traps worth knowing before writing any more cases: asserting range_support makes the runner issue its own extra probe, which shifts every ordinal-triggered capability by one; and DEFAULT_MIN_SPLIT_BYTES is 1 MiB with uneven grants, so a case needing three workers wants 6 MiB."
     }
   ],
   "metrics": {
