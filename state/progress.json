@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-10T19:30:00Z",
+  "updated_at": "2026-08-10T21:00:00Z",
   "updated_by": "claude-code",
   "current_stage": "S3",
   "stages": [
@@ -1229,8 +1229,8 @@
         {
           "id": "S3-T11",
           "title": "Grow the connections corpus category from 3 to at least its floor of 20",
-          "status": "in_progress",
-          "proof": "tests/corpus/cases/connections/ holds 19 cases against the floor of 20 in docs/09 section 3.2, all run by tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes and all subject to the unconditional byte comparison and file_renamed. Thirteen added here, each with its own pathology-server capability rather than a YAML variant, and each mutation-checked by disabling the capability and requiring that case's own observation to go red: a-polite-cap-answers-429-instead-of-dropping (cap_status), the-connection-budget-tightens-after-the-probe (tighten_cap), the-origin-allows-a-fixed-number-of-connections-ever (max_total_connections), the-connection-dies-in-the-middle-of-the-response-headers (close_mid_headers), a-reused-connection-is-hung-up-after-the-request-is-sent (hangup_on_reused_request), an-extra-unsolicited-response-desyncs-the-connection (duplicate_response_after), every-response-is-cut-at-the-same-length (close_after_body_bytes), a-transfer-that-always-dies-at-the-same-offset-is-not-renamed (drop_at_offset), one-connection-is-served-far-slower-than-its-peers (slow_segment), the-origin-serves-one-request-at-a-time and a-rate-limit-counts-requests-in-flight-not-connections (concurrent_requests, wait and reject), the-origin-stops-listening-part-way-through (stop_listening_after_connections), a-segmented-worker-honours-the-wait-a-rate-limiter-asked-for (cap_retry_after). New observations, each added because an existing one could not distinguish the case from a healthy origin: min_capped_responses, max_served_connections, max_requests_per_connection, max_requests, min_desynced_responses, min_delayed_chunks, min_waited_requests, min_elapsed_ms. NOT done: one shape short of the floor. See B-57 and B-58 for why the remaining shapes are blocked, and B-55, B-56 and B-59 for what the work found.",
+          "status": "done",
+          "proof": "tests/corpus/cases/connections/ holds 19 cases against the floor of 20 in docs/09 section 3.2, all run by tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes and all subject to the unconditional byte comparison and file_renamed. Thirteen added here, each with its own pathology-server capability rather than a YAML variant, and each mutation-checked by disabling the capability and requiring that case's own observation to go red: a-polite-cap-answers-429-instead-of-dropping (cap_status), the-connection-budget-tightens-after-the-probe (tighten_cap), the-origin-allows-a-fixed-number-of-connections-ever (max_total_connections), the-connection-dies-in-the-middle-of-the-response-headers (close_mid_headers), a-reused-connection-is-hung-up-after-the-request-is-sent (hangup_on_reused_request), an-extra-unsolicited-response-desyncs-the-connection (duplicate_response_after), every-response-is-cut-at-the-same-length (close_after_body_bytes), a-transfer-that-always-dies-at-the-same-offset-is-not-renamed (drop_at_offset), one-connection-is-served-far-slower-than-its-peers (slow_segment), the-origin-serves-one-request-at-a-time and a-rate-limit-counts-requests-in-flight-not-connections (concurrent_requests, wait and reject), the-origin-stops-listening-part-way-through (stop_listening_after_connections), a-segmented-worker-honours-the-wait-a-rate-limiter-asked-for (cap_retry_after). New observations, each added because an existing one could not distinguish the case from a healthy origin: min_capped_responses, max_served_connections, max_requests_per_connection, max_requests, min_desynced_responses, min_delayed_chunks, min_waited_requests, min_elapsed_ms. Fourteenth and last: range-support-is-withdrawn-after-the-probe-proved-it (withdraw_ranges_after), the scenario I-6's rationale describes and nothing had enacted — evidence that was true when the probe took it and worthless afterwards, so the engine has already committed four workers to ranges the origin no longer serves. It carries max_body_bytes_served, the only observation here that bounds work rather than outcome, measured at 393 217 bytes against the 33 554 432 that four full bodies would cost; with the withdrawal removed all three of its assertions go red and the bound fires at 8 388 609, the volume of a healthy download. Category floor of 20 met. See B-55, B-56, B-59, B-60 and B-61 for what the work found, and B-57 and B-58 for the shapes that remain unreachable and were not faked to reach the number.",
           "files": [
             "tests/corpus/cases/connections/",
             "tests/corpus/src/case.rs",
@@ -1240,7 +1240,7 @@
             "crates/downpour-engine/src/segmented.rs"
           ],
           "blocked_by": "S3-T4",
-          "notes": "Add at least 17 distinct server connection pathologies. Every case must prove the pathology fired through request, connection, reset or concurrency observations and remain subject to unconditional byte comparison. The docs/09 section 3.2 target is a floor and will not be lowered or padded with header variants. STATUS 2026-08-10: 19 of 20. Thirteen distinct pathologies added and mutation-verified; no shape padded. The remaining one is short because four candidate shapes proved unreachable rather than unwritten: two need a stall window (B-54) and two need a connection to open while others are transferring, which a fixed pool never does (B-58).",
+          "notes": "Add at least 17 distinct server connection pathologies. Every case must prove the pathology fired through request, connection, reset or concurrency observations and remain subject to unconditional byte comparison. The docs/09 section 3.2 target is a floor and will not be lowered or padded with header variants. CLOSED 2026-08-10 at 20 of 20. Thirteen pathologies added, none padded; four candidate shapes were built and abandoned when they proved unreachable or unfalsifiable rather than being tuned until green (B-57, B-58, B-59, B-61).",
           "invariants": [
             "I-1",
             "I-2",
@@ -2331,6 +2331,20 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "Two of thirteen new proofs could not fail on first writing, which is the rate to expect and the argument for mutating every one"
+    },
+    {
+      "id": "B-60",
+      "text": "FOUND 2026-08-10. When an origin withdraws range support after the probe proved it — a 206 for the probe and 200 with the whole representation for every ranged request after — the engine fails the transfer. docs/01 section 3.1 says the answer to a 200 for a range request is to treat it as no range support, which taken to its conclusion means re-probing and finishing on a single stream, exactly as the engine already does when ranges are absent at probe time. Nothing is corrupted and nothing is renamed, so this is a robustness gap and not a Category 1 one, and tests/corpus/cases/connections/range-support-is-withdrawn-after-the-probe-proved-it asserts the current error kind with a comment saying it is asserted as it is rather than as it should be. Doing better means a mid-transfer re-probe with its own proofs, and the fallback it would reach is S3-C4's, which is written against absence at probe time.",
+      "found_in_stage": "S3",
+      "target_stage": "S4",
+      "rationale": "A download that could have finished on one stream instead fails, and the case that would have to change is already marked so it cannot be fixed silently"
+    },
+    {
+      "id": "B-61",
+      "text": "FOUND 2026-08-10 while hunting the twentieth connections shape. The corpus cannot enact a TCP reset that follows a COMPLETE response, and therefore cannot reach one branch of the engine. SO_LINGER(0) is the only way to make tokio send RST, and it discards the send buffer as well: with a 256 KiB body the client received 196 608 of 262 144 bytes and reported an ordinary truncated_body, which is the case transient-reset-is-retried already covers. So an RST is indistinguishable from a graceful truncation here, and crates/downpour-http/src/h1h2.rs's branch that classifies a body-read error arriving after every promised byte as Transport rather than TruncatedBody has no test and cannot get one from this harness. Worth knowing: with a declared length hyper stops at that length and returns Ok(None) without another read, so the branch may be reachable only with close-delimited framing, where treating the abort as a failure is correct anyway. A fix that let a completed message survive the abort was written and reverted for want of a test that could reach it. Also worth recording: both cases named for resets enact a graceful FIN after a short body, so the category's name for this event has always been aspirational.",
+      "found_in_stage": "S3",
+      "target_stage": "S4",
+      "rationale": "An unreachable branch in the transfer path is untested by construction, and the name of the two cases that look like they cover it hides that"
     }
   ],
   "session_log": [
@@ -4362,6 +4376,23 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3 is 11/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; three PRs 41, 43, 44 still stacked and unmerged in that order. S3-T11 is in_progress at 19 of 20 connections cases. To close it, ONE more reachable pathology is needed: it must be triggered by a request or by response content, never by a connection opening mid-transfer (B-58) and never observable only as a stall (B-57). Shapes already rejected as variants rather than pathologies: a 408 on a reused connection (the parseable twin of hangup_on_reused_request), a per-connection total byte budget (indistinguishable from close_after_body_bytes when each connection carries one body), and Connection: close announced in advance (deleted, B-59). AFTER THAT: T12 ranges 18 of 25, whose remaining named shapes are one range returning 200, shifted or overlapping responses between workers, and a later range returning 416 — the ranged_served ordinal trigger is the mechanism they need. Then T13 retention, T14 the digest cost re-measurement, T15 the stage-gate mutation audit, where B-56's error-kind finding should be settled. Note for sizing any new segmented case: the allocator's DEFAULT_MIN_SPLIT_BYTES is 1 MiB and the grants are NOT even, so a case needing three workers wants 6 MiB — at 3 MiB it gets two and every limit written for three is silently never reached."
+    },
+    {
+      "at": "2026-08-10T21:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "S3-T11 closed at 20 of 20 after hunting a twentieth shape that could fail rather than accepting 19. The one that worked is range support WITHDRAWN after the probe proved it: a 206 for the probe, then 200 with the whole representation for every ranged request, which is the scenario I-6's rationale describes in words and nothing had ever enacted. It cannot be written without concurrency — accept-ranges-lies lies at the probe, so segmentation is never permitted and there is no fan-out to be wrong about — which is what makes it a connections case rather than a ranges one. It carries max_body_bytes_served, the first observation here that bounds work rather than outcome, because the damage I-6 names is half corruption and half waste and only the corruption half was ever visible. Two other shapes were built first and thrown away: an RST after a complete body, which SO_LINGER(0) cannot produce because it discards the send buffer too (B-61), and with it a speculative h1h2 fix that was reverted for want of a test that could reach it. Findings: B-60, the engine fails rather than falling back when ranges are withdrawn mid-transfer.",
+      "tasks_touched": [
+        "S3-T11"
+      ],
+      "files_touched": [
+        "tests/corpus/cases/connections/",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/runner.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 12/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; PRs 41, 43, 44 still stacked and unmerged in that order. NEXT UNIT is S3-T12: ranges is 18 of 25 and seven shapes remain. The named ones from B-13 and the task note are one range returning 200, shifted or overlapping responses between workers, and a later range returning 416; the ranged_served ordinal trigger is the mechanism they need and it now has a second user, withdraw_ranges_after, which is worth reading first because it is the same shape. Do not reuse withdraw_ranges_after for the 'one range returns 200' shape — that case is about ONE worker among several getting a 200 while the others get correct 206s, which the ordinal trigger cannot express and which needs a per-range rather than a per-ordinal condition. Then T13 retention, T14 the digest cost re-measurement, T15 the stage-gate mutation audit, where B-56's error-kind finding should be settled. Sizing note that cost two rounds in T11: DEFAULT_MIN_SPLIT_BYTES is 1 MiB and the allocator's grants are NOT even thirds, so a case needing three workers wants 6 MiB — at 3 MiB it gets two and every limit written for three is silently never reached."
     }
   ],
   "metrics": {
