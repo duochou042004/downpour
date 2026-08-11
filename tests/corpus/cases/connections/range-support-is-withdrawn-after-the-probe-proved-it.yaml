@@ -1,0 +1,37 @@
+id: range-support-is-withdrawn-after-the-probe-proved-it
+category: connections
+description: >
+  The origin answers the capability probe correctly — `206`, an accurate `Content-Range`, a real
+  total — and then answers every ranged request after it with `200` and the whole representation.
+  A CDN edge that rotated behind the address, a balancer with one node that supports ranges and
+  three that do not.
+  This is the scenario I-6's rationale describes and nothing has ever enacted: "a server that says
+  it supports ranges and then returns 200 with the full body for each of eight connections
+  downloads the file eight times and assembles nonsense". It cannot be written without
+  concurrency, which is why it is a connections case and not a ranges one — `accept-ranges-lies`
+  lies at the probe, so segmentation is never permitted and there is no fan-out to be wrong about.
+  Here the evidence was real when it was taken and worthless a moment later, so the engine has
+  already committed four workers to ranges the origin no longer serves.
+  Two things must hold. No body may be written at the offset that was requested, because each of
+  these responses starts at byte zero and putting it at a worker's grant offset is corruption of
+  exactly the right size (I-3, I-6). And the origin must not be made to serve the representation
+  once per worker: the waste I-6 names is the observable, so the case bounds the bytes served
+  rather than only checking the outcome.
+references: ["docs/agent/INVARIANTS.md#i-6", "docs/agent/INVARIANTS.md#i-3", "docs/01-idm-teardown.md §3.1", "docs/09-testing-strategy.md §3.2"]
+
+connections: 4
+
+server:
+  content: { size: 8MiB, seed: 158 }
+  # The probe is the one ranged response served honestly.
+  withdraw_ranges_after: 1
+
+expect:
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false
+  # The withdrawal really happened: ranged requests were answered with the whole representation.
+  min_ranges_ignored: 1
+  # And the origin was not made to serve the file once per worker. Four workers against 8 MiB
+  # would be 32 MiB of waste if every one of them ran a full body to completion.
+  max_body_bytes_served: 16MiB
