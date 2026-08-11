@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-10T21:00:00Z",
+  "updated_at": "2026-08-10T22:30:00Z",
   "updated_by": "claude-code",
   "current_stage": "S3",
   "stages": [
@@ -1253,14 +1253,14 @@
         {
           "id": "S3-T12",
           "title": "Grow the ranges corpus category from 17 to at least its floor of 25",
-          "status": "todo",
-          "proof": null,
+          "status": "done",
+          "proof": "tests/corpus/cases/ranges/ holds 25 cases against the floor of 25 in docs/09 section 3.2, all run by tests/corpus/tests/corpus_cases.rs::every_corpus_case_passes under the unconditional byte comparison and file_renamed. Seven added here, every one needing a segmented transfer to exist at all, which is what B-13 said the shortfall was: seventeen of the eighteen existing cases ask only whether the PROBE classifies an origin correctly. one-node-in-the-fleet-does-not-honour-ranges (ignore_range_at), a-range-is-shifted-only-after-the-probe-proved-ranges (shift_ranges_after), a-later-range-is-refused-as-unsatisfiable (status_416_after), the-origin-caps-how-large-a-range-it-will-serve (cap_range_span), the-origin-serves-from-the-start-of-the-range-to-the-end-of-the-file (ignore_range_end), content-length-and-content-range-disagree (halve_content_length_on_ranges), and the-total-length-becomes-unknown-after-the-probe (unknown_total_after). New observations: min_unsatisfiable_responses, min_starless_totals, min_respanned_ranges. Each capability mutation-checked to red on its own case only. The gated shift is the one worth reading: ungated so it also hits the probe, the download SUCCEEDS, because the probe sees the mismatch and falls back to a single stream — which is the case's whole claim, that the same header is harmless before segmentation and corrupting after it. Three cases assert current behaviour and say so: B-62 (a capped range span fails the transfer) and B-63 (a legal `*` total after the probe fails it). B-13 is closed.",
           "files": [
             "tests/corpus/cases/ranges/",
             "tests/corpus/src/"
           ],
           "blocked_by": "S3-T3",
-          "notes": "Close B-13 with segmented-transfer range pathologies such as inconsistent totals between workers, one range returning 200, shifted or overlapping responses, and a later range returning 416. Each case must demonstrate its distinct server behaviour rather than padding parser variants.",
+          "notes": "Close B-13 with segmented-transfer range pathologies such as inconsistent totals between workers, one range returning 200, shifted or overlapping responses, and a later range returning 416. Each case must demonstrate its distinct server behaviour rather than padding parser variants. CLOSED 2026-08-10 at 25 of 25. Seven segmented-transfer pathologies, none a parser variant. One shape could not be expressed and was removed: correct headers over wrong bytes, because the engine writes what the server sends and the runner's unconditional comparison then reports the .dppart as corrupt, which no case may opt out of (ADR-0010). It belongs at the self-test layer, where corrupt_from already lives.",
           "invariants": [
             "I-2",
             "I-3",
@@ -2005,7 +2005,7 @@
     },
     {
       "id": "B-13",
-      "text": "The ranges corpus category is at 15 cases against docs/09 section 3.2's initial target of 25. Every classification path the corpus can currently express is covered, so the shortfall is pathologies needing features that do not exist yet: multi-range requests and multipart responses with more than one part (S3), If-Range and validator-conditional ranges (S2), CDN edge disagreement between HEAD and GET across two origins, and a proxy that strips Accept-Ranges (S8). Grow the category as those stages land rather than padding it with further malformed-header variants, which belong at the parser's unit layer per docs/09 section 1.",
+      "text": "CLOSED 2026-08-10. The ranges corpus category is at 15 cases against docs/09 section 3.2's initial target of 25. Every classification path the corpus can currently express is covered, so the shortfall is pathologies needing features that do not exist yet: multi-range requests and multipart responses with more than one part (S3), If-Range and validator-conditional ranges (S2), CDN edge disagreement between HEAD and GET across two origins, and a proxy that strips Accept-Ranges (S8). Grow the category as those stages land rather than padding it with further malformed-header variants, which belong at the parser's unit layer per docs/09 section 1. Closed by S3-T12 with seven segmented-transfer pathologies rather than parser variants. Of the shapes named when this was opened: inconsistent totals between workers landed in S3-T11's neighbourhood as workers-disagree-about-the-total-length, one range returning 200 became one-node-in-the-fleet-does-not-honour-ranges, shifted responses became a case gated behind the probe, and a later 416 became a-later-range-is-refused-as-unsatisfiable. Multi-part multipart was dropped as a variant of multipart-byteranges-for-single-range: the claim there is that a body with no top-level Content-Range must not be written raw, and a second part does not change it. If-Range landed in validators during S2, and the proxy shapes remain S8's.",
       "found_in_stage": "S1",
       "target_stage": "S3",
       "rationale": "S1-C2 is met as worded but the category is not exhaustive; recording the gap keeps that visible"
@@ -2345,6 +2345,20 @@
       "found_in_stage": "S3",
       "target_stage": "S4",
       "rationale": "An unreachable branch in the transfer path is untested by construction, and the name of the two cases that look like they cover it hides that"
+    },
+    {
+      "id": "B-62",
+      "text": "FOUND 2026-08-10 by tests/corpus/cases/ranges/the-origin-caps-how-large-a-range-it-will-serve, and it is the most consequential thing S3-T12 turned up. An origin that will not serve a range larger than some size — S3, CloudFront and most CDNs cap range responses — makes a segmented download fail outright with \"worker returned an invalid outcome: ranged response did not match its exact allocator grant\". The response is complete, well formed and honest: it describes exactly the narrower span it sends, the bytes belong precisely where the worker would write them, and only the remainder is missing, which is the same position a truncated body leaves the allocator in and which it already recovers from by returning the unwritten suffix to Pending. The asymmetry is the tell: a response WIDER than its grant is accepted, clamped at the grant boundary and the file comes out byte-exact (the-origin-serves-from-the-start-of-the-range-to-the-end-of-the-file), while a narrower one stops the transfer. The fix is to measure the delivered span from the response rather than assume it from the request and re-grant the difference; it touches grant accounting in crates/downpour-engine/src/worker_pool.rs and deserves its own unit with its own mutation pass rather than being folded into a corpus commit. The case asserts the current failure and names this item, so the behaviour cannot change without the case changing.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "Downpour does not work against a large class of ordinary CDNs, and nothing before this case would have said so"
+    },
+    {
+      "id": "B-63",
+      "text": "FOUND 2026-08-10. An origin that answers a ranged request with `Content-Range: bytes X-Y/*` after the probe stated a real total fails the transfer: \"the representation length is unknown, so segmentation is not possible\". A star total is legal (RFC 9110 section 14.4) and the engine does not need it — the total it recorded at probe time is still there and still correct, and completion is measured against that. Refusing is the safe direction, since the alternative of adopting the missing length would leave a transfer with no completion condition and nothing for I-4's rename check to check, but it costs a download that could have finished. Preferring the recorded total over the absence of one is the fix. Pinned by tests/corpus/cases/ranges/the-total-length-becomes-unknown-after-the-probe, which asserts the current failure and names this item.",
+      "found_in_stage": "S3",
+      "target_stage": "S4",
+      "rationale": "A legal response the engine does not need should not be able to fail a download"
     }
   ],
   "session_log": [
@@ -4393,6 +4407,23 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3 is 12/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; PRs 41, 43, 44 still stacked and unmerged in that order. NEXT UNIT is S3-T12: ranges is 18 of 25 and seven shapes remain. The named ones from B-13 and the task note are one range returning 200, shifted or overlapping responses between workers, and a later range returning 416; the ranged_served ordinal trigger is the mechanism they need and it now has a second user, withdraw_ranges_after, which is worth reading first because it is the same shape. Do not reuse withdraw_ranges_after for the 'one range returns 200' shape — that case is about ONE worker among several getting a 200 while the others get correct 206s, which the ordinal trigger cannot express and which needs a per-range rather than a per-ordinal condition. Then T13 retention, T14 the digest cost re-measurement, T15 the stage-gate mutation audit, where B-56's error-kind finding should be settled. Sizing note that cost two rounds in T11: DEFAULT_MIN_SPLIT_BYTES is 1 MiB and the allocator's grants are NOT even thirds, so a case needing three workers wants 6 MiB — at 3 MiB it gets two and every limit written for three is silently never reached."
+    },
+    {
+      "at": "2026-08-10T22:30:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "S3-T12 closed: ranges 18 to 25, its floor, with seven pathologies that each need a segmented transfer to exist. That was B-13's actual complaint — seventeen of the eighteen existing cases only asked whether the probe classifies an origin correctly, which is the only question a single-stream harness could pose. The gated-shift case is the one to read: mutating it so the shift also hits the probe makes the download SUCCEED, because the probe sees the mismatch and falls back to a single stream, which demonstrates the claim exactly — the same malformed Content-Range is harmless before segmentation is permitted and corrupting after it. Two findings pinned by cases that say they assert current behaviour: B-62, an origin capping range size fails the transfer outright though the response is honest and only the remainder is missing, while the opposite discrepancy is tolerated and clamped; and B-63, a legal star total after the probe fails a download the recorded total could have completed. One shape was removed as inexpressible: correct headers over wrong bytes cannot be a YAML case, because the engine writes what the server sends and the runner's unconditional comparison then reports the part file as corrupt, which no case may opt out of.",
+      "tasks_touched": [
+        "S3-T12"
+      ],
+      "files_touched": [
+        "tests/corpus/cases/ranges/",
+        "tests/corpus/src/case.rs",
+        "tests/corpus/src/server.rs",
+        "tests/corpus/src/runner.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 13/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; PRs 41, 43, 44 stacked and unmerged in that order. Both corpus floors this stage owned are met: connections 20 of 20, ranges 25 of 25, corpus 101 cases total. NEXT UNIT should be B-62 rather than S3-T13. It is the only finding so far that stops a download against ordinary infrastructure: an origin capping range size fails the transfer with 'ranged response did not match its exact allocator grant', while the same discrepancy in the other direction is clamped and completes. The fix is to measure the delivered span from the response instead of assuming it from the request and re-grant the difference, in crates/downpour-engine/src/worker_pool.rs; the corpus case already exists and flips from failed to completed with a floor of seven requests, which is stated in the case file. After that T13 retention, T14 the digest cost re-measurement, T15 the stage-gate mutation audit, where B-56's error-kind finding should be settled. Sizing note: DEFAULT_MIN_SPLIT_BYTES is 1 MiB and the allocator's grants are NOT even, so a case needing three workers wants 6 MiB — at 3 MiB it gets two and every limit written for three is silently never reached."
     }
   ],
   "metrics": {
