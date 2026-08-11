@@ -453,6 +453,36 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             ));
         }
     }
+    if let Some(expected) = case.expect.min_respanned_ranges {
+        let seen = server.respanned_range_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected at least {expected} response(s) to serve a different span than was \
+                 requested but {seen} did; the origin answered every range as asked, so this \
+                 case is an ordinary segmented download"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_unsatisfiable_responses {
+        let seen = server.unsatisfiable_response_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected at least {expected} ranged request(s) to be refused as unsatisfiable \
+                 but {seen} were; the origin never refused a range, so this case is an ordinary \
+                 segmented download"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_starless_totals {
+        let seen = server.starless_total_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected at least {expected} Content-Range header(s) to state their total as * \
+                 but {seen} did; the origin never stopped stating a length, so this case would \
+                 pass against a perfectly ordinary origin"
+            ));
+        }
+    }
     if let Some(limit) = case.expect.max_body_bytes_served {
         let seen = server.body_bytes_served();
         if seen > limit.0 {

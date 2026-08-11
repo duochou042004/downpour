@@ -17,7 +17,7 @@ connections: 3
 server:
   content: { size: 6MiB, seed: 161 }
   shift_ranges_after: 1
-  ranges: { shifted_content_range: { by: 4096 } }
+  ranges: !shifted-content-range { by: 4096 }
 
 expect:
   final_state: failed

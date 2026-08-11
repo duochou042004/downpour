@@ -1,0 +1,31 @@
+id: the-origin-caps-how-large-a-range-it-will-serve
+category: ranges
+description: >
+  The origin will not serve a range larger than 1 MiB. Asked for two, it answers `206` with
+  `Content-Range: bytes 0-1048575/6291456` and exactly that much body — a complete, well-formed,
+  entirely honest response to a question nobody asked. Range-size caps like this are ordinary on
+  CDNs and object stores.
+  Nothing here is malformed, which is what separates it from the rest of the category: the server
+  describes precisely what it sends, and the only discrepancy is between the range that was
+  requested and the range that was served. The engine granted a worker two megabytes and got one,
+  and the danger is arithmetic rather than corruption — an engine that marks a grant complete
+  because its request was answered leaves a megabyte-wide hole in the middle of a file that is
+  exactly the right length. What must happen instead is that the delivered span is measured from
+  the response rather than assumed from the request, and the remainder goes back to the allocator.
+references: ["RFC 9110 §14.4", "docs/agent/INVARIANTS.md#i-1", "docs/03-transfer-engine-spec.md §4"]
+
+connections: 3
+
+server:
+  content: { size: 6MiB, seed: 163 }
+  cap_range_span: 1MiB
+
+expect:
+  # B-62. When the remainder is re-granted rather than refused, this becomes `completed` with
+  # `file_renamed: true` and a floor of seven requests — six megabytes cannot be fetched a
+  # megabyte at a time in three.
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false
+  # The cap really narrowed something. Without this the case is an ordinary segmented download.
+  min_respanned_ranges: 1

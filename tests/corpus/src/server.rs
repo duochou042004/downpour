@@ -293,6 +293,49 @@ pub struct ServerSpec {
     /// permitted, so there is no fan-out to be wrong about. Here the engine has already committed
     /// its workers, which is the situation I-6's rationale describes.
     pub withdraw_ranges_after: Option<usize>,
+    /// Answer exactly this ranged response, counting from one, with `200` and the whole
+    /// representation.
+    ///
+    /// One misconfigured node in a load-balanced fleet. Distinct from
+    /// [`Self::withdraw_ranges_after`]: the origin has not stopped supporting ranges, it never
+    /// agreed with itself, and the workers on either side of the unlucky one are served correctly.
+    pub ignore_range_at: Option<usize>,
+    /// Apply the shift in [`RangeBehaviour::ShiftedContentRange`] only after this many ranged
+    /// responses.
+    ///
+    /// Lets the probe be answered honestly, so segmentation happens on evidence that was true when
+    /// it was taken and the shift lands on workers writing into a part file.
+    pub shift_ranges_after: Option<usize>,
+    /// Answer every ranged response after this one with `416`, however satisfiable the range.
+    ///
+    /// The status that sounds like an ending: a client reading "not satisfiable" as "there is
+    /// nothing more" stops with a short block map.
+    pub status_416_after: Option<usize>,
+    /// State the total as `*` in every `Content-Range` after this many ranged responses.
+    pub unknown_total_after: Option<usize>,
+    /// Serve the body from offset zero while describing the requested range correctly.
+    ///
+    /// The only range pathology in this server where nothing it says is untrue. No header check
+    /// can catch it; the digest is the whole defence, which is what the case exists to show.
+    pub serve_wrong_offset: bool,
+    /// Honour a range's first byte position and serve to the end of the representation.
+    ///
+    /// Self-consistent — the `Content-Range` honestly describes the oversized body — so the only
+    /// thing wrong with it is that nobody asked for that much. A body that runs past a grant is a
+    /// write into the next worker's territory (I-2).
+    pub ignore_range_end: bool,
+    /// Declare half the `Content-Range` span as the `Content-Length`, and send that much.
+    ///
+    /// Two descriptions of one body that cannot both be true (RFC 9110 §14.4). Distinct from
+    /// [`Framing::WrongContentLength`], which declares a fixed number unrelated to any range.
+    pub halve_content_length_on_ranges: bool,
+    /// Serve no more than this much of any one range, describing honestly what was served.
+    ///
+    /// The range-size cap that CDNs and object stores apply. Nothing is malformed: the response
+    /// describes exactly what it sends, and only the request goes unanswered in full. The hazard
+    /// is arithmetic — a grant marked complete because its request was answered leaves a hole in
+    /// a file of exactly the right length.
+    pub cap_range_span: Option<u64>,
     /// Limit how many requests may be answered at once, across every connection.
     ///
     /// A limit on work rather than on sockets. It clears when a peer finishes rather than when a
@@ -371,6 +414,14 @@ impl Default for ServerSpec {
             drop_at_offset: None,
             slow_segment: None,
             withdraw_ranges_after: None,
+            ignore_range_at: None,
+            shift_ranges_after: None,
+            status_416_after: None,
+            unknown_total_after: None,
+            serve_wrong_offset: false,
+            ignore_range_end: false,
+            halve_content_length_on_ranges: false,
+            cap_range_span: None,
             concurrent_requests: None,
             stop_listening_after_connections: None,
             cap_retry_after: None,
@@ -521,6 +572,12 @@ struct ConnectionObservation {
     delayed_chunks: AtomicUsize,
     /// Ranged requests answered with the whole representation.
     ranges_ignored: AtomicUsize,
+    /// Ranged requests refused as unsatisfiable.
+    unsatisfiable: AtomicUsize,
+    /// `Content-Range` headers that stated their total as `*`.
+    starless_totals: AtomicUsize,
+    /// Responses that served a different span than the request asked for.
+    respanned: AtomicUsize,
     /// Body bytes actually written, across every response.
     body_bytes: AtomicU64,
     /// Requests that had to wait for the origin's in-flight limit.
@@ -940,6 +997,27 @@ impl PathologyServer {
         self.connections.ranges_ignored.load(Ordering::SeqCst)
     }
 
+    /// Ranged requests this server refused as unsatisfiable.
+    #[must_use]
+    pub fn unsatisfiable_response_count(&self) -> usize {
+        self.connections.unsatisfiable.load(Ordering::SeqCst)
+    }
+
+    /// `Content-Range` headers this server sent whose total was `*`.
+    #[must_use]
+    pub fn starless_total_count(&self) -> usize {
+        self.connections.starless_totals.load(Ordering::SeqCst)
+    }
+
+    /// Responses whose served span differed from the one requested, in either direction.
+    ///
+    /// A narrowed or widened range is well formed and honestly described, so no other observation
+    /// can see that the origin did anything at all.
+    #[must_use]
+    pub fn respanned_range_count(&self) -> usize {
+        self.connections.respanned.load(Ordering::SeqCst)
+    }
+
     /// Body bytes this server actually wrote, summed over every response.
     ///
     /// What a case needs to see waste rather than outcome: a transfer that fetched the whole
@@ -1183,10 +1261,14 @@ fn plan(
     }
 
     let requested = range_header.and_then(parse_range);
-    // Evidence the probe took honestly, withdrawn afterwards.
+    // Evidence the probe took honestly, withdrawn afterwards. `ranged_served` counts the ranged
+    // responses BEFORE this one, so the probe sees zero and ordinals below are one-based.
+    let ordinal = ranged_served.saturating_add(1);
     let withdrawn = spec
         .withdraw_ranges_after
-        .is_some_and(|honoured| ranged_served >= honoured);
+        .is_some_and(|honoured| ranged_served >= honoured)
+        // One node in the fleet, rather than the whole origin changing its mind.
+        || spec.ignore_range_at == Some(ordinal);
     let honour = !withdrawn
         && matches!(
             spec.ranges,
@@ -1201,6 +1283,23 @@ fn plan(
 
     let mut status = 200_u16;
     let mut body = Some((0_u64, total.saturating_sub(1)));
+
+    // A range the origin could serve and refuses to. Answered exactly as a genuinely
+    // unsatisfiable one would be, because the point is that the engine cannot tell them apart
+    // from the response and must decide from what it already knows about the representation.
+    if requested.is_some()
+        && spec
+            .status_416_after
+            .is_some_and(|served| ranged_served >= served)
+    {
+        headers.push(("Content-Range".to_owned(), format!("bytes */{total}")));
+        return Plan {
+            status: 416,
+            headers,
+            body: None,
+            literal_body: Some(Vec::new()),
+        };
+    }
 
     if let Some(requested) = requested
         && honour
@@ -1220,6 +1319,17 @@ fn plan(
                 };
             }
             Some((first, last)) => {
+                // Honour where the range starts and disregard where it ends. The header below
+                // describes what is actually sent, so the response is self-consistent and only
+                // the request has been disregarded.
+                let last = if spec.ignore_range_end {
+                    total.saturating_sub(1)
+                } else if let Some(cap) = spec.cap_range_span {
+                    // Narrowed rather than widened, and described honestly either way.
+                    last.min(first.saturating_add(cap).saturating_sub(1))
+                } else {
+                    last
+                };
                 status = 206;
                 match &spec.ranges {
                     RangeBehaviour::OmitContentRange => {}
@@ -1258,10 +1368,26 @@ fn plan(
                             format!("bytes {first}-{last}/*"),
                         ));
                     }
-                    RangeBehaviour::ShiftedContentRange { by } => {
+                    RangeBehaviour::ShiftedContentRange { by }
+                        if spec
+                            .shift_ranges_after
+                            .is_none_or(|served| ranged_served >= served) =>
+                    {
                         headers.push((
                             "Content-Range".to_owned(),
                             format!("bytes {}-{}/{total}", first + by, last + by),
+                        ));
+                    }
+                    // The origin stops being willing to state a length while still serving
+                    // ranges. Legal, and useless to an engine that has already segmented — which
+                    // is why the recorded total has to be the one that counts.
+                    _ if spec
+                        .unknown_total_after
+                        .is_some_and(|served| ranged_served >= served) =>
+                    {
+                        headers.push((
+                            "Content-Range".to_owned(),
+                            format!("bytes {first}-{last}/*"),
                         ));
                     }
                     _ => {
@@ -1539,6 +1665,37 @@ async fn serve_http11(
                 .ranges_ignored
                 .fetch_add(1, Ordering::SeqCst);
         }
+        // A span the origin chose rather than the one that was asked for, narrower or wider.
+        // Compared against the resolved request, so it counts what the response did and not what
+        // the spec intended.
+        if let Some((served_first, served_last)) = plan.body
+            && let Some((asked_first, asked_last)) = range_header
+                .as_deref()
+                .and_then(parse_range)
+                .and_then(|requested| requested.resolve(spec.content.len()))
+            && (served_first, served_last) != (asked_first, asked_last)
+        {
+            connection
+                .observation
+                .respanned
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        if range_header.is_some() && plan.status == 416 {
+            connection
+                .observation
+                .unsatisfiable
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        if plan
+            .headers
+            .iter()
+            .any(|(name, value)| name == "Content-Range" && value.ends_with("/*"))
+        {
+            connection
+                .observation
+                .starless_totals
+                .fetch_add(1, Ordering::SeqCst);
+        }
         budget.serve(spec, bytes_to_write(spec, &plan));
         let mut full_len = planned_body_len(spec, &plan);
         let mut send_len = bytes_to_write(spec, &plan);
@@ -1580,6 +1737,15 @@ async fn serve_http11(
             && let Some((first, _)) = plan.body
         {
             send_len = send_len.min(offset.saturating_sub(first));
+        }
+
+        // Two descriptions of one body that cannot both be true. The `Content-Range` above still
+        // spans the whole range; only what is declared and sent is halved. Bodies of one byte are
+        // exempt so the capability probe still works and segmentation is still permitted — the
+        // contradiction belongs on the workers, where there is a grant to get wrong.
+        if spec.halve_content_length_on_ranges && plan.status == 206 && full_len > 1 {
+            full_len /= 2;
+            send_len = send_len.min(full_len);
         }
 
         // A HEAD response carries the headers a GET would, Content-Length included, and no body.
@@ -1806,7 +1972,14 @@ fn next_chunk<'b>(
         return out;
     }
 
-    let first = plan.body.map_or(0, |(first, _)| first);
+    // Correct headers over the wrong bytes: the body is generated from the start of the
+    // representation while the response describes the range that was asked for. Nothing a client
+    // can read is untrue, which is exactly the point — only the digest catches this.
+    let first = if spec.serve_wrong_offset {
+        0
+    } else {
+        plan.body.map_or(0, |(first, _)| first)
+    };
     let absolute = first.saturating_add(offset);
     let out = buffer.get_mut(..take).unwrap_or(&mut []);
     spec.content.fill(absolute, out);

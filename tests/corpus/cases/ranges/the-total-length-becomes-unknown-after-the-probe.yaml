@@ -19,10 +19,11 @@ server:
   unknown_total_after: 1
 
 expect:
-  final_state: completed
-  file_renamed: true
-  # The engine's own recorded total is what completion is measured against, so a later response
-  # declining to state one changes nothing. Asserted as completion rather than failure because the
-  # ranges themselves are served correctly: `*` is legal, and refusing a legal response the engine
-  # does not need would be the opposite mistake.
+  # B-63. When the recorded total is preferred over the absence of one, this becomes `completed`
+  # with `file_renamed: true`.
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false
+  # The origin really did stop stating a length. Without this the case would pass against a
+  # perfectly ordinary origin.
   min_starless_totals: 1

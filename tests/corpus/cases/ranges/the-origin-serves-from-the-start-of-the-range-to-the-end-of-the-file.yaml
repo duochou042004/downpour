@@ -21,6 +21,8 @@ server:
   ignore_range_end: true
 
 expect:
-  final_state: failed
-  error_kind: segmented_transfer
-  file_renamed: false
+  final_state: completed
+  file_renamed: true
+  # The origin really did serve past the end of what was asked for. Without this the case is an
+  # ordinary segmented download, and the grant boundary is never put under any pressure.
+  min_respanned_ranges: 1

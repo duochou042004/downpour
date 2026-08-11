@@ -283,6 +283,37 @@ pub struct ServerCase {
     /// engine never commits workers to ranges it cannot get.
     #[serde(default)]
     pub withdraw_ranges_after: Option<usize>,
+    /// Answer exactly this ranged response, counting from one, with the whole representation.
+    ///
+    /// One node in a fleet that was never configured for ranges, rather than an origin that
+    /// withdraws them for good.
+    #[serde(default)]
+    pub ignore_range_at: Option<usize>,
+    /// Apply `ranges: shifted_content_range` only from this ranged response onward.
+    ///
+    /// The probe is answered honestly, so segmentation is permitted on evidence that was true.
+    #[serde(default)]
+    pub shift_ranges_after: Option<usize>,
+    /// Answer every ranged response after this one with `416`, however satisfiable the range is.
+    #[serde(default)]
+    pub status_416_after: Option<usize>,
+    /// State the total as `*` in every `Content-Range` after this ranged response.
+    #[serde(default)]
+    pub unknown_total_after: Option<usize>,
+    /// Serve the body from the start of the representation while describing the requested range.
+    ///
+    /// The one range pathology no header check can catch: nothing the server says is untrue.
+    #[serde(default)]
+    pub serve_wrong_offset: bool,
+    /// Honour the first byte position of a range and serve to the end of the representation.
+    #[serde(default)]
+    pub ignore_range_end: bool,
+    /// Declare a `Content-Length` of half what the `Content-Range` spans, and send that much.
+    #[serde(default)]
+    pub halve_content_length_on_ranges: bool,
+    /// Serve no more than this much of any range, describing honestly what was served.
+    #[serde(default)]
+    pub cap_range_span: Option<ByteSize>,
     /// Limit how many requests may be in flight at once, across every connection.
     ///
     /// A limit on work rather than on sockets: it clears when a peer finishes, not when a
@@ -723,6 +754,18 @@ pub struct Expect {
     /// At least this many ranged requests must have been answered with the whole representation.
     #[serde(default)]
     pub min_ranges_ignored: Option<usize>,
+    /// At least this many ranged requests must have been refused as unsatisfiable.
+    #[serde(default)]
+    pub min_unsatisfiable_responses: Option<usize>,
+    /// At least this many `Content-Range` headers must have stated their total as `*`.
+    #[serde(default)]
+    pub min_starless_totals: Option<usize>,
+    /// At least this many responses must have served a different span than was requested.
+    ///
+    /// Covers both directions — a range narrowed by a cap and one widened to the end of the file.
+    /// Neither is malformed, so no other observation here can see that anything happened.
+    #[serde(default)]
+    pub min_respanned_ranges: Option<usize>,
     /// The server must not have written more than this many body bytes in total.
     ///
     /// The only observation that bounds *work* rather than outcome, and the only way to see the
@@ -960,6 +1003,14 @@ impl Case {
             stop_listening_after_connections: self.server.stop_listening_after_connections,
             cap_retry_after: self.server.cap_retry_after.clone(),
             withdraw_ranges_after: self.server.withdraw_ranges_after,
+            ignore_range_at: self.server.ignore_range_at,
+            shift_ranges_after: self.server.shift_ranges_after,
+            status_416_after: self.server.status_416_after,
+            unknown_total_after: self.server.unknown_total_after,
+            serve_wrong_offset: self.server.serve_wrong_offset,
+            ignore_range_end: self.server.ignore_range_end,
+            halve_content_length_on_ranges: self.server.halve_content_length_on_ranges,
+            cap_range_span: self.server.cap_range_span.map(|size| size.0),
             slow_segment: self.server.slow_segment.map(|slow| SlowSegment {
                 from_offset: slow.from_offset.0,
                 delay: std::time::Duration::from_millis(slow.delay_ms),

@@ -4396,7 +4396,7 @@
     }
   ],
   "metrics": {
-    "corpus_cases_total": 94,
+    "corpus_cases_total": 101,
     "corpus_cases_passing": 80,
     "sim_seeds_fixed": 19,
     "invariants_covered": 10,
