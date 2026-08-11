@@ -18,11 +18,21 @@ connections: 3
 
 server:
   content: { size: 6MiB, seed: 164 }
-  ignore_range_end: true
+  # After the probe, which is answered honestly so that segmentation is permitted and there is a
+  # grant for the oversized body to run past. Ungated it widens the probe's own response, the probe
+  # concludes Absent, and the transfer never segments — which is how the first version of this case
+  # passed while proving nothing.
+  ignore_range_end_after: 1
 
 expect:
-  final_state: completed
-  file_renamed: true
-  # The origin really did serve past the end of what was asked for. Without this the case is an
-  # ordinary segmented download, and the grant boundary is never put under any pressure.
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false
+  # min_respanned_ranges is also what proves this was reached through a segmented transfer rather
+  # than through the probe refusing to prove ranges. The probe is the honest response, and the
+  # single-stream fallback's whole-body GET carries no Range at all, so the only thing that can
+  # respan is a worker's request against a grant. Asserting range_support here instead would be
+  # worse than useless: it makes the runner issue a second probe of its own, which shifts every
+  # ordinal by one, hands the ENGINE's probe the widened response, and sends the transfer straight
+  # back down the single-stream path this case exists to avoid.
   min_respanned_ranges: 1

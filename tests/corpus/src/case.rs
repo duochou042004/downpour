@@ -305,9 +305,15 @@ pub struct ServerCase {
     /// The one range pathology no header check can catch: nothing the server says is untrue.
     #[serde(default)]
     pub serve_wrong_offset: bool,
-    /// Honour the first byte position of a range and serve to the end of the representation.
+    /// From this ranged response onward, honour a range's first byte position and serve to the
+    /// end of the representation.
+    ///
+    /// Gated on an ordinal for the same reason the shift is: applied to the probe it is simply a
+    /// `Content-Range` that does not match the request, the probe refuses to prove ranges, and the
+    /// transfer never segments — so the grant boundary this is meant to press against is never
+    /// reached.
     #[serde(default)]
-    pub ignore_range_end: bool,
+    pub ignore_range_end_after: Option<usize>,
     /// Declare a `Content-Length` of half what the `Content-Range` spans, and send that much.
     #[serde(default)]
     pub halve_content_length_on_ranges: bool,
@@ -1008,7 +1014,7 @@ impl Case {
             status_416_after: self.server.status_416_after,
             unknown_total_after: self.server.unknown_total_after,
             serve_wrong_offset: self.server.serve_wrong_offset,
-            ignore_range_end: self.server.ignore_range_end,
+            ignore_range_end_after: self.server.ignore_range_end_after,
             halve_content_length_on_ranges: self.server.halve_content_length_on_ranges,
             cap_range_span: self.server.cap_range_span.map(|size| size.0),
             slow_segment: self.server.slow_segment.map(|slow| SlowSegment {

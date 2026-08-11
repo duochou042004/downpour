@@ -318,12 +318,17 @@ pub struct ServerSpec {
     /// The only range pathology in this server where nothing it says is untrue. No header check
     /// can catch it; the digest is the whole defence, which is what the case exists to show.
     pub serve_wrong_offset: bool,
-    /// Honour a range's first byte position and serve to the end of the representation.
+    /// From this ranged response onward, honour a range's first byte position and serve to the
+    /// end of the representation.
     ///
     /// Self-consistent — the `Content-Range` honestly describes the oversized body — so the only
     /// thing wrong with it is that nobody asked for that much. A body that runs past a grant is a
     /// write into the next worker's territory (I-2).
-    pub ignore_range_end: bool,
+    ///
+    /// Gated on an ordinal, like the shift. Applied to the probe it is just a `Content-Range` that
+    /// disagrees with the request: the probe refuses to prove ranges, the transfer falls back to a
+    /// single stream, and the grant boundary is never reached at all.
+    pub ignore_range_end_after: Option<usize>,
     /// Declare half the `Content-Range` span as the `Content-Length`, and send that much.
     ///
     /// Two descriptions of one body that cannot both be true (RFC 9110 §14.4). Distinct from
@@ -419,7 +424,7 @@ impl Default for ServerSpec {
             status_416_after: None,
             unknown_total_after: None,
             serve_wrong_offset: false,
-            ignore_range_end: false,
+            ignore_range_end_after: None,
             halve_content_length_on_ranges: false,
             cap_range_span: None,
             concurrent_requests: None,
@@ -1322,7 +1327,10 @@ fn plan(
                 // Honour where the range starts and disregard where it ends. The header below
                 // describes what is actually sent, so the response is self-consistent and only
                 // the request has been disregarded.
-                let last = if spec.ignore_range_end {
+                let last = if spec
+                    .ignore_range_end_after
+                    .is_some_and(|served| ranged_served >= served)
+                {
                     total.saturating_sub(1)
                 } else if let Some(cap) = spec.cap_range_span {
                     // Narrowed rather than widened, and described honestly either way.

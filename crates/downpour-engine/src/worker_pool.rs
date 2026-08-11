@@ -359,7 +359,21 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
                     };
                     match joined {
                         Ok(WorkerEvent::Finished { worker, result: Ok(report) }) => {
-                            scheduler.running.remove(&worker);
+                            let attempt = scheduler.running.remove(&worker);
+                            // An origin that caps range size answers honestly and narrowly, so a
+                            // worker can succeed having delivered only a prefix of its grant.
+                            // Abandon fences what it wrote durably and returns the untouched
+                            // suffix to Pending for any idle worker to take. Deliberately not the
+                            // retry path: nothing failed, and spending budget on a well-behaved
+                            // origin would fail a download that a capped CDN serves perfectly
+                            // well (B-62).
+                            if attempt.is_some_and(|attempt| {
+                                let granted = attempt.grant.range();
+                                report.bytes < granted.end.saturating_sub(granted.start)
+                            }) {
+                                writer.abandon(worker).await?;
+                                scheduler.unpark_everyone();
+                            }
                             scheduler.reports.push(report);
                             scheduler.make_idle(worker);
                         }
@@ -811,16 +825,23 @@ async fn run_ranged_worker<B: TransferProtocol + 'static>(
     };
     let outcome = backend.fetch_range(request, &mut sink).await?;
     let observed = sink.written();
+    // How much of the grant the response *described*. `None` means it described something this
+    // worker must not write: a different start, a span past the end of the grant, a total that
+    // disagrees with the representation, or no usable `Content-Range` at all.
+    let described = described_prefix_of(outcome.content_range, &range, total_length);
     if outcome.status != 206
         || outcome.protocol != NegotiatedProtocol::Http11
         || outcome.truncated
-        || outcome.bytes_delivered != expected
-        || observed != expected
-        || !content_range_matches(outcome.content_range, &range, total_length)
+        || described.is_none_or(|described| {
+            // The body has to be exactly what the header promised, and it has to be some of it.
+            // A response describing nothing would make no progress, and a worker that returns
+            // zero bytes forever is a loop rather than a slow transfer.
+            described == 0 || outcome.bytes_delivered != described || observed != described
+        })
     {
         return Err(PoolError::InvalidOutcome {
             worker,
-            reason: "ranged response did not match its exact allocator grant",
+            reason: "ranged response did not match its allocator grant",
         });
     }
     sink.sync().await?;
@@ -831,21 +852,42 @@ async fn run_ranged_worker<B: TransferProtocol + 'static>(
     })
 }
 
-fn content_range_matches(
+/// How many bytes of `range` a `Content-Range` describes, or `None` if it describes anything the
+/// worker must not write.
+///
+/// A response is allowed to be **narrower** than the grant and never anything else. Origins that
+/// cap how large a range they will serve are ordinary — S3, CloudFront and most CDNs do it — and a
+/// prefix of a grant is safe in a way no other discrepancy is: the bytes begin where the worker
+/// was told to begin, so every one of them belongs at the offset it is written to, and the only
+/// open question is what happens to the remainder (B-62).
+///
+/// Everything else stays refused, because none of it has that property. A different `first` is
+/// `content-range-mismatch`, which writes the wrong part of the file at the right offset. A `last`
+/// past the end of the grant is a write into the next worker's territory (I-2). A disagreeing
+/// total means the response is describing a different representation from the one the probe
+/// established (I-3).
+fn described_prefix_of(
     content_range: Option<ContentRange>,
     range: &std::ops::Range<u64>,
     total_length: u64,
-) -> bool {
-    matches!(
-        content_range,
-        Some(ContentRange::Bytes {
-            first,
-            last,
-            complete_length: Some(total),
-        }) if first == range.start
-            && last.checked_add(1) == Some(range.end)
-            && total == total_length
-    )
+) -> Option<u64> {
+    let ContentRange::Bytes {
+        first,
+        last,
+        complete_length: Some(total),
+    } = content_range?
+    else {
+        return None;
+    };
+    let end = last.checked_add(1)?;
+    // `end <= range.end` is deliberately redundant and must stay. Mutating it away does not turn
+    // any test red, because a body wider than the grant cannot be observed: `RangeSink` is built
+    // with the grant span as its bound, so the delivered count can never exceed it and the
+    // `observed != described` check below fires first. That makes the boundary an emergent
+    // property of two other checks rather than a stated one, and I-2 is meant to be structural.
+    // Keeping it costs a comparison and states the rule where the rule is decided.
+    (first == range.start && end <= range.end && total == total_length)
+        .then(|| end.saturating_sub(first))
 }
 
 struct GrantTarget {
