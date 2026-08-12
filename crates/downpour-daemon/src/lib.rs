@@ -24,5 +24,6 @@
     )
 )]
 
+pub mod retention;
 pub mod server;
 pub mod startup;

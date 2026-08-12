@@ -102,7 +102,9 @@ fn age_file(path: &Path, age: Duration) {
         .open(path)
         .expect("open to age");
     let when = SystemTime::UNIX_EPOCH + Duration::from_millis(NOW_MS) - age;
-    handle.set_modified(when).expect("set the modification time");
+    handle
+        .set_modified(when)
+        .expect("set the modification time");
 }
 
 fn metadata(dir: &Dir, id: DownloadId, part: &Path, state: DownloadState) -> DownloadMetadata {
@@ -192,22 +194,38 @@ fn only_journals_that_can_protect_nothing_are_removed() {
             .expect("save");
     }
 
-    let summary = sweep_journals(
-        &store,
-        &dir.journals(),
-        RetentionPolicy::default(),
-        NOW_MS,
-    )
-    .expect("the sweep runs");
+    let summary = sweep_journals(&store, &dir.journals(), RetentionPolicy::default(), NOW_MS)
+        .expect("the sweep runs");
 
-    assert!(!completed.exists(), "a completed download's journal protects nothing and §8 deletes it");
-    assert!(!orphan_old.exists(), "a journal with no download to belong to protects nothing");
+    assert!(
+        !completed.exists(),
+        "a completed download's journal protects nothing and §8 deletes it"
+    );
+    assert!(
+        !orphan_old.exists(),
+        "a journal with no download to belong to protects nothing"
+    );
 
-    assert!(failed.exists(), "a failed download's journal is the evidence a resume is built from");
-    assert!(paused.exists(), "a paused download is resumable and its journal must survive");
-    assert!(transferring.exists(), "a live download's journal must survive");
-    assert!(stalled.exists(), "a stalled download is still going and its journal must survive");
-    assert!(awaiting.exists(), "a download waiting for a URL is resumable and must survive");
+    assert!(
+        failed.exists(),
+        "a failed download's journal is the evidence a resume is built from"
+    );
+    assert!(
+        paused.exists(),
+        "a paused download is resumable and its journal must survive"
+    );
+    assert!(
+        transferring.exists(),
+        "a live download's journal must survive"
+    );
+    assert!(
+        stalled.exists(),
+        "a stalled download is still going and its journal must survive"
+    );
+    assert!(
+        awaiting.exists(),
+        "a download waiting for a URL is resumable and must survive"
+    );
     assert!(
         orphan_new.exists(),
         "a journal younger than the floor may belong to a download being added right now"
@@ -231,13 +249,8 @@ fn a_sweep_never_removes_a_part_file() {
     let orphans = ["a.bin", "b.bin", "c.bin"].map(|name| part(&dir, name));
     let journal = journal(&dir, id(0x01), LONG_AGO);
 
-    let summary = sweep_journals(
-        &store,
-        &dir.journals(),
-        RetentionPolicy::default(),
-        NOW_MS,
-    )
-    .expect("the sweep runs");
+    let summary = sweep_journals(&store, &dir.journals(), RetentionPolicy::default(), NOW_MS)
+        .expect("the sweep runs");
 
     assert!(!journal.exists(), "the orphaned journal should have gone");
     for orphan in &orphans {
@@ -274,7 +287,10 @@ fn an_orphan_survives_until_it_is_older_than_the_floor() {
     // The same file, now past the floor. Nothing else about it changed.
     age_file(&orphan, policy.minimum_age() + Duration::from_secs(1));
     let summary = sweep_journals(&store, &dir.journals(), policy, NOW_MS).expect("sweep");
-    assert!(!orphan.exists(), "an orphan past the floor should have been removed");
+    assert!(
+        !orphan.exists(),
+        "an orphan past the floor should have been removed"
+    );
     assert_eq!(summary.removed(), 1);
 }
 
@@ -295,13 +311,8 @@ fn a_sweep_leaves_alone_what_it_does_not_recognise() {
     fs::write(&almost, b"not a journal either").expect("write");
     age_file(&almost, LONG_AGO);
 
-    let summary = sweep_journals(
-        &store,
-        &dir.journals(),
-        RetentionPolicy::default(),
-        NOW_MS,
-    )
-    .expect("the sweep runs");
+    let summary = sweep_journals(&store, &dir.journals(), RetentionPolicy::default(), NOW_MS)
+        .expect("the sweep runs");
 
     assert!(note.exists(), "a file that is not a journal was removed");
     assert!(
@@ -309,4 +320,96 @@ fn a_sweep_leaves_alone_what_it_does_not_recognise() {
         "a .dpj whose name is not a download id was removed; the daemon cannot know whose it is"
     );
     assert_eq!(summary.removed(), 0);
+}
+
+/// The policy is applied, not merely implemented.
+///
+/// A sweep nothing calls is a module with tests and no effect, which is exactly the shape B-30
+/// took the first time: the reasoning about what to keep was right and the growth carried on
+/// regardless. This drives `TransferDaemon::recover`, the real startup path, rather than the
+/// sweep function directly.
+#[test]
+fn daemon_startup_applies_the_policy() {
+    use downpour_daemon::server::{TransferConfig, TransferDaemon};
+    use downpour_http::TransportMode;
+
+    let dir = Dir::new("wired");
+    {
+        let mut store = MetadataStore::open(dir.db()).expect("empty database is v1");
+        let part = part(&dir, "done.bin");
+        store
+            .save_download(&metadata(&dir, id(0x01), &part, DownloadState::Completed))
+            .expect("save");
+    }
+
+    let completed = journal(&dir, id(0x01), LONG_AGO);
+    let orphan = journal(&dir, id(0x09), LONG_AGO);
+    let failed = journal(&dir, id(0x02), LONG_AGO);
+    {
+        let mut store = MetadataStore::open(dir.db()).expect("existing database");
+        let part = part(&dir, "failed.bin");
+        store
+            .save_download(&metadata(&dir, id(0x02), &part, DownloadState::Failed))
+            .expect("save");
+    }
+
+    let mut daemon = TransferDaemon::new(TransferConfig {
+        target_dir: dir.data(),
+        journal_dir: dir.journals(),
+        database_path: dir.db(),
+        transport_mode: TransportMode::Http1Only,
+    })
+    .expect("the daemon opens its store");
+    daemon.recover().expect("startup recovery runs");
+
+    assert!(
+        !completed.exists(),
+        "startup did not apply the policy: a completed download's journal is still there"
+    );
+    assert!(
+        !orphan.exists(),
+        "startup did not remove an abandoned journal"
+    );
+    assert!(
+        failed.exists(),
+        "startup removed the evidence a failed download's resume is built from"
+    );
+}
+
+/// §8's terminal rows, one at a time. This is the rule the whole task turns on.
+///
+/// A mutation is why it exists as its own test. Retiring the journal for every terminal state
+/// rather than only for `Completed` left every other test in this crate green: the sweep proves a
+/// *stored* `Failed` row keeps its journal, and nothing proved the daemon does not delete it at
+/// the moment the transfer fails. Deleting it turns a recoverable download into a restart from
+/// zero, silently, and the download a user most wants to retry is exactly the one that failed.
+#[test]
+fn only_a_completed_download_releases_its_journal() {
+    use downpour_daemon::retention::retire_journal_for;
+
+    for state in [
+        DownloadState::Failed,
+        DownloadState::Paused,
+        DownloadState::Transferring,
+        DownloadState::Stalled,
+        DownloadState::AwaitingRefresh,
+        DownloadState::Verifying,
+        DownloadState::Submitted,
+    ] {
+        let dir = Dir::new("terminal-keep");
+        let journal = journal(&dir, id(0x01), LONG_AGO);
+        retire_journal_for(&dir.journals(), id(0x01), state);
+        assert!(
+            journal.exists(),
+            "a download in {state:?} lost its journal; only Completed releases one"
+        );
+    }
+
+    let dir = Dir::new("terminal-release");
+    let journal = journal(&dir, id(0x01), LONG_AGO);
+    retire_journal_for(&dir.journals(), id(0x01), DownloadState::Completed);
+    assert!(
+        !journal.exists(),
+        "a verified and renamed download kept its journal; §8 row 1 releases it"
+    );
 }

@@ -5,7 +5,7 @@
 //! session; the registry and its spawned engine task remain daemon-owned.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -83,6 +83,7 @@ fn recorded_remote(metadata: &DownloadMetadata) -> Option<downpour_types::Remote
 /// against a part file that is no longer there.
 fn record_terminal(
     store: &Arc<Mutex<MetadataStore>>,
+    journal_dir: &Path,
     id: &DownloadId,
     state: DownloadState,
     covered: u64,
@@ -90,6 +91,13 @@ fn record_terminal(
 ) {
     if let Err(error) = write_terminal(store, id, state, covered, error_kind) {
         tracing::warn!(%error, ?state, "could not record a download's final state");
+    }
+    // docs/04 §8's terminal rows, applied when they apply rather than at the next restart. The
+    // decision of which states release a journal lives in `retention` so it can be tested by its
+    // own terms; the state is written first, so the record is terminal before the file it
+    // describes is gone.
+    if let Ok(stored) = stored_id(id) {
+        crate::retention::retire_journal_for(journal_dir, stored, state);
     }
 }
 
@@ -358,6 +366,29 @@ impl TransferDaemon {
             .filter(|record| record.is_recovered())
             .count();
 
+        // Then the retention sweep, on the states reconciliation has just settled rather than on
+        // the ones the crash left behind. It removes journals that can no longer protect
+        // anything — docs/04 §8 — and never a part file. A sweep that cannot run is untidy, not
+        // dangerous: the disk holds exactly what it already held, so it is logged and startup
+        // continues, by the same rule that keeps one bad journal from costing the user every
+        // other transfer.
+        match crate::retention::sweep_journals(
+            &store,
+            &journal_dir,
+            crate::retention::RetentionPolicy::default(),
+            now_ms(),
+        ) {
+            Ok(swept) if swept.removed() > 0 => {
+                tracing::info!(
+                    removed = swept.removed(),
+                    kept = swept.kept(),
+                    "retained journals that are still evidence and removed those that are not"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "the retention sweep did not run"),
+        }
+
         // Then seed from the store rather than from the recovery pass. The registry is a cache of
         // what is persisted, and a download that reconciliation skipped because it had already
         // finished is still a download this daemon must be able to answer questions about — a
@@ -508,6 +539,7 @@ impl TransferDaemon {
                     // fails it as part-file-missing — a finished download reported as broken.
                     record_terminal(
                         &store,
+                        &journal_dir,
                         &task_id,
                         DownloadState::Completed,
                         length.unwrap_or(0),
@@ -525,6 +557,7 @@ impl TransferDaemon {
                     );
                     record_terminal(
                         &store,
+                        &journal_dir,
                         &task_id,
                         DownloadState::Failed,
                         0,
@@ -623,6 +656,7 @@ impl TransferDaemon {
         let registry = Arc::clone(&self.registry);
         let store = Arc::clone(&self.store);
         let transport_mode = self.config.transport_mode;
+        let journal_dir = self.config.journal_dir.clone();
         let task_id = id.clone();
         tokio::spawn(async move {
             let outcome = match H1H2Backend::new(transport_mode) {
@@ -656,6 +690,7 @@ impl TransferDaemon {
                     );
                     record_terminal(
                         &store,
+                        &journal_dir,
                         &task_id,
                         DownloadState::Completed,
                         length.unwrap_or(0),
@@ -673,6 +708,7 @@ impl TransferDaemon {
                     );
                     record_terminal(
                         &store,
+                        &journal_dir,
                         &task_id,
                         DownloadState::Failed,
                         0,

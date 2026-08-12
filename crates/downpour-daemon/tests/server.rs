@@ -252,6 +252,18 @@ async fn a_download_outlives_the_daemon_instance_that_started_it() {
     assert_eq!(view.state, WireState::Completed);
     assert_eq!(view.total, Some(LENGTH));
 
+    // docs/04 §8 row 1, at the moment it applies rather than at the next restart. The startup
+    // sweep would take this journal eventually, and "eventually" is however long the daemon runs;
+    // a file per completed download until reboot is the growth B-30 is about.
+    let retired = root
+        .join("journals")
+        .join(format!("{}.dpj", added.id.as_str()));
+    assert!(
+        !retired.exists(),
+        "a verified and renamed download kept its journal at {}; §8 deletes it on completion",
+        retired.display()
+    );
+
     let bytes = std::fs::read(root.join("target").join("content")).expect("the file is there");
     assert_eq!(
         Content::new(11, LENGTH).first_mismatch(0, &bytes),
@@ -355,6 +367,16 @@ async fn an_interrupted_transfer_is_finished_by_the_next_process() {
     })
     .await
     .expect("the resumed transfer must finish");
+
+    // The same rule on the resume path: a download finished by a later process retires its
+    // journal too, and this is the test where that journal was written by hand rather than by
+    // the transfer, so nothing about its provenance can excuse it.
+    let retired = root.join("journals").join(format!("{}.dpj", id.as_str()));
+    assert!(
+        !retired.exists(),
+        "a resumed download that completed kept its journal at {}",
+        retired.display()
+    );
 
     let bytes = std::fs::read(root.join("target").join("content")).expect("the file is there");
     assert_eq!(
