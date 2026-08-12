@@ -483,7 +483,19 @@ pub enum DownloadState {
 pub struct DownloadErrorKind(String);
 
 impl DownloadErrorKind {
-    /// Validates a bounded lowercase dotted identifier such as `network.timeout`.
+    /// Validates a bounded lowercase identifier such as `validator_mismatch` or
+    /// `network.timeout`.
+    ///
+    /// Underscores are permitted inside a segment, and that is not cosmetic. Every kind the
+    /// engine emits is snake_case and `docs/08-ipc-and-ui-spec.md` §3's worked example is
+    /// `"kind": "validator_mismatch"`, so a grammar that refused them refused the vocabulary the
+    /// spec defines. It did not refuse it loudly: the daemon builds a kind and a download's
+    /// terminal state in one operation, so a rejected kind discarded the state with it and a
+    /// download that had failed stayed `Paused` for ever (B-65).
+    ///
+    /// What must stay refused is server text. A kind is stored and displayed, and a signed URL or
+    /// a `Set-Cookie` pasted into one would put a secret somewhere I-14 says it may never be, so
+    /// uppercase, spaces, punctuation and a leading or trailing separator are all still errors.
     pub fn new(raw: &str) -> Result<Self, MetadataError> {
         if raw.is_empty() || raw.len() > MAX_ERROR_KIND_BYTES {
             return Err(MetadataError::InvalidErrorKind {
@@ -493,11 +505,16 @@ impl DownloadErrorKind {
         if !raw.split('.').all(|segment| {
             let mut bytes = segment.bytes();
             bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
-                && bytes
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && bytes.all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'-'
+                        || byte == b'_'
+                })
+                && !segment.ends_with(['-', '_'])
         }) {
             return Err(MetadataError::InvalidErrorKind {
-                reason: "identifier is not lowercase dotted syntax",
+                reason: "identifier is not a lowercase dotted or underscored identifier",
             });
         }
         Ok(Self(raw.to_owned()))

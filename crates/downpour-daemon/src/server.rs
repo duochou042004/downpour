@@ -116,10 +116,24 @@ fn write_terminal(
     metadata.state = state;
     metadata.covered_bytes = covered;
     metadata.updated_at_ms = now_ms();
-    metadata.error_kind = match error_kind {
-        Some(kind) => Some(downpour_storage::metadata::DownloadErrorKind::new(kind)?),
-        None => None,
-    };
+    // The kind is additional information; the state is the fact. Building them in one fallible
+    // operation is what made B-65 silent — a kind the store refused discarded the state with it,
+    // and a download that had failed stayed `Paused` for ever behind a warning nobody reads. A
+    // kind that cannot be stored is now dropped and reported, and the download is still recorded
+    // as having reached its terminal state.
+    metadata.error_kind = error_kind.and_then(|kind| {
+        match downpour_storage::metadata::DownloadErrorKind::new(kind) {
+            Ok(typed) => Some(typed),
+            Err(error) => {
+                tracing::warn!(
+                    kind,
+                    %error,
+                    "a download's error kind could not be stored; recording the state without it"
+                );
+                None
+            }
+        }
+    });
     store.save_download(&metadata)?;
     Ok(())
 }
@@ -918,4 +932,75 @@ fn rpc_error(
             suggestion: recoverable.then(|| "retry".to_owned()),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A terminal state is recorded even when its error kind cannot be.
+    ///
+    /// B-65's deeper half. The grammar that rejected `segmented_transfer` is fixed, but the shape
+    /// that made the rejection *silent* was writing the kind and the state in one fallible
+    /// operation: lose the kind, lose the fact that the download failed at all. This drives
+    /// `write_terminal` with a kind no grammar will ever accept and requires the state to survive
+    /// it, so the next kind nobody anticipated costs a label rather than a download.
+    #[test]
+    fn a_terminal_state_survives_an_error_kind_that_cannot_be_stored() {
+        let dir = std::env::temp_dir().join(format!("downpour-kind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch directory");
+        let store = MetadataStore::open(dir.join("downpour.db")).expect("store opens");
+        let store = Arc::new(Mutex::new(store));
+
+        // Seeded through the daemon's own row builder rather than a hand-written struct, so the
+        // test cannot drift from the shape the daemon actually persists.
+        let stored = downpour_storage::metadata::DownloadId::try_from_bytes([
+            0x01, 0x91, 0x23, 0x45, 0x67, 0x89, 0x7a, 0xbc, 0x8d, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0x01,
+        ])
+        .expect("fixture is a storable id");
+        let wire = wire_id(stored).expect("id round-trips to the wire form");
+        let url: url::Url = "https://example.test/file.bin"
+            .parse()
+            .expect("fixture url parses");
+        let remote = downpour_types::RemoteObject {
+            final_url: url.clone(),
+            redirect_chain: vec![url],
+            total_length: Some(32),
+            range_support: downpour_types::RangeSupport::Unknown,
+            validator: downpour_types::Validator::StrongETag("\"v1\"".to_owned()),
+            digest: None,
+            protocol: downpour_types::NegotiatedProtocol::Http11,
+            suggested_filename: Some("file.bin".to_owned()),
+            content_type: None,
+            probed_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        persist_probed(&store, &wire, &remote, &dir, &dir).expect("the row is seeded");
+        write_terminal(
+            &store,
+            &wire,
+            DownloadState::Failed,
+            0,
+            Some("GET https://example.test/f?signature=SECRET"),
+        )
+        .expect("a kind that cannot be stored must not fail the write");
+
+        let stored = stored_id(&wire).expect("id round-trips");
+        let record = store
+            .lock()
+            .expect("store")
+            .load_download(stored)
+            .expect("load")
+            .expect("the download is there");
+        assert_eq!(
+            record.state,
+            DownloadState::Failed,
+            "the download's terminal state was lost with its error kind"
+        );
+        assert!(
+            record.error_kind.is_none(),
+            "server text must not be stored as an error kind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

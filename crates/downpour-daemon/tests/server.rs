@@ -575,9 +575,13 @@ async fn a_transfer_that_fails_is_recorded_as_failed() {
         transport_mode: TransportMode::Http1Only,
     };
 
-    let id =
-        leave_an_interrupted_download(&config, &server.entry_url(), LENGTH, &[(0, 2 * 1024 * 1024)])
-            .await;
+    let id = leave_an_interrupted_download(
+        &config,
+        &server.entry_url(),
+        LENGTH,
+        &[(0, 2 * 1024 * 1024)],
+    )
+    .await;
     let journal = root.join("journals").join(format!("{}.dpj", id.as_str()));
 
     let mut daemon = TransferDaemon::new(config).expect("the daemon opens its store");
@@ -598,7 +602,10 @@ async fn a_transfer_that_fails_is_recorded_as_failed() {
             if let Some(record) = records.first()
                 && record.state == downpour_storage::metadata::DownloadState::Failed
             {
-                return record.error_kind.as_ref().map(|kind| kind.as_str().to_owned());
+                return record
+                    .error_kind
+                    .as_ref()
+                    .map(|kind| kind.as_str().to_owned());
             }
             drop(store);
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
