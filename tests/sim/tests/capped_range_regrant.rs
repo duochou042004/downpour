@@ -330,11 +330,19 @@ async fn a_crash_between_fencing_a_prefix_and_regranting_it_claims_only_what_it_
     let pool = FixedWorkerPool::new(Arc::clone(&origin), 3).expect("three workers");
 
     let scenario = Scenario::new("capped-regrant-crash");
-    // Two blocks commit cleanly, then the journal stops reaching the platter. The survivors are
+    // Five blocks commit cleanly, then the journal stops reaching the platter. The survivors are
     // the control: without them a run that wrote nothing at all would satisfy every assertion
     // below, since "claims only what it wrote" is trivially true of a process that wrote nothing.
+    //
+    // Five rather than two, and the difference is not cosmetic. A capped origin needs twelve
+    // responses to move ninety-six bytes, and the remainder of a grant is only re-granted after
+    // its first capped response lands — so a crash on the third sync can arrive before any
+    // re-grant has happened at all. Under `--test-threads 24` it did, roughly one run in eight,
+    // and the guard below refused the run rather than passing a scenario that never reached the
+    // path it is written for. The crash still lands with less than half the representation
+    // durable, which the final assertion checks.
     let crash: &'static CrashPoint =
-        Box::leak(Box::new(CrashPoint::after(Boundary::JournalSync, 2)));
+        Box::leak(Box::new(CrashPoint::after(Boundary::JournalSync, 5)));
     let writer = writer_over_real_files(&scenario, LENGTH, crash, 0).expect("artifacts");
     let allocator = SegmentAllocator::new(LENGTH, MIN_SPLIT).expect("allocator");
     let service = WriterService::start(writer, allocator, 8).expect("writer actor");

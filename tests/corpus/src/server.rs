@@ -1620,6 +1620,18 @@ async fn serve_http11(
         // closing.
         let mut _in_flight = None;
         if let Some(gate) = &budget.in_flight {
+            // Hold the permit until the limit has actually turned someone away, or briefly. A
+            // case about an in-flight limit is only a case when requests are genuinely in flight
+            // together, and waiting for the runtime to overlap them is waiting on the machine's
+            // load: under `--test-threads 24` the three workers were serialised often enough that
+            // the cap never bit and the vacuity guard failed the run, which is the guard doing its
+            // job and the case being wrong. The rendezvous makes the overlap a property of the
+            // origin rather than of the scheduler.
+            let rendezvous = |connections: &ConnectionObservation| {
+                connections.capped.load(Ordering::SeqCst)
+                    + connections.waited.load(Ordering::SeqCst)
+            };
+            let before = rendezvous(connection.observation);
             match gate.try_acquire() {
                 Ok(permit) => _in_flight = Some(permit),
                 Err(_) if spec.concurrent_requests.is_some_and(|limit| limit.reject) => {
@@ -1645,6 +1657,14 @@ async fn serve_http11(
                         Err(_) => return,
                     }
                 }
+            }
+            // Bounded: a transfer that never sends a second request still finishes, one wait
+            // later, rather than hanging.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            while rendezvous(connection.observation) == before
+                && std::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
         }
 
