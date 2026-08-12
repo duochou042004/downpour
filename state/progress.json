@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-11T00:30:00Z",
+  "updated_at": "2026-08-11T02:00:00Z",
   "updated_by": "claude-code",
   "current_stage": "S3",
   "stages": [
@@ -1271,8 +1271,8 @@
         {
           "id": "S3-T13",
           "title": "Apply the documented retention policy without deleting resumable evidence",
-          "status": "todo",
-          "proof": null,
+          "status": "done",
+          "proof": "crates/downpour-daemon/tests/retention.rs (6 tests) plus two assertions added to crates/downpour-daemon/tests/server.rs, on both completion paths. The policy is applied twice: retire_journal_for at the moment a download reaches a terminal state, through record_terminal, and sweep_journals at startup through TransferDaemon::recover for whatever a crash left behind. only_journals_that_can_protect_nothing_are_removed runs one sweep over eight downloads, because a policy that deletes completed journals is trivially wrong if it also takes the failed one beside it and a run that sees one download at a time cannot tell. a_sweep_never_removes_a_part_file holds §8's last row with three orphaned part files and an empty store. an_orphan_survives_until_it_is_older_than_the_floor pins the window that makes the sweep safe against a concurrent download.add. a_sweep_leaves_alone_what_it_does_not_recognise keeps a stranger and a .dpj whose name is not an id. daemon_startup_applies_the_policy drives the real recover path, so the sweep is applied rather than merely implemented. only_a_completed_download_releases_its_journal is the rule the task turns on and exists because a mutation survived without it. Six mutations run; five fired on their own test, and the sixth — retiring the journal for every terminal state rather than only Completed — left the whole crate green until that test was written, which is why the gate is a named function rather than an if at the call site. Ages come from File::set_modified and now_ms is a parameter, so no age rule is tested by sleeping.",
           "files": [
             "crates/downpour-daemon/",
             "crates/downpour-storage/"
@@ -2124,7 +2124,7 @@
     },
     {
       "id": "B-30",
-      "text": "PROMOTED AND FIXED 2026-08-05. Filed as an S3 tidiness item about unbounded journal growth; it was actually the same user-facing fault as B-29 reached from the other side. A FAILED download keeps its journal deliberately, because it is evidence a resume depends on — but that journal then collided with the next attempt's exclusive create, so one failure poisoned its URL forever and the download the user most wants to retry is exactly the one they could not. It resurfaced as the same intermittent dp_add failure B-29 produced, because leaked journals accumulate and recycled ephemeral ports reproduce a final URL. Fixed in StorageSink::create: the part file is created exclusively first, so getting past it proves no other owner holds this target, which makes any journal still at that path orphaned — it has no part file to protect and nothing can be resumed from it — and safe to replace. Regression test tests/corpus/tests/download.rs::a_failed_download_does_not_block_a_later_attempt_at_the_same_url, which uses ONE server so both attempts resolve to the same URL; a first version used two and passed without exercising anything. Verified with four full-workspace runs under 16-core saturation at 48 test threads. The retention policy of docs/04 section 8 remains unimplemented and is now the only part of this entry left, targeted at S3.",
+      "text": "PROMOTED AND FIXED 2026-08-05. Filed as an S3 tidiness item about unbounded journal growth; it was actually the same user-facing fault as B-29 reached from the other side. A FAILED download keeps its journal deliberately, because it is evidence a resume depends on — but that journal then collided with the next attempt's exclusive create, so one failure poisoned its URL forever and the download the user most wants to retry is exactly the one they could not. It resurfaced as the same intermittent dp_add failure B-29 produced, because leaked journals accumulate and recycled ephemeral ports reproduce a final URL. Fixed in StorageSink::create: the part file is created exclusively first, so getting past it proves no other owner holds this target, which makes any journal still at that path orphaned — it has no part file to protect and nothing can be resumed from it — and safe to replace. Regression test tests/corpus/tests/download.rs::a_failed_download_does_not_block_a_later_attempt_at_the_same_url, which uses ONE server so both attempts resolve to the same URL; a first version used two and passed without exercising anything. Verified with four full-workspace runs under 16-core saturation at 48 test threads. CLOSED 2026-08-11 by S3-T13. The retention policy of docs/04 section 8 is now applied in two places: retire_journal_for releases a Completed download's journal at the moment it completes, and sweep_journals at daemon startup removes what a crash left behind — completed journals and orphans with no owning row past a one-day floor. Nothing else is touched, and no part file ever is.",
       "found_in_stage": "S2",
       "target_stage": "S3",
       "rationale": "Found while verifying the B-29 fix. Unbounded growth in a user's home directory is a real defect even though each individual retention is correct"
@@ -2366,6 +2366,13 @@
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "A new ordering path in the allocator proved only by a corpus case is proved at the wrong layer"
+    },
+    {
+      "id": "B-65",
+      "text": "FOUND 2026-08-11 while writing the S3-T13 retention tests, and not chased. A resumed download that cannot succeed does not appear to reach a terminal state. The test drove the daemon's real path — leave an interrupted download, recover, DownloadResume — against an origin answering 416 to every ranged request after the probe. 416 is a 4xx, so TransientKind::from_status makes it NotRetryable and the pool should give up at once; instead the stored record sat at Paused with no error_kind for the full 30 second timeout, polled every 20 ms. Either the resume task never ran, or it failed somewhere that does not reach record_terminal, or the failure is being retried somewhere above the pool. A download that can never succeed and never stops being Paused is a download the user is never told about, and it would also mean the daemon's Failed path is unproven for resumes. The integration test was removed rather than left timing out, and the rule it was written for — that a failed download keeps its journal — is proved directly by retention.rs::only_a_completed_download_releases_its_journal. Reproduce with ServerSpec { status_416_after: Some(1) } and the leave_an_interrupted_download fixture in crates/downpour-daemon/tests/server.rs.",
+      "found_in_stage": "S3",
+      "target_stage": "S3",
+      "rationale": "A terminal state that is never reached is a download stuck forever and an error the user never sees; it also leaves the daemon's resume-failure path untested"
     }
   ],
   "session_log": [
@@ -4462,6 +4469,24 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3 is 13/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; PRs 41, 43, 44 stacked and unmerged in that order. Corpus 101 cases, simulation 17 scenarios, both corpus floors this stage owns are met. B-62 and B-64 are closed, so the remaining S3 work is the three open tasks: T13 the retention policy, T14 the digest cost re-measurement on the segmented path, and T15 the stage-gate mutation audit, where B-56's error-kind finding should be settled and where B-60 and B-63 should be reviewed — both are cases that assert current behaviour rather than required behaviour and both name their backlog item in the case file, so the audit should confirm neither has quietly become wrong. Harness notes for whoever writes cases next: asserting range_support in a corpus case makes the runner issue a second probe of its own, which shifts every ordinal-triggered server capability by one; DEFAULT_MIN_SPLIT_BYTES is 1 MiB with uneven grants, so a case needing three workers wants 6 MiB; and in a simulation origin, anything tracking in-flight state must be an RAII guard because the pool cancels live workers to split their grants."
+    },
+    {
+      "at": "2026-08-11T02:00:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "S3-T13 done and B-30 closed. docs/04 section 8 is applied in two places rather than one: a Completed download's journal is released at the moment it completes, through record_terminal, and a startup sweep takes what a crash left behind — completed journals, and orphans with no owning row that have sat untouched past a one-day floor. The floor exists because a download being added has a journal on disk before its row is committed, so a sweep without one races every download.add. Nothing else is touched: not a failed download's journal, not any unfinished state, not a young orphan, not a file that is not a journal, and never a part file. Six mutations; five fired on their own test and the sixth survived — retiring the journal for every terminal state rather than only Completed left the entire crate green, because the sweep only ever proved that a STORED Failed row keeps its journal and nothing proved the daemon does not delete it the moment a transfer fails. That is the most dangerous direction in the change, and closing it is why the gate is a named function with its own test rather than an if at the call site. One finding recorded and not chased: B-65, a resumed download against an origin that 416s every range sat at Paused for thirty seconds instead of reaching Failed.",
+      "tasks_touched": [
+        "S3-T13"
+      ],
+      "files_touched": [
+        "crates/downpour-daemon/src/retention.rs",
+        "crates/downpour-daemon/src/server.rs",
+        "crates/downpour-daemon/src/lib.rs",
+        "crates/downpour-daemon/tests/retention.rs",
+        "crates/downpour-daemon/tests/server.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 14/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; PRs 41, 43, 44 stacked and unmerged in that order. Corpus 101 cases, simulation 17 scenarios, 357 tests in the workspace. Two tasks left: T14, the digest cost re-measurement on the segmented path, and T15, the stage-gate mutation audit. B-65 should be settled before T15 rather than during it — a resume that cannot succeed and never leaves Paused is either a stuck download or an untested failure path, and T15 has to be able to trust the daemon's terminal states. The audit should also revisit B-56, B-60 and B-63, the three corpus cases that assert current behaviour rather than required behaviour; each names its backlog item in the case file so none can change quietly."
     }
   ],
   "metrics": {
