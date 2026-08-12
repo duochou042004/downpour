@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-11T03:30:00Z",
+  "updated_at": "2026-08-11T04:15:00Z",
   "updated_by": "claude-code",
   "current_stage": "S3",
   "stages": [
@@ -4504,6 +4504,30 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3 is 14/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; PRs 41, 43, 44 stacked and unmerged in that order. 361 tests in the workspace, corpus 101 cases, simulation 17 scenarios. B-30 and B-65 are closed. Two tasks left: T14, the digest cost re-measurement on the segmented path, and T15, the stage-gate mutation audit, which should also revisit B-56, B-60 and B-63 — the three corpus cases that assert current behaviour rather than required behaviour, each naming its backlog item in the case file. IMPORTANT, not a code issue: the GitLab remote could not be pushed. `git push origin` fails with HTTP Basic access denied and then asks for a username; there is no ~/.ssh directory, no credential helper configured and no GitLab token in the environment, so origin is stranded while github has everything. Whoever picks this up needs to supply a credential and push origin before treating the two remotes as synced."
+    },
+    {
+      "at": "2026-08-11T04:15:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "HANDOFF ENTRY — read this one first. Both remotes are synced at ca2f078 and all four GitHub jobs are green including Windows; the tree is clean. This session closed S3-T11 (connections 6 to 20, its floor), S3-T12 (ranges 18 to 25, its floor, closing B-13), S3-T13 (the docs/04 section 8 retention policy, closing B-30), and the three faults the work uncovered: B-55, B-62 and B-65. B-64 added the simulation scenario B-62's fix needed. The method that found every one of them: write the failing test and commit it red, then mutate the behaviour the proof names and require THAT proof to go red; if it survives, decide whether it is a no-op or a gap and argue it in writing. Four proofs of my own could not fail and were caught this way — a keep-alive case whose mutation survived (deleted as a duplicate), a desync case that was green while no request ever met the poisoned socket, a widened-range case that never segmented because it widened the probe's own response, and a redundant grant-bound clause that survives mutation and is kept with a comment saying why rather than pretended to be tested. The largest find, B-65, came from refusing to delete a test that would not go green: a download that failed was never recorded as failed, because the error-kind grammar rejected the snake_case vocabulary docs/08 section 3 itself defines and the daemon wrote the kind and the state in one fallible operation.",
+      "tasks_touched": [
+        "S3-T11",
+        "S3-T12",
+        "S3-T13"
+      ],
+      "files_touched": [
+        "tests/corpus/cases/connections/",
+        "tests/corpus/cases/ranges/",
+        "tests/corpus/src/",
+        "tests/sim/tests/capped_range_regrant.rs",
+        "crates/downpour-engine/src/worker_pool.rs",
+        "crates/downpour-engine/src/segmented.rs",
+        "crates/downpour-daemon/src/retention.rs",
+        "crates/downpour-daemon/src/server.rs",
+        "crates/downpour-storage/src/metadata.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 14/16 tasks and 3/5 exit criteria. current_stage is S3 and was NEVER advanced — advancing it is a human decision. Branch feature/s3-cross-process-resume, both remotes at ca2f078. PRs 41, 43, 44 are stacked and unmerged and must merge in that order; the human merges them. 361 workspace tests, corpus 101 cases, simulation 17 scenarios. || NEXT UNIT is S3-T14: re-measure B-34 on the SEGMENTED path. B-34 records ADR-0017's reversal trigger as already FIRED with the S2 numbers — 1 GB in 6.2s without a server digest and 12.0s with one, 162 MB/s against 83 MB/s, because verification streams the whole file a second time after the transfer. The task's constraint is absolute: never compute SHA-2 in arrival order, because segmented writes do not arrive in order and a digest fed out of order is not the representation's digest. So either retain the second pass and record the measured evidence for doing so, or supersede ADR-0017 with /adr-new BEFORE writing a conditional sequential fast path, and prove the out-of-order fallback independently. Measure on the segmented path rather than reusing S2's numbers; `just corpus-slow` holds the 1 GB transfers. || THEN S3-T15, the stage-gate audit: just gate, just sim, just corpus AND just corpus-slow, all four GitHub jobs including Windows, then mutation-check every S3 exit criterion in the direction it claims and confirm every mutated state was actually reached. Restore from a scratchpad copy, touch the source to force a rebuild, rerun green. Audit B-33 there, and revisit B-56, B-60 and B-63 — three corpus cases that assert CURRENT behaviour rather than required behaviour; each names its backlog item in its own case file so none can change quietly. Count no unfalsifiable assertion as evidence. Propose /stage-gate; never advance current_stage. || PUSHING: github pushes normally. origin (GitLab) has no credential helper and no SSH key, so plain `git push origin` fails with HTTP Basic access denied. glab IS authenticated via keyring, so push with: git -c credential.helper='!glab auth git-credential' push origin <branch>. That worked; do not reconfigure global git. || HARNESS TRAPS, each of which produced a green-but-meaningless test this session: asserting range_support in a corpus case makes the runner issue a SECOND probe of its own, which shifts every ordinal-triggered server capability (withdraw_ranges_after, status_416_after, ignore_range_end_after, shift_ranges_after, ignore_range_at) by one; DEFAULT_MIN_SPLIT_BYTES is 1 MiB and the allocator's grants are NOT even, so a case needing three workers wants 6 MiB and at 3 MiB it silently gets two; anything tracking in-flight state in a simulation origin must be an RAII guard, because the pool cancels live workers to split their grants and drops the fetch future mid-await; and never restore after a mutation with git checkout — copy the file to the scratchpad first (B-49)."
     }
   ],
   "metrics": {
