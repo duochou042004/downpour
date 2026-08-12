@@ -528,3 +528,95 @@ fn hex_bytes(text: &str) -> [u8; 16] {
     }
     bytes
 }
+
+/// A transfer that fails is recorded as failed. B-65.
+///
+/// The registry said `Failed` within a hundred milliseconds and the store still said `Paused`
+/// thirty seconds later, because `write_terminal` builds the error kind and the state in one
+/// operation and the store rejected `segmented_transfer` — every engine kind is snake_case and
+/// the validator's grammar allowed hyphens but not underscores.
+///
+/// What that costs is not a rejected string. The user is never told the download died; the client
+/// shows a transfer that is going nowhere; and the next daemon start reconciles a download that
+/// is already dead. This test is the daemon-level half of the fix, and it is here rather than in
+/// the storage crate because the bug was in what the two do *together*.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_that_fails_is_recorded_as_failed() {
+    use downpour_corpus::content::Content;
+    use downpour_corpus::server::{PathologyServer, ServerSpec};
+    use downpour_storage::metadata::MetadataStore;
+
+    const LENGTH: u64 = 8 * 1024 * 1024;
+
+    // The probe is answered honestly and every ranged request after it is refused as
+    // unsatisfiable. A `416` is a 4xx, so the pool gives up at once rather than spending five
+    // backoffs, and the resume path does not re-probe — so the failure lands on the transfer.
+    let server = PathologyServer::start(ServerSpec {
+        content: Content::new(23, LENGTH),
+        etag: Some("\"gone-v1\"".to_owned()),
+        status_416_after: Some(1),
+        ..ServerSpec::default()
+    })
+    .await
+    .expect("server starts");
+
+    let root = std::env::temp_dir().join(format!(
+        "downpour-failed-recorded-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    std::fs::create_dir_all(root.join("journals")).expect("journals");
+    std::fs::create_dir_all(root.join("target")).expect("target");
+    let config = TransferConfig {
+        target_dir: root.join("target"),
+        journal_dir: root.join("journals"),
+        database_path: root.join("downpour.db"),
+        transport_mode: TransportMode::Http1Only,
+    };
+
+    let id =
+        leave_an_interrupted_download(&config, &server.entry_url(), LENGTH, &[(0, 2 * 1024 * 1024)])
+            .await;
+    let journal = root.join("journals").join(format!("{}.dpj", id.as_str()));
+
+    let mut daemon = TransferDaemon::new(config).expect("the daemon opens its store");
+    daemon.recover().expect("startup recovery runs");
+    let response = daemon.handle(Request::DownloadResume(downpour_ipc::IdParams {
+        protocol_version: PROTOCOL_VERSION,
+        id: id.clone(),
+    }));
+    assert!(
+        matches!(response, Response::Resumed(_)),
+        "the resume must be accepted before it can fail: {response:?}"
+    );
+
+    let recorded = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let store = MetadataStore::open(root.join("downpour.db")).expect("the store opens");
+            let records = store.load_downloads().expect("the store reads");
+            if let Some(record) = records.first()
+                && record.state == downpour_storage::metadata::DownloadState::Failed
+            {
+                return record.error_kind.as_ref().map(|kind| kind.as_str().to_owned());
+            }
+            drop(store);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("a transfer that cannot succeed must reach Failed in the store, not only in memory");
+
+    assert_eq!(
+        recorded.as_deref(),
+        Some("segmented_transfer"),
+        "the failure was recorded without the kind that says what went wrong"
+    );
+    // And §8 row 2: the evidence a resume is built from survives the failure.
+    assert!(
+        journal.exists(),
+        "the failed download's journal at {} was deleted",
+        journal.display()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

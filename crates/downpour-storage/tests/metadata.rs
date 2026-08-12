@@ -996,3 +996,73 @@ fn cbor_head(out: &mut Vec<u8>, major: u8, value: u64) {
         }
     }
 }
+
+/// Every error kind the engine can actually produce must be storable.
+///
+/// B-65. `DownloadErrorKind` accepted `network.timeout` and rejected `segmented_transfer`,
+/// because its grammar allowed hyphens between dots and not underscores — while every kind the
+/// engine emits is snake_case, and `docs/08-ipc-and-ui-spec.md` §3's own worked example is
+/// `"kind": "validator_mismatch"`. Fifteen of the thirty-five kinds in the codebase contain an
+/// underscore.
+///
+/// The consequence was not a rejected string. `write_terminal` in the daemon builds the kind and
+/// the state in one operation, so a kind the store refused discarded the *state* with it: a
+/// download that failed stayed `Paused` for ever, the user was never told, and the next startup
+/// tried to reconcile a transfer that was already dead.
+#[test]
+fn every_error_kind_the_engine_emits_is_storable() {
+    // Taken from the `kind()` implementations in downpour-http, downpour-engine and
+    // downpour-storage, which are the API clients switch on (docs/08 §3).
+    for kind in [
+        "transport",
+        "timeout",
+        "truncated_body",
+        "unexpected_status",
+        "looks_like_error_page",
+        "unusable_range_response",
+        "over_delivery",
+        "validator_mismatch",
+        "unexpected_content_encoding",
+        "too_many_redirects",
+        "redirect_without_location",
+        "unusable_redirect_target",
+        "needs_refresh",
+        "segmented_transfer",
+        "resume_length_mismatch",
+        "target_exists",
+        "digest_mismatch",
+        "unverified",
+        "incomplete",
+        // The dotted form stays valid; this is a widening, not a replacement.
+        "network.timeout",
+        "storage.part-file-missing",
+    ] {
+        assert!(
+            DownloadErrorKind::new(kind).is_ok(),
+            "{kind} is a kind the engine emits and the store refused it, which discards the \
+             download state written alongside it"
+        );
+    }
+}
+
+/// Widening the grammar must not let server text back in. I-14.
+#[test]
+fn an_error_kind_still_cannot_carry_server_text() {
+    for rejected in [
+        "GET https://example.test/file?signature=SERVER_SECRET",
+        "Set-Cookie: session=abc",
+        "UPPERCASE_KIND",
+        "kind with spaces",
+        "",
+        "_leading",
+        "trailing_",
+    ] {
+        assert!(
+            matches!(
+                DownloadErrorKind::new(rejected),
+                Err(MetadataError::InvalidErrorKind { .. })
+            ),
+            "{rejected:?} was accepted as an error kind"
+        );
+    }
+}
