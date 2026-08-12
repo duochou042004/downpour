@@ -1,0 +1,30 @@
+id: the-origin-serves-one-request-at-a-time
+category: connections
+description: >
+  Every connection is accepted, every request is answered, nothing is refused and nothing is
+  closed — and the origin serves exactly one request at a time. Three workers make the transfer
+  take precisely as long as one would.
+  This is the first row of `docs/01-idm-teardown.md` §3.5, the per-IP cap in its purest form:
+  "more connections do not help". It is not a cap on connections, so nothing in the connection
+  count reveals it; the workers all look healthy and all but one are waiting. The engine must
+  finish correctly rather than time out a worker that has been queued behind its peers, and the
+  case is the counterexample to treating concurrency as free — every other capped case here
+  produces an error the engine can react to, and this one produces only latency.
+references: ["docs/agent/INVARIANTS.md#i-7", "docs/01-idm-teardown.md §3.5", "docs/03-transfer-engine-spec.md §3"]
+
+connections: 3
+
+server:
+  content: { size: 6MiB, seed: 153 }
+  concurrent_requests:
+    limit: 1
+    # Queued, not refused. The client is told nothing at all.
+    then: wait
+
+expect:
+  final_state: completed
+  file_renamed: true
+  min_connections: 2
+  # Requests really did queue. Without this an engine that issued them one at a time — which is
+  # the behaviour the case exists to rule out — would pass identically.
+  min_waited_requests: 1

@@ -43,6 +43,25 @@ pub struct PartFile {
     preallocation_method: PreallocationMethod,
 }
 
+/// Whether an open failure means "this path is a link", on either platform.
+///
+/// Linux answers `ELOOP` (and some filesystems `EMLINK`) for `O_NOFOLLOW` against a symlink.
+/// Windows has no such errno, so the platform shim converts its own detection into
+/// `InvalidInput`; see `platform::open_existing_no_follow`.
+fn is_symlink_refusal(source: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        matches!(
+            source.raw_os_error(),
+            Some(libc::ELOOP) | Some(libc::EMLINK)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        source.kind() == io::ErrorKind::InvalidInput
+    }
+}
+
 impl PartFile {
     /// Create `<target>.dppart` exclusively and prepare its full logical extent.
     ///
@@ -111,10 +130,18 @@ impl PartFile {
             i64::try_from(total_length).map_err(|_| PartFileError::UnsupportedLength {
                 length: total_length,
             })?;
-        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+        // B-37. A recorded part path is reopened read-write and then written at recorded offsets,
+        // so if it is a link the resumed download overwrites whatever it points at, silently and
+        // at exactly the expected size. Refusing has to happen *in* the open: a stat-then-open
+        // leaves a window in which the path can be replaced between the two, which is the whole
+        // shape of the bug rather than a smaller version of it.
+        let file = match platform::open_existing_no_follow(&path) {
             Ok(file) => file,
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
                 return Err(PartFileError::Missing { path });
+            }
+            Err(source) if is_symlink_refusal(&source) => {
+                return Err(PartFileError::NotARegularFile { path });
             }
             Err(source) => {
                 return Err(PartFileError::Io {
@@ -355,6 +382,16 @@ impl RecoveredPartFile {
 /// Why a part file could not be created, prepared, inspected, or written.
 #[derive(Debug, Error)]
 pub enum PartFileError {
+    /// The recorded part path is a symlink, a reparse point, or otherwise not a regular file.
+    ///
+    /// Never followed. Writing through it would put this download's bytes into a file the user
+    /// put there for another purpose, at exactly the size the download expects, with nothing
+    /// about the transfer looking wrong while it happens (B-37).
+    #[error("{path} is not a regular file; a part file is never reached through a link")]
+    NotARegularFile {
+        /// The path exactly as recorded. The link itself is left in place as evidence.
+        path: PathBuf,
+    },
     /// The recorded part path does not exist, so its bytes are gone.
     #[error("part file is missing: {path}", path = .path.display())]
     Missing {
@@ -439,6 +476,21 @@ mod platform {
     use rustix::fs::{FallocateFlags, fallocate};
 
     use super::PreallocationMethod;
+
+    /// Open an existing part file read-write without ever traversing a final-component link.
+    ///
+    /// `O_NOFOLLOW` makes the kernel refuse, rather than this code checking first: a check and an
+    /// open are two operations with a replaceable path between them, which is the bug rather than
+    /// a smaller version of it. The kernel answers `ELOOP`.
+    pub(super) fn open_existing_no_follow(path: &std::path::Path) -> io::Result<File> {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+    }
 
     trait AllocationOperations {
         fn fallocate_keep_size(&self) -> io::Result<()>;
@@ -667,6 +719,41 @@ mod platform {
     use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
 
     use super::PreallocationMethod;
+
+    /// Open an existing part file read-write without ever traversing a reparse point.
+    ///
+    /// Windows has no `O_NOFOLLOW`. `FILE_FLAG_OPEN_REPARSE_POINT` is the equivalent: the handle
+    /// refers to the reparse point itself rather than whatever it names, so a symlink, a junction
+    /// or a mount point cannot forward this download's writes to a file the user put there. The
+    /// attribute check that follows uses that handle, so there is no window in which the path
+    /// could be swapped between deciding and opening.
+    ///
+    /// `InvalidInput` is the shared vocabulary with the Linux side's `ELOOP`; see
+    /// `super::is_symlink_refusal`.
+    pub(super) fn open_existing_no_follow(path: &std::path::Path) -> io::Result<File> {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            // BACKUP_SEMANTICS so a directory planted at this path opens rather than erroring
+            // with something indistinguishable from a transient failure; the attribute check
+            // below refuses it for the right reason.
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        let attributes = file.metadata()?.file_attributes();
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "part path is a reparse point",
+            ));
+        }
+        Ok(file)
+    }
 
     trait AllocationOperations {
         fn mark_sparse(&self) -> io::Result<()>;

@@ -1,0 +1,28 @@
+id: every-response-is-cut-at-the-same-length
+category: connections
+description: >
+  The origin closes after a fixed number of body bytes, whatever range was asked for and however
+  many bytes remain — the last row of `docs/01-idm-teardown.md` §3.5. Not a reset, not an error:
+  every response starts correctly, delivers exactly that much, and ends.
+  The distinguishing property is that every attempt makes progress. `transient-reset-is-retried`
+  is a single truncation, and `repeated-resets-exhaust-the-budget` is a server that never lets a
+  request finish; here the transfer advances on every attempt and finishes only if the retry
+  resumes from where the close happened. An engine that re-requests the range it was granted
+  rather than the part it has not received yet asks for the same bytes forever and spends its
+  budget without ever moving.
+references: ["docs/01-idm-teardown.md §3.5", "docs/agent/INVARIANTS.md#i-1", "docs/03-transfer-engine-spec.md §7"]
+
+connections: 2
+
+server:
+  content: { size: 2MiB, seed: 149 }
+  # Half of each worker's 1 MiB grant, so every worker needs exactly two attempts and the retry
+  # budget is never the thing under test.
+  close_after_body_bytes: 512KiB
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # probe, then two attempts for each of the two workers. Three would mean nothing was cut short
+  # and the case would be an ordinary segmented download.
+  min_requests: 5

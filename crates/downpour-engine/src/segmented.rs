@@ -16,13 +16,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use downpour_http::{
-    ProbeError, ProbeRequest, RangeOutcome, RangeRequest, RangeSink, TransferError,
+    ProbeError, ProbeRequest, RangeOutcome, RangeRequest, RangeSink, RetryPolicy, TransferError,
     TransferProtocol,
 };
 use url::Url;
 
+use downpour_storage::journal::FileHeader;
+use downpour_storage::part_file::PartFile;
+use downpour_storage::recovery::{VerifyOnResume, durable_state_with};
+use downpour_storage::writer::{DurableWriter, JournalFile};
+use downpour_types::RemoteObject;
+
 use crate::download::{DownloadError, SingleStream, StorageLayout};
-use crate::storage_sink::create_journalled_artifacts;
+use crate::storage_sink::{create_journalled_artifacts, journal_path_for};
 use crate::worker_pool::{FixedWorkerPool, PoolPlan};
 use crate::writer_service::WriterService;
 use crate::{DEFAULT_MIN_SPLIT_BYTES, SegmentAllocator};
@@ -37,6 +43,7 @@ const WRITER_QUEUE_CAPACITY: usize = 32;
 pub struct SegmentedDownload<B> {
     backend: Arc<B>,
     connections: usize,
+    retry_policy: RetryPolicy,
 }
 
 impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
@@ -46,7 +53,19 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         Self {
             backend,
             connections,
+            retry_policy: RetryPolicy::default(),
         }
+    }
+
+    /// Replace the retry curve, for both this path and the single-stream path it falls back to.
+    ///
+    /// Only the delays change; the budget and the classification do not, and `Retry-After` is
+    /// still honoured exactly. The corpus needs it so a segmented case that injects a transient
+    /// failure does not pay the spec's real back-off in wall-clock time (B-53).
+    #[must_use]
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
     }
 
     /// Run one download to its final, verified name.
@@ -67,6 +86,7 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         // Resume for the segmented path is S3-T9.
         if self.connections <= 1 {
             return SingleStream::new(ArcBackend(Arc::clone(&self.backend)))
+                .with_retry_policy(self.retry_policy)
                 .download(url, layout)
                 .await;
         }
@@ -78,12 +98,14 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
             .map_err(DownloadError::from)?;
 
         let pool = FixedWorkerPool::new(Arc::clone(&self.backend), self.connections)
-            .map_err(|source| DownloadError::Segmented { source })?;
+            .map_err(|source| DownloadError::Segmented { source })?
+            .with_retry_policy(self.retry_policy);
         let PoolPlan::Segmented { total_length, .. } = pool.plan(&remote) else {
             // Not segmentable. The single-stream path already owns probe, retry, resume and the
             // completion sequence for this case, so it runs it rather than this module growing a
             // second copy that would drift from it.
             return SingleStream::new(ArcBackend(Arc::clone(&self.backend)))
+                .with_retry_policy(self.retry_policy)
                 .download(url, layout)
                 .await;
         };
@@ -91,7 +113,7 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         let final_path = crate::download::final_path_for(layout.target_dir(), &remote);
         crate::download::refuse_occupied_target(&final_path).await?;
         let journal_dir = layout.journal_dir().to_path_buf();
-        let transfer_id = crate::download::transfer_id_for(&remote.final_url);
+        let transfer_id = layout.transfer_id_for_remote(&remote);
         let validator_hash = crate::download::validator_hash_of(&remote.validator);
         let target = final_path.clone();
         let (writer, artifacts) = tokio::task::spawn_blocking(move || {
@@ -140,6 +162,119 @@ impl<B: TransferProtocol + 'static> SegmentedDownload<B> {
         );
         Ok(final_path)
     }
+
+    /// Resume a download from the durable artifacts a previous process left behind.
+    ///
+    /// `remote` is the **recorded** identity, not a fresh probe. Re-probing would replace the
+    /// validator captured when the existing bytes were fetched with one that trivially matches
+    /// whatever the server is serving now, which is exactly the comparison I-3 asks for, thrown
+    /// away (I-8 is the reason it is recorded in the first place).
+    ///
+    /// Nothing in memory carries across. The journal is the only authority for what is durable,
+    /// the allocator is rebuilt from it, and every byte it proved is unreachable to every grant
+    /// this call issues — so the transfer asks the server only for what is actually missing.
+    ///
+    /// # Errors
+    ///
+    /// Any storage, replay, transfer or verification failure. Nothing is deleted: the part file
+    /// and journal remain what a further resume would build on (docs/04 §6).
+    pub async fn resume(
+        &self,
+        remote: &RemoteObject,
+        layout: &StorageLayout,
+    ) -> Result<PathBuf, DownloadError> {
+        let final_path = crate::download::final_path_for(layout.target_dir(), remote);
+        crate::download::refuse_occupied_target(&final_path).await?;
+        let transfer_id = layout.transfer_id_for_remote(remote);
+        let validator_hash = crate::download::validator_hash_of(&remote.validator);
+        let journal_path = journal_path_for(layout.journal_dir(), transfer_id);
+
+        let part_path = part_path_of(&final_path);
+        // docs/04 §3.4's default. A block whose bytes no longer hash to what the journal recorded
+        // is not durable, and resume is exactly when that matters: the alternative is fetching
+        // around a range the file no longer holds and finishing at the right size with a hole.
+        let durable = tokio::task::spawn_blocking({
+            let journal_path = journal_path.clone();
+            let part_path = part_path.clone();
+            move || durable_state_with(&journal_path, &part_path, VerifyOnResume::default())
+        })
+        .await
+        .map_err(|error| DownloadError::Io {
+            path: journal_path.clone(),
+            source: std::io::Error::other(error.to_string()),
+        })?
+        .map_err(|source| DownloadError::Recovery { source })?;
+
+        let total_length = durable.effective_length();
+        if remote.total_length != Some(total_length) {
+            // The journal describes a different representation length from the one the recorded
+            // identity claims. Writing into it would put bytes at offsets that mean something
+            // else. Refuse rather than pick one.
+            return Err(DownloadError::ResumeLengthMismatch {
+                journal: total_length,
+                recorded: remote.total_length,
+            });
+        }
+
+        let next_sequence = durable.next_sequence();
+        let intervals = durable.into_intervals();
+        let allocator = SegmentAllocator::resume(intervals, DEFAULT_MIN_SPLIT_BYTES)
+            .map_err(|source| DownloadError::Allocator { source })?;
+
+        let header = FileHeader::new(transfer_id, total_length, 0, validator_hash);
+        let writer = tokio::task::spawn_blocking({
+            let part_path = part_path.clone();
+            let journal_path = journal_path.clone();
+            move || {
+                // Both no-follow, and the journal header is compared rather than trusted. Between
+                // the process that died and this one, anything at all may have happened to these
+                // paths.
+                let part = PartFile::open_existing(&part_path, total_length)
+                    .map_err(downpour_storage::writer::WriterError::from)?;
+                let journal = JournalFile::open_existing(&journal_path, &header)?;
+                DurableWriter::try_new(part.into_part(), journal, next_sequence)
+            }
+        })
+        .await
+        .map_err(|error| DownloadError::Io {
+            path: part_path.clone(),
+            source: std::io::Error::other(error.to_string()),
+        })?
+        .map_err(|source| DownloadError::Resume { source })?;
+
+        let pool = FixedWorkerPool::new(Arc::clone(&self.backend), self.connections)
+            .map_err(|source| DownloadError::Segmented { source })?
+            .with_retry_policy(self.retry_policy);
+        let service = WriterService::start(writer, allocator, WRITER_QUEUE_CAPACITY)
+            .map_err(|source| DownloadError::Writer { source })?;
+
+        let transferred = pool.execute_segmented(remote, &service).await;
+        if let Err(source) = transferred {
+            drop(service.shutdown().await);
+            return Err(DownloadError::Segmented { source });
+        }
+
+        let completion = service
+            .complete(&part_path, &final_path, remote.digest.clone())
+            .await;
+        drop(service.shutdown().await);
+        completion.map_err(|source| DownloadError::Writer { source })?;
+
+        tracing::info!(
+            path = %final_path.display(),
+            bytes = total_length,
+            connections = self.connections,
+            "segmented download resumed and completed"
+        );
+        Ok(final_path)
+    }
+}
+
+/// The `.dppart` beside a final path, by the same rule that created it.
+fn part_path_of(final_path: &std::path::Path) -> PathBuf {
+    let mut name = std::ffi::OsString::from(final_path.as_os_str());
+    name.push(".dppart");
+    PathBuf::from(name)
 }
 
 /// Lets the shared backend be handed to [`SingleStream`], which takes ownership of one.

@@ -1,0 +1,32 @@
+id: a-polite-cap-answers-429-instead-of-dropping
+category: connections
+description: >
+  The same per-IP cap as `a-capped-origin-drops-the-connection-beyond-its-limit`, enforced the
+  other way an origin enforces one: the connection beyond the limit is answered rather than
+  dropped, with `429 Too Many Requests` and a close. Nothing is lost and nothing hangs — the
+  origin has told the client, in a parseable way, that it opened one connection too many.
+  This is a different pathology, not a different header. The dropped-connection shape produces a
+  transport error, which the segmented pool already treats as retryable; the answered shape
+  produces a *status*, and a client that only recovers from broken sockets fails a download that
+  the origin explicitly told it to slow down and repeat. I-7 names `429` as one of the four
+  signals concurrency must fall back on, so a `429` that kills the transfer is the opposite of
+  the required behaviour.
+references: ["docs/agent/INVARIANTS.md#i-7", "docs/01-idm-teardown.md §3.5", "docs/03-transfer-engine-spec.md §7", "docs/09-testing-strategy.md §3.2"]
+
+# Three workers against an origin that serves two connections at once.
+connections: 3
+
+server:
+  content: { size: 4MiB, seed: 143 }
+  max_concurrent_connections: 2
+  # Answer the connection beyond the cap instead of dropping it. No `Retry-After`: honouring one
+  # exactly is pinned by `retry-after-is-honoured` and by crates/downpour-http/tests/retry_policy.rs,
+  # and leaving it out keeps this case about the cap rather than about the header.
+  cap_status: 429
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # The cap has to have answered. Without this the case passes with no cap at all — exactly the
+  # vacuity that made the first capped-origin case prove nothing.
+  min_capped_responses: 1

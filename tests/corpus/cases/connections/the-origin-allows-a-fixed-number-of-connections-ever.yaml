@@ -1,0 +1,32 @@
+id: the-origin-allows-a-fixed-number-of-connections-ever
+category: connections
+description: >
+  A budget on connections *accepted*, not on connections held at once: the origin takes two and
+  drops every one after them, permanently. Four workers are configured and only two sockets will
+  ever exist.
+  This is the cap that waiting cannot solve, which is what separates it from every other capped
+  case here. A concurrency cap clears when a peer finishes; this one never clears, so an engine
+  whose only recovery is "back off and open it again" retries into a socket that will never be
+  accepted until its budget is spent. The transfer can only finish by reusing the connections it
+  already holds — keep-alive stops being an optimisation and becomes the thing correctness rests
+  on.
+references: ["docs/agent/INVARIANTS.md#i-7", "docs/01-idm-teardown.md §3.5", "docs/03-transfer-engine-spec.md §3", "docs/09-testing-strategy.md §3.2"]
+
+connections: 4
+
+server:
+  content: { size: 4MiB, seed: 145 }
+  max_total_connections: 2
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # The budget bit, repeatedly.
+  min_refused_connections: 2
+  # And it was never exceeded. An upper bound rather than a lower one, because the claim here is
+  # that the whole transfer fitted inside two sockets — a case asserting only "at least two" would
+  # be satisfied by an engine that opened ten and had eight dropped.
+  max_served_connections: 2
+  # Two connections carried the probe and four workers' worth of ranges between them, so the
+  # engine must have reused them rather than opened one per request.
+  min_requests: 5

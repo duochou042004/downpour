@@ -103,8 +103,10 @@ async fn killing_cli_after_submission_does_not_stop_daemon_progress() {
     let daemon = TransferDaemon::new(TransferConfig {
         target_dir: output.clone(),
         journal_dir: journals,
+        database_path: runtime_root.join("downpour.db"),
         transport_mode: TransportMode::Http1Only,
-    });
+    })
+    .expect("the daemon opens its store");
     let (submitted_tx, submitted_rx) = sync_channel(1);
     let (release_tx, release_rx) = sync_channel(1);
     let connection = tokio::spawn(async move {

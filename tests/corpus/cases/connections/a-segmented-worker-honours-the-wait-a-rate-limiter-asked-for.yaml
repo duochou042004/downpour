@@ -1,0 +1,33 @@
+id: a-segmented-worker-honours-the-wait-a-rate-limiter-asked-for
+category: connections
+description: >
+  The origin's in-flight limit answers the excess request with `429` and a `Retry-After` of one
+  second. The engine must wait the second the limiter asked for, not the milliseconds its own
+  back-off curve would choose. Shortening what a rate limiter asked for is how a rate limit
+  becomes a ban.
+  `retry-after-is-honoured` makes this claim for a single stream, and it is the only place it is
+  made: the segmented pool passes the header to the policy in different code, and until this case
+  existed nothing failed if that were deleted. The proof has to be the clock, because the outcome
+  cannot see it — the same file arrives either way. The corpus runs the retry curve collapsed to
+  milliseconds, so an engine substituting its own delay finishes in well under a second and an
+  engine honouring the header cannot.
+references: ["RFC 9110 §10.2.3", "docs/agent/INVARIANTS.md#i-7", "docs/03-transfer-engine-spec.md §7"]
+
+connections: 3
+
+server:
+  content: { size: 6MiB, seed: 157 }
+  concurrent_requests:
+    limit: 2
+    then: reject
+  # What the limiter asks for. One second rather than thirty, because the case has to run in CI;
+  # exact honouring across the whole range is pinned by crates/downpour-http/tests/retry_policy.rs.
+  cap_retry_after: "1"
+
+expect:
+  final_state: completed
+  file_renamed: true
+  min_capped_responses: 1
+  # The clock is the assertion. Every retry delay in this run is a millisecond-scale one except
+  # the server's, so finishing sooner than this means the header was ignored.
+  min_elapsed_ms: 1000

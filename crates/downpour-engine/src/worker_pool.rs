@@ -174,6 +174,7 @@ impl From<TransferError> for PoolError {
 pub struct FixedWorkerPool<B> {
     backend: Arc<B>,
     workers: usize,
+    retry_policy: RetryPolicy,
 }
 
 struct RunningWorker {
@@ -198,7 +199,24 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
         if workers == 0 {
             return Err(PoolError::ZeroWorkers);
         }
-        Ok(Self { backend, workers })
+        Ok(Self {
+            backend,
+            workers,
+            retry_policy: RetryPolicy::default(),
+        })
+    }
+
+    /// Replace the retry curve this pool's workers back off on.
+    ///
+    /// The budget and the classification are unchanged; only the delays are. Exists because the
+    /// corpus needs the spec's real waits collapsed to milliseconds — the single-stream path has
+    /// had this since S1, and without it every segmented case that injects a transient failure
+    /// pays the spec's back-off in wall-clock time for nothing (B-53). `Retry-After` is still
+    /// honoured exactly, whatever curve is set.
+    #[must_use]
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
     }
 
     /// Select segmented or whole-stream execution from validated probe evidence.
@@ -278,6 +296,12 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
             backend: Arc::clone(&self.backend),
             writer,
             url: remote.final_url.clone(),
+            // I-3. Every ranged request is conditional on the representation the probe recorded,
+            // so a file that changes underneath a transfer produces a 200 this pool refuses rather
+            // than bytes written at offsets that no longer mean anything. Load-bearing the moment
+            // a resume writes into the holes of a file whose other bytes came from an earlier
+            // representation, and free before then.
+            if_range: remote.validator.if_range_value().map(str::to_owned),
             total_length,
             workers: pool_workers,
             tasks: JoinSet::new(),
@@ -301,7 +325,7 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
         let mut ticker = tokio::time::interval(JOURNAL_FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ticker.tick().await;
-        let retry_policy = RetryPolicy::default();
+        let retry_policy = self.retry_policy;
         let mut transient_failures = 0_u32;
 
         loop {
@@ -335,7 +359,21 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
                     };
                     match joined {
                         Ok(WorkerEvent::Finished { worker, result: Ok(report) }) => {
-                            scheduler.running.remove(&worker);
+                            let attempt = scheduler.running.remove(&worker);
+                            // An origin that caps range size answers honestly and narrowly, so a
+                            // worker can succeed having delivered only a prefix of its grant.
+                            // Abandon fences what it wrote durably and returns the untouched
+                            // suffix to Pending for any idle worker to take. Deliberately not the
+                            // retry path: nothing failed, and spending budget on a well-behaved
+                            // origin would fail a download that a capped CDN serves perfectly
+                            // well (B-62).
+                            if attempt.is_some_and(|attempt| {
+                                let granted = attempt.grant.range();
+                                report.bytes < granted.end.saturating_sub(granted.start)
+                            }) {
+                                writer.abandon(worker).await?;
+                                scheduler.unpark_everyone();
+                            }
                             scheduler.reports.push(report);
                             scheduler.make_idle(worker);
                         }
@@ -348,7 +386,11 @@ impl<B: TransferProtocol + 'static> FixedWorkerPool<B> {
                                 scheduler.reclaim_after_failure().await?;
                                 return Err(error);
                             };
-                            match retry_policy.decide(kind, transient_failures, None) {
+                            match retry_policy.decide(
+                                kind,
+                                transient_failures,
+                                worker_retry_after(&error),
+                            ) {
                                 RetryDecision::GiveUp => {
                                     scheduler.reclaim_after_failure().await?;
                                     return Err(error);
@@ -482,6 +524,8 @@ struct Scheduler<'a, B> {
     backend: Arc<B>,
     writer: &'a WriterService,
     url: url::Url,
+    /// The recorded validator, replayed on every ranged request (I-3).
+    if_range: Option<String>,
     total_length: u64,
     workers: Vec<WorkerId>,
     tasks: JoinSet<WorkerEvent>,
@@ -517,6 +561,7 @@ impl<B: TransferProtocol + 'static> Scheduler<'_, B> {
             grant,
             self.writer,
             self.url.clone(),
+            self.if_range.clone(),
             self.total_length,
         );
     }
@@ -632,6 +677,10 @@ impl<B: TransferProtocol + 'static> Scheduler<'_, B> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site; bundling these into a struct would only move the list"
+)]
 fn spawn_ranged_worker<B: TransferProtocol + 'static>(
     tasks: &mut JoinSet<WorkerEvent>,
     running: &mut BTreeMap<WorkerId, RunningWorker>,
@@ -639,6 +688,7 @@ fn spawn_ranged_worker<B: TransferProtocol + 'static>(
     grant: Grant,
     writer: &WriterService,
     url: url::Url,
+    if_range: Option<String>,
     total_length: u64,
 ) {
     let worker = grant.worker();
@@ -655,6 +705,7 @@ fn spawn_ranged_worker<B: TransferProtocol + 'static>(
                 task_grant,
                 grant_writer,
                 url,
+                if_range,
                 total_length,
             ) => WorkerEvent::Finished { worker, result },
             _ = cancelled => WorkerEvent::Cancelled { worker },
@@ -709,12 +760,33 @@ fn retryable_worker_failure(error: &PoolError) -> Option<TransientKind> {
         TransferError::Transport { .. } => Some(TransientKind::ConnectionReset),
         TransferError::Timeout { .. } => Some(TransientKind::Timeout),
         TransferError::TruncatedBody { .. } => Some(TransientKind::TruncatedBody),
-        TransferError::UnexpectedStatus { .. }
-        | TransferError::LooksLikeAnErrorPage { .. }
+        // Classified by the same table the single-stream path uses
+        // (`crate::download::transient_kind_of`, `docs/03` §7). A `429` from an origin enforcing
+        // its cap politely, or a `503` from one under load, is the first signal I-7 names — and
+        // treating it as fatal here made the segmented path strictly less resilient than the
+        // single-stream path it replaces. `401`, `403` and `410` still fall through to `None`:
+        // those are the refresh flow's (I-8), not a back-off's.
+        TransferError::UnexpectedStatus { status, .. } => TransientKind::from_status(*status),
+        TransferError::LooksLikeAnErrorPage { .. }
         | TransferError::UnusableRangeResponse { .. }
         | TransferError::OverDelivery { .. }
         | TransferError::Sink { .. }
         | TransferError::ValidatorMismatch { .. } => None,
+    }
+}
+
+/// The `Retry-After` a failed worker's response carried, if it carried one.
+///
+/// Substituting our own curve for what a rate limiter asked for is how a rate limit becomes a
+/// ban, so the header is passed through rather than ignored — the same rule the single-stream
+/// path follows in `crate::download::retry_after_of`.
+fn worker_retry_after(error: &PoolError) -> Option<&str> {
+    let PoolError::Transfer(source) = error else {
+        return None;
+    };
+    match source.as_ref() {
+        TransferError::UnexpectedStatus { retry_after, .. } => retry_after.as_deref(),
+        _ => None,
     }
 }
 
@@ -728,6 +800,7 @@ async fn run_ranged_worker<B: TransferProtocol + 'static>(
     grant: Grant,
     grant_writer: GrantWriter,
     url: url::Url,
+    if_range: Option<String>,
     total_length: u64,
 ) -> Result<WorkerReport, PoolError> {
     let started = Instant::now();
@@ -746,20 +819,29 @@ async fn run_ranged_worker<B: TransferProtocol + 'static>(
         range.start,
         Some(expected),
     );
-    let outcome = backend
-        .fetch_range(RangeRequest::ranged(url, requested), &mut sink)
-        .await?;
+    let request = match if_range {
+        Some(validator) => RangeRequest::resume(url, requested, validator),
+        None => RangeRequest::ranged(url, requested),
+    };
+    let outcome = backend.fetch_range(request, &mut sink).await?;
     let observed = sink.written();
+    // How much of the grant the response *described*. `None` means it described something this
+    // worker must not write: a different start, a span past the end of the grant, a total that
+    // disagrees with the representation, or no usable `Content-Range` at all.
+    let described = described_prefix_of(outcome.content_range, &range, total_length);
     if outcome.status != 206
         || outcome.protocol != NegotiatedProtocol::Http11
         || outcome.truncated
-        || outcome.bytes_delivered != expected
-        || observed != expected
-        || !content_range_matches(outcome.content_range, &range, total_length)
+        || described.is_none_or(|described| {
+            // The body has to be exactly what the header promised, and it has to be some of it.
+            // A response describing nothing would make no progress, and a worker that returns
+            // zero bytes forever is a loop rather than a slow transfer.
+            described == 0 || outcome.bytes_delivered != described || observed != described
+        })
     {
         return Err(PoolError::InvalidOutcome {
             worker,
-            reason: "ranged response did not match its exact allocator grant",
+            reason: "ranged response did not match its allocator grant",
         });
     }
     sink.sync().await?;
@@ -770,21 +852,42 @@ async fn run_ranged_worker<B: TransferProtocol + 'static>(
     })
 }
 
-fn content_range_matches(
+/// How many bytes of `range` a `Content-Range` describes, or `None` if it describes anything the
+/// worker must not write.
+///
+/// A response is allowed to be **narrower** than the grant and never anything else. Origins that
+/// cap how large a range they will serve are ordinary — S3, CloudFront and most CDNs do it — and a
+/// prefix of a grant is safe in a way no other discrepancy is: the bytes begin where the worker
+/// was told to begin, so every one of them belongs at the offset it is written to, and the only
+/// open question is what happens to the remainder (B-62).
+///
+/// Everything else stays refused, because none of it has that property. A different `first` is
+/// `content-range-mismatch`, which writes the wrong part of the file at the right offset. A `last`
+/// past the end of the grant is a write into the next worker's territory (I-2). A disagreeing
+/// total means the response is describing a different representation from the one the probe
+/// established (I-3).
+fn described_prefix_of(
     content_range: Option<ContentRange>,
     range: &std::ops::Range<u64>,
     total_length: u64,
-) -> bool {
-    matches!(
-        content_range,
-        Some(ContentRange::Bytes {
-            first,
-            last,
-            complete_length: Some(total),
-        }) if first == range.start
-            && last.checked_add(1) == Some(range.end)
-            && total == total_length
-    )
+) -> Option<u64> {
+    let ContentRange::Bytes {
+        first,
+        last,
+        complete_length: Some(total),
+    } = content_range?
+    else {
+        return None;
+    };
+    let end = last.checked_add(1)?;
+    // `end <= range.end` is deliberately redundant and must stay. Mutating it away does not turn
+    // any test red, because a body wider than the grant cannot be observed: `RangeSink` is built
+    // with the grant span as its bound, so the delivered count can never exceed it and the
+    // `observed != described` check below fires first. That makes the boundary an emergent
+    // property of two other checks rather than a stated one, and I-2 is meant to be structural.
+    // Keeping it costs a comparison and states the rule where the rule is decided.
+    (first == range.start && end <= range.end && total == total_length)
+        .then(|| end.saturating_sub(first))
 }
 
 struct GrantTarget {

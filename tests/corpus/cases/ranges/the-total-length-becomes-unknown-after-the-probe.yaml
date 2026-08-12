@@ -1,0 +1,29 @@
+id: the-total-length-becomes-unknown-after-the-probe
+category: ranges
+description: >
+  The probe is answered `Content-Range: bytes 0-0/6291456`, which is what permits segmentation at
+  all, and every ranged response after it says `bytes X-Y/*`. The origin has stopped being willing
+  to state how large the representation is, while continuing to serve ranges of it perfectly well.
+  `unknown-total-length` makes the probe say `*`, where the answer is simple: there is nothing to
+  segment, so do not. Here segmentation has already happened on a total the origin stated, and the
+  question is whether the engine keeps believing its own recorded length or quietly adopts the
+  absence of one. Adopting it is the dangerous answer, because a transfer with no total has no
+  completion condition — the block map can never be shown to cover `[0, length)` when `length` is
+  gone, and I-4's rename check has nothing left to check.
+references: ["RFC 9110 §14.4", "docs/agent/INVARIANTS.md#i-4", "docs/03-transfer-engine-spec.md §2"]
+
+connections: 3
+
+server:
+  content: { size: 6MiB, seed: 166 }
+  unknown_total_after: 1
+
+expect:
+  # B-63. When the recorded total is preferred over the absence of one, this becomes `completed`
+  # with `file_renamed: true`.
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false
+  # The origin really did stop stating a length. Without this the case would pass against a
+  # perfectly ordinary origin.
+  min_starless_totals: 1

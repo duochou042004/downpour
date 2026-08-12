@@ -1,0 +1,31 @@
+id: a-transfer-that-always-dies-at-the-same-offset-is-not-renamed
+category: connections
+description: >
+  A middlebox that kills any flow crossing one point in the representation. Every response is cut
+  at the same absolute offset, so the workers whose ranges lie before it finish normally and the
+  one whose range spans it can never get past it — its retry asks for the bytes starting at the
+  offset and gets nothing at all.
+  This is the failure that most resembles success. Most of the file is present and durable, the
+  part file is byte-correct as far as it goes, and a `.dppart` that is 75% of the way there is
+  exactly what tempts an engine into renaming what it has. It must not: I-4 is that the final name
+  appears only after full coverage. Distinct from `repeated-resets-exhaust-the-budget`, where
+  nothing ever completes and there is no partial success to be tempted by, and from
+  `every-response-is-cut-at-the-same-length`, where every attempt advances and the transfer
+  finishes — here the budget is finite and must actually run out.
+references: ["docs/agent/INVARIANTS.md#i-4", "docs/03-transfer-engine-spec.md §7", "docs/09-testing-strategy.md §3.2"]
+
+connections: 2
+
+server:
+  content: { size: 2MiB, seed: 150 }
+  # Inside the second worker's grant, so the first worker's range completes and the second cannot.
+  drop_at_offset: 1536KiB
+
+expect:
+  final_state: failed
+  # Not truncated_body, which is what the single-stream path reports for the very same server
+  # behaviour: the pool wraps its cause, so a client switching on `kind` cannot tell a server that
+  # cut the body from a scheduler that broke. Asserted as it is rather than as it should be, and
+  # recorded in the backlog — changing a kind is an IPC contract change (docs/08 §3).
+  error_kind: segmented_transfer
+  file_renamed: false

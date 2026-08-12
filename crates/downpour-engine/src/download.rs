@@ -40,6 +40,7 @@ pub const JOURNAL_EXTENSION: &str = "dpj";
 pub struct StorageLayout {
     target_dir: PathBuf,
     journal_dir: PathBuf,
+    transfer_id: Option<[u8; 16]>,
 }
 
 impl StorageLayout {
@@ -48,7 +49,28 @@ impl StorageLayout {
         Self {
             target_dir: target_dir.into(),
             journal_dir: journal_dir.into(),
+            transfer_id: None,
         }
+    }
+
+    /// Name this download's journal from an allocated id rather than from its URL.
+    ///
+    /// Without this the journal is named from a hash of the final URL, which is what the engine
+    /// had to do while nothing allocated ids. The daemon does allocate them, and its startup
+    /// recovery looks for `<journal_dir>/<download-id>.dpj` exactly as docs/04 §1 lays it out —
+    /// so a daemon-owned transfer that let the engine derive the name would write a journal its
+    /// own recovery could never find, and no download would ever be resumable (B-51).
+    #[must_use]
+    pub fn with_transfer_id(mut self, transfer_id: [u8; 16]) -> Self {
+        self.transfer_id = Some(transfer_id);
+        self
+    }
+
+    /// The id this download's journal is named from, given its probed identity.
+    #[must_use]
+    pub fn transfer_id_for_remote(&self, remote: &RemoteObject) -> [u8; 16] {
+        self.transfer_id
+            .unwrap_or_else(|| transfer_id_for(&remote.final_url))
     }
 
     /// Where the finished file and its `.dppart` live.
@@ -215,7 +237,7 @@ impl<B: TransferProtocol> SingleStream<B> {
         let journal_dir = layout.journal_dir().to_path_buf();
         let target_for_sink = final_path.clone();
         let total_length = remote.total_length;
-        let transfer_id = transfer_id_for(&remote.final_url);
+        let transfer_id = layout.transfer_id_for_remote(&remote);
         let validator_hash = validator_hash_of(&remote.validator);
         let digest = remote.digest.clone();
         let target = tokio::task::spawn_blocking(move || {
@@ -506,6 +528,31 @@ pub enum DownloadError {
         #[source]
         source: crate::AllocatorError,
     },
+    /// Durable recovery state could not be rebuilt from the journal.
+    #[error("could not rebuild durable state for a resume: {source}")]
+    Recovery {
+        /// Replay, format, or interval failure.
+        #[source]
+        source: downpour_storage::recovery::RecoveryError,
+    },
+    /// The recorded artifacts could not be adopted for a resume.
+    #[error("could not adopt the existing artifacts for a resume: {source}")]
+    Resume {
+        /// Part-file or journal reopen failure, including a refusal to follow a link.
+        #[source]
+        source: downpour_storage::writer::WriterError,
+    },
+    /// The journal and the recorded identity describe different representation lengths.
+    ///
+    /// Writing into the part file would put bytes at offsets that mean something else, so this
+    /// refuses rather than choosing one of the two answers.
+    #[error("journal covers {journal} bytes but the recorded identity claims {recorded:?}")]
+    ResumeLengthMismatch {
+        /// Length bound into the journal header.
+        journal: u64,
+        /// Length carried by the recorded identity.
+        recorded: Option<u64>,
+    },
     /// The download-state actor failed to start, store, or complete this transfer.
     #[error("download-state actor failed: {source}")]
     Writer {
@@ -587,6 +634,9 @@ impl DownloadError {
                 source: crate::writer_service::WriterServiceError::Unverified { .. },
             } => "unverified",
             Self::Segmented { .. } => "segmented_transfer",
+            Self::Recovery { .. } => "recovery",
+            Self::Resume { .. } => "resume",
+            Self::ResumeLengthMismatch { .. } => "resume_length_mismatch",
             Self::Allocator { .. } => "allocator",
             Self::Writer { .. } => "download_state",
             Self::Io { .. } => "io",
@@ -641,7 +691,14 @@ pub(crate) async fn refuse_occupied_target(final_path: &Path) -> Result<(), Down
     }
 }
 
-pub(crate) fn transfer_id_for(final_url: &Url) -> [u8; 16] {
+/// A stable journal identity for one representation.
+///
+/// Derived from the final URL rather than allocated, so the retries inside one download call and
+/// a later resume all resolve to the same journal path. Public because resume has to reach the
+/// artifacts a previous process created, and deriving them a second way is how the two ends of a
+/// resume come to disagree about which files belong to this download.
+#[must_use]
+pub fn transfer_id_for(final_url: &Url) -> [u8; 16] {
     let digest = blake3::hash(final_url.as_str().as_bytes());
     let mut id = [0_u8; 16];
     id.copy_from_slice(&digest.as_bytes()[..16]);
@@ -653,7 +710,12 @@ pub(crate) fn transfer_id_for(final_url: &Url) -> [u8; 16] {
 /// A representation with no usable validator hashes to zero rather than to something
 /// arbitrary — "nothing to compare against" is the honest record, and it is what a resume must
 /// refuse on.
-pub(crate) fn validator_hash_of(validator: &Validator) -> [u8; 32] {
+/// The journal header's binding to the remote validator (I-3).
+///
+/// A representation with no usable validator hashes to zero rather than to something arbitrary —
+/// "nothing to compare against" is the honest record, and it is what a resume must refuse on.
+#[must_use]
+pub fn validator_hash_of(validator: &Validator) -> [u8; 32] {
     match validator {
         Validator::StrongETag(value) => {
             *blake3::hash(format!("etag:{value}").as_bytes()).as_bytes()

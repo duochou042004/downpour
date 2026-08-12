@@ -116,10 +116,92 @@ impl JournalFile {
         })
     }
 
+    /// Reopen an existing journal for append, bound to the header a replay already validated.
+    ///
+    /// Resume writes new records after the ones recovery replayed, so this must append to the same
+    /// file rather than start a second one — a fresh journal would describe a file whose earlier
+    /// bytes it cannot account for, and replay would then contradict the part file.
+    ///
+    /// The header on disk is re-read and compared against `expected` rather than trusted. It binds
+    /// the transfer id, the representation length and the validator hash, so a mismatch means this
+    /// journal belongs to a different representation and appending to it would produce durable
+    /// evidence for a file that was never fetched (I-3, I-11).
+    ///
+    /// Opened no-follow for the same reason the part file is (B-37): a journal path is just as
+    /// plantable, and appending through a link writes this download's recovery evidence into
+    /// somebody else's file.
+    pub fn open_existing(
+        path: impl AsRef<Path>,
+        expected: &FileHeader,
+    ) -> Result<Self, WriterError> {
+        let path = path.as_ref().to_path_buf();
+        let file = open_append_no_follow(&path).map_err(|source| WriterError::Io {
+            operation: "reopen recovery journal for append",
+            source,
+        })?;
+        let mut header_bytes = vec![0_u8; crate::journal::HEADER_LEN];
+        {
+            use std::io::Read;
+            let mut reader = &file;
+            reader
+                .read_exact(&mut header_bytes)
+                .map_err(|source| WriterError::Io {
+                    operation: "read recovery-journal header before append",
+                    source,
+                })?;
+        }
+        let found = FileHeader::decode(&header_bytes)?;
+        if &found != expected {
+            return Err(WriterError::JournalIdentityMismatch { path });
+        }
+
+        Ok(Self {
+            file,
+            path,
+            total_length: found.total_length(),
+        })
+    }
+
     /// Path of the exclusively owned journal.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+/// Open an existing file for append without traversing a final-component link.
+///
+/// The same policy as `PartFile::open_existing`: the refusal is in the open, because a check
+/// followed by an open leaves a window in which the path can be replaced.
+fn open_append_no_follow(path: &Path) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .read(true)
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recovery-journal path is a reparse point",
+            ));
+        }
+        Ok(file)
     }
 }
 
@@ -514,6 +596,14 @@ pub enum WriterError {
     /// Part-file creation, bounds, or I/O failed.
     #[error("part-file operation failed: {0}")]
     PartFile(#[from] PartFileError),
+    /// The journal on disk describes a different representation from the one being resumed.
+    ///
+    /// Appending to it would produce durable evidence for a file that was never fetched.
+    #[error("{path} is a recovery journal for a different representation", path = .path.display())]
+    JournalIdentityMismatch {
+        /// The journal path exactly as recorded. Left intact as evidence.
+        path: PathBuf,
+    },
     /// A journal frame could not be encoded in version 1.
     #[error("recovery-journal record could not be encoded: {0}")]
     Format(#[from] FormatError),

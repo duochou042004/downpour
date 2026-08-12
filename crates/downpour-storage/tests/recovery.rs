@@ -713,3 +713,248 @@ fn reconciliation_preserves_the_recorded_identity() {
     assert_eq!(after.priority, before.priority);
     assert_eq!(after.queue_position, before.queue_position);
 }
+
+/// B-37 at the layer that would act on it: reconciliation refuses a linked part path.
+///
+/// `PartFile::open_existing` refuses the link itself, but recovery is what decides whether a
+/// download is resumable, and a download it declares resumable is one a daemon will write into.
+/// So the refusal has to arrive as a stable state and error kind rather than as a panic or an
+/// I/O error indistinguishable from a transient one — and the victim has to still be there.
+#[test]
+#[cfg(unix)]
+fn a_download_whose_part_path_is_a_symlink_is_failed_and_the_target_is_untouched() {
+    let directory = TestDirectory::new("symlinked-part-path");
+    let part_path = commit_durable_blocks(&directory, &[(0, b"aaaaaaaa")]);
+    let mut store = open_store(&directory, &part_path);
+
+    // Stand in the way the hazard actually arrives: the daemon is down, and between its death and
+    // its restart the part file is replaced by a link to something else.
+    let victim_path = directory.path().join("something-the-user-cares-about");
+    let victim_bytes = b"not this download's to overwrite".to_vec();
+    fs::write(&victim_path, &victim_bytes).expect("write the victim");
+    fs::remove_file(&part_path).expect("remove the real part file");
+    std::os::unix::fs::symlink(&victim_path, &part_path).expect("plant the symlink");
+
+    let reconciliation = reconcile_download(&mut store, sample_id(), &directory.journal(), NOW_MS)
+        .expect("reconciliation must reach a decision rather than fail to run");
+
+    assert_eq!(reconciliation.state(), DownloadState::Failed);
+    assert_eq!(
+        reconciliation
+            .error_kind()
+            .map(downpour_storage::metadata::DownloadErrorKind::as_str),
+        Some("storage.part-file-not-regular"),
+        "the refusal needs a stable kind a client can switch on"
+    );
+    assert_eq!(
+        fs::read(&victim_path).expect("the victim is still readable"),
+        victim_bytes,
+        "recovery wrote through the symlink"
+    );
+    assert!(
+        fs::symlink_metadata(&part_path)
+            .expect("the link is still there")
+            .file_type()
+            .is_symlink(),
+        "the link itself is evidence and is left alone"
+    );
+}
+
+/// The presence check answers about the part file, not about whatever the path leads to.
+///
+/// `exists()` follows links and cannot distinguish these two. A dangling symlink reads as absent,
+/// so the download is failed as "missing" and a later create would follow the link and write
+/// through it — the same family as B-30 and B-37 reached from a third side. A directory reads as
+/// present, so recovery goes on to open it and reports whatever errno that produced, which is
+/// indistinguishable from a transient fault. Both are "something is at this path and it is not
+/// this download's part file", and both must say so.
+#[test]
+#[cfg(unix)]
+fn a_part_path_that_is_a_dangling_link_or_a_directory_is_refused_by_name() {
+    for (tag, plant) in [("dangling-link", 0_u8), ("directory", 1)] {
+        let directory = TestDirectory::new(tag);
+        let part_path = commit_durable_blocks(&directory, &[(0, b"aaaaaaaa")]);
+        let mut store = open_store(&directory, &part_path);
+        fs::remove_file(&part_path).expect("remove the real part file");
+        if plant == 0 {
+            std::os::unix::fs::symlink(directory.path().join("nothing-here"), &part_path)
+                .expect("plant a dangling symlink");
+        } else {
+            fs::create_dir(&part_path).expect("plant a directory");
+        }
+
+        let reconciliation =
+            reconcile_download(&mut store, sample_id(), &directory.journal(), NOW_MS)
+                .expect("reconciliation must reach a decision rather than fail to run");
+
+        assert_eq!(reconciliation.state(), DownloadState::Failed, "{tag}");
+        assert_eq!(
+            reconciliation
+                .error_kind()
+                .map(downpour_storage::metadata::DownloadErrorKind::as_str),
+            Some("storage.part-file-not-regular"),
+            "{tag}: the refusal must name what is wrong, not report an opaque I/O failure"
+        );
+    }
+}
+
+/// B-25 — the durable interval map can be rebuilt without a metadata store.
+///
+/// `reconcile_download` needs SQLite because it arbitrates a checkpoint and records an outcome.
+/// A resuming transfer needs neither: it needs the journal's answer about which bytes are durable,
+/// and the sequence its next append must carry.
+///
+/// Two of the three claims here carry different weight, and it is worth being exact about which.
+/// The literal ranges and the sequence are behavioural: they pin the answer, and a change to how
+/// blocks are merged or counted makes them red. The equality with `reconcile_download` is **not**
+/// — reconciliation calls this same function, so that comparison cannot fail as written. It is
+/// kept as a guard for the day somebody re-forks the two implementations, which is the only way
+/// recovery and resume could ever come to disagree about what is durable, not as evidence that
+/// they agree today.
+#[test]
+fn durable_state_rebuilds_from_the_journal_alone_and_matches_reconciliation() {
+    let directory = TestDirectory::new("store-free-rebuild");
+    let part_path = commit_durable_blocks(&directory, &[(0, b"aaaaaaaa"), (16, b"cccccccc")]);
+    let mut store = open_store(&directory, &part_path);
+
+    let standalone = downpour_storage::recovery::durable_state(&directory.journal())
+        .expect("a healthy journal rebuilds");
+    let reconciled = reconcile_download(&mut store, sample_id(), &directory.journal(), NOW_MS)
+        .expect("reconciliation runs");
+
+    assert_eq!(
+        complete_ranges(standalone.intervals()),
+        complete_ranges(reconciled.intervals()),
+        "the store-free rebuild must agree with reconciliation about what is durable"
+    );
+    assert_eq!(
+        pending_ranges(standalone.intervals()),
+        pending_ranges(reconciled.intervals()),
+        "and about what is still missing"
+    );
+    assert_eq!(
+        standalone.next_sequence(),
+        reconciled.next_sequence(),
+        "a resumed append that reused a sequence would make replay stop at the reuse"
+    );
+    assert_eq!(
+        complete_ranges(standalone.intervals()),
+        vec![(0, 8), (16, 24)]
+    );
+    assert_eq!(
+        pending_ranges(standalone.intervals()),
+        vec![(8, 16), (24, 32)]
+    );
+}
+
+/// docs/04 §3.4 — `verify_on_resume`, and what it means to detect corruption without blessing it.
+///
+/// The journal records a BLAKE3 per block precisely so this is possible later. A block whose part
+/// bytes no longer hash to what the journal recorded is not durable, whatever the record says: the
+/// file was changed underneath us, or the hardware lost it. Recovery must stop calling it
+/// `Complete` so the range is fetched again.
+///
+/// What it must *not* do is rehash the part bytes and record the new digest, which would bless the
+/// corruption into durable evidence, or rewrite the journal at all — the journal is the thing that
+/// caught the fault and is wanted intact for a bug report.
+#[test]
+fn block_verification_on_resume_detects_corruption_without_blessing_or_rewriting_it() {
+    use downpour_storage::recovery::{VerifyOnResume, durable_state_with};
+
+    let directory = TestDirectory::new("verify-on-resume");
+    let part_path = commit_durable_blocks(&directory, &[(0, b"aaaaaaaa"), (16, b"cccccccc")]);
+    let journal_before = fs::read(directory.journal()).expect("the journal is readable");
+
+    // A hardware fault, or something else writing into the file: the bytes change, the journal
+    // does not.
+    {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut part = OpenOptions::new()
+            .write(true)
+            .open(&part_path)
+            .expect("the part file opens");
+        part.seek(SeekFrom::Start(16)).expect("seek");
+        part.write_all(b"XXXXXXXX")
+            .expect("corrupt the second block");
+    }
+
+    // `off` trusts the journal, which is the documented behaviour and the reason the default is
+    // not `off`: the corruption survives into the rebuilt map.
+    let trusting = durable_state_with(&directory.journal(), &part_path, VerifyOnResume::Off)
+        .expect("a healthy journal rebuilds");
+    assert_eq!(
+        complete_ranges(trusting.intervals()),
+        vec![(0, 8), (16, 24)],
+        "off must trust the journal, or the comparison below proves nothing"
+    );
+
+    // `full` verifies every block, so the corrupted one stops being durable and its range goes
+    // back to pending to be fetched again.
+    let verified = durable_state_with(&directory.journal(), &part_path, VerifyOnResume::Full)
+        .expect("a healthy journal rebuilds");
+    assert_eq!(
+        complete_ranges(verified.intervals()),
+        vec![(0, 8)],
+        "a block whose bytes no longer match its recorded digest is not durable"
+    );
+    // Covered by a pending interval rather than equal to one: the map merges adjacent pending
+    // ranges, so the refuted block joins the hole beside it.
+    assert!(
+        pending_ranges(verified.intervals())
+            .iter()
+            .any(|(start, end)| *start <= 16 && *end >= 24),
+        "the corrupted range must be fetched again: {:?}",
+        pending_ranges(verified.intervals())
+    );
+    assert_eq!(
+        verified.covered_bytes(),
+        8,
+        "the refuted block must stop counting toward coverage"
+    );
+
+    assert_eq!(
+        fs::read(directory.journal()).expect("the journal is readable"),
+        journal_before,
+        "verification must not rewrite the journal; it is the evidence that caught the fault"
+    );
+}
+
+/// `sample` is the default, and it is the default that decides what most users get.
+///
+/// Selection is derived from the journal's transfer id and each block's sequence rather than from
+/// an RNG, so the same journal always samples the same blocks. That is what makes this testable at
+/// all, and it also means a user who reports a fault can be asked to run `full` and get a superset
+/// of what `sample` already checked.
+#[test]
+fn sampling_is_the_default_and_selects_deterministically() {
+    use downpour_storage::recovery::{VerifyOnResume, samples_block};
+
+    assert_eq!(
+        VerifyOnResume::default(),
+        VerifyOnResume::Sample,
+        "docs/04 §3.4 states sample is the default"
+    );
+
+    let transfer = [7_u8; 16];
+    let first: Vec<u64> = (0..1000)
+        .filter(|seq| samples_block(transfer, *seq))
+        .collect();
+    let again: Vec<u64> = (0..1000)
+        .filter(|seq| samples_block(transfer, *seq))
+        .collect();
+    assert_eq!(first, again, "selection must not vary between runs");
+    assert!(
+        !first.is_empty() && first.len() < 100,
+        "roughly one block in a hundred, got {} of 1000",
+        first.len()
+    );
+
+    let other: Vec<u64> = (0..1000)
+        .filter(|seq| samples_block([9_u8; 16], *seq))
+        .collect();
+    assert_ne!(
+        first, other,
+        "two downloads must not sample the same block positions, or one unlucky pattern would \
+         hide the same way in every file"
+    );
+}

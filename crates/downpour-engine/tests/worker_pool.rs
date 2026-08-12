@@ -458,10 +458,20 @@ async fn proven_ranges_run_concurrently_inside_disjoint_allocator_grants() {
     );
 }
 
+/// Every ranged worker request carries `If-Range` when the probe recorded a usable validator.
+///
+/// I-3 across a process exit: a segmented resume writes into the holes of a file whose other bytes
+/// came from an earlier representation. Without `If-Range` the server happily serves the ranges of
+/// whatever it holds *now*, and the finished file is half one version and half another at exactly
+/// the expected size — the one corruption every check that does not hash the content passes.
+///
+/// Sent on fresh transfers too, not only resumes. The cost is one header; what it buys is that a
+/// representation swapped between the probe and a worker's request turns into a `200` the pool
+/// already refuses, instead of bytes written at an offset that no longer means anything.
 fn observed_range(first: u64, last: u64) -> ObservedRequest {
     ObservedRequest {
         range: Some(ByteRangeSpec::FromTo { first, last }),
-        if_range: None,
+        if_range: Some("\"v1\"".to_owned()),
     }
 }
 

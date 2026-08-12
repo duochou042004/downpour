@@ -1,0 +1,24 @@
+id: a-capped-origin-drops-the-connection-beyond-its-limit
+category: connections
+description: >
+  A per-IP cap as an origin actually applies one: the connection beyond the limit is accepted by
+  the kernel and then dropped, with no status, no `Retry-After`, and no reason. This is the shape
+  that makes a naive "open N sockets" client hang rather than fail — there is nothing to parse.
+  With four workers against a cap of two, the connections beyond the cap are dropped. The download must still complete and be byte-exact, which means it has to work within
+  what the origin permits rather than insisting on its configured concurrency (I-7: the user's
+  setting is a ceiling, never a target).
+references: ["docs/agent/INVARIANTS.md#i-7", "docs/03-transfer-engine-spec.md §3", "docs/09-testing-strategy.md §3.2"]
+
+# Four workers against an origin that allows two connections at once.
+connections: 4
+
+server:
+  content: { size: 8MiB, seed: 141 }
+  max_concurrent_connections: 2
+
+expect:
+  final_state: completed
+  file_renamed: true
+  min_requests: 2
+  # The cap has to have bitten. Without this the case passes with no cap at all.
+  min_refused_connections: 1

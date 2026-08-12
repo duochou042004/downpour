@@ -365,7 +365,7 @@ pub fn create_journalled_artifacts(
     ))
 }
 
-fn journal_path_for(journal_dir: &Path, transfer_id: [u8; 16]) -> PathBuf {
+pub(crate) fn journal_path_for(journal_dir: &Path, transfer_id: [u8; 16]) -> PathBuf {
     let mut name = String::with_capacity(36);
     for byte in transfer_id {
         name.push_str(&format!("{byte:02x}"));

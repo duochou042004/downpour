@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use downpour_engine::{SingleStream, StorageLayout};
+use downpour_engine::{SegmentedDownload, SingleStream, StorageLayout};
 use downpour_http::{H1H2Backend, TransportMode};
 use downpour_types::RangeSupport;
 
@@ -328,10 +328,39 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
 
     // Fast retry delays: see RetryPolicy::fast_for_tests for why, and note Retry-After is still
     // honoured exactly, so `retry-after-is-honoured` still waits the second the server asked for.
-    let outcome = SingleStream::new(backend)
-        .with_retry_policy(downpour_http::RetryPolicy::fast_for_tests())
-        .download(url, &StorageLayout::new(scratch, &journal_dir))
-        .await;
+    let layout = StorageLayout::new(scratch, &journal_dir);
+    let started = std::time::Instant::now();
+    let outcome = match case.connections {
+        // A connection pathology needs more than one connection open to exist at all.
+        Some(connections) if connections > 1 => {
+            SegmentedDownload::new(std::sync::Arc::new(backend), connections)
+                .with_retry_policy(downpour_http::RetryPolicy::fast_for_tests())
+                .download(url, &layout)
+                .await
+        }
+        _ => {
+            SingleStream::new(backend)
+                .with_retry_policy(downpour_http::RetryPolicy::fast_for_tests())
+                .download(url, &layout)
+                .await
+        }
+    };
+
+    let elapsed = started.elapsed();
+
+    // ---- expectation: a wait the server asked for was actually taken
+    //
+    // The only clock assertion in the corpus, and a floor only. See Expect::min_elapsed_ms.
+    if let Some(expected) = case.expect.min_elapsed_ms {
+        let seen = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        if seen < expected {
+            failures.push(format!(
+                "expected the transfer to take at least {expected} ms because the server asked \
+                 for that wait, but it took {seen} ms; the engine substituted its own back-off \
+                 for what the rate limiter requested"
+            ));
+        }
+    }
 
     // ---- expectation: final state and error kind
     match (&outcome, case.expect.final_state) {
@@ -380,6 +409,146 @@ pub async fn run_case(case: &Case, scratch: &Path) -> CaseReport {
             failures.push(format!(
                 "expected the server to see at least {expected} requests but it saw {seen}; \
                  no retry occurred, so this case proves nothing about recovery"
+            ));
+        }
+    }
+
+    // ---- expectation: the connection pathology actually fired
+    if let Some(expected) = case.expect.min_connections {
+        let seen = server.accepted_connection_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the server to accept at least {expected} connections but it accepted \
+                 {seen}; the connection pathology this case describes did not fire, so the case \
+                 proves nothing about it"
+            ));
+        }
+    }
+    if let Some(limit) = case.expect.max_requests {
+        let seen = server.request_count();
+        if seen > limit {
+            failures.push(format!(
+                "expected the server to see no more than {limit} requests but it saw {seen}; the \
+                 engine retried, so it did not act on what the origin told it in advance"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_waited_requests {
+        let seen = server.waited_request_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected at least {expected} request(s) to queue behind the origin's in-flight \
+                 limit but {seen} did; nothing ever overlapped, so this case would pass against \
+                 an engine that never asked for concurrency"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_ranges_ignored {
+        let seen = server.ignored_range_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected at least {expected} ranged request(s) to be answered with the whole \
+                 representation but {seen} were; range support was never withdrawn, so this case \
+                 is an ordinary segmented download"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_respanned_ranges {
+        let seen = server.respanned_range_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected at least {expected} response(s) to serve a different span than was \
+                 requested but {seen} did; the origin answered every range as asked, so this \
+                 case is an ordinary segmented download"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_unsatisfiable_responses {
+        let seen = server.unsatisfiable_response_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected at least {expected} ranged request(s) to be refused as unsatisfiable \
+                 but {seen} were; the origin never refused a range, so this case is an ordinary \
+                 segmented download"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_starless_totals {
+        let seen = server.starless_total_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected at least {expected} Content-Range header(s) to state their total as * \
+                 but {seen} did; the origin never stopped stating a length, so this case would \
+                 pass against a perfectly ordinary origin"
+            ));
+        }
+    }
+    if let Some(limit) = case.expect.max_body_bytes_served {
+        let seen = server.body_bytes_served();
+        if seen > limit.0 {
+            failures.push(format!(
+                "expected the origin to serve no more than {} body bytes but it served {seen}; \
+                 the engine fetched far more than the representation, which is the waste I-6 \
+                 names when it says a client downloads the file once per connection",
+                limit.0
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_delayed_chunks {
+        let seen = server.delayed_chunk_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the shaper to hold back at least {expected} chunks but it held {seen}; \
+                 no connection was actually slow, so this case is an ordinary download"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_desynced_responses {
+        let seen = server.desynced_response_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the server to write at least {expected} response(s) nobody asked for \
+                 but it wrote {seen}; the socket was never desynchronised, so this case is an \
+                 ordinary download"
+            ));
+        }
+    }
+    if let Some(limit) = case.expect.max_requests_per_connection {
+        let seen = server.most_requests_on_one_connection();
+        if seen > limit {
+            failures.push(format!(
+                "expected no connection to carry more than {limit} request(s) but one carried \
+                 {seen}; the connection this case poisons was reused, so nothing prevented the \
+                 stale response from being read as an answer"
+            ));
+        }
+    }
+    if let Some(limit) = case.expect.max_served_connections {
+        let seen = server.served_connection_count();
+        if seen > limit {
+            failures.push(format!(
+                "expected the transfer to fit inside {limit} live connection(s) but {seen} \
+                 carried a request; the engine finished by opening more sockets rather than by \
+                 reusing the ones the origin's budget allowed"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_capped_responses {
+        let seen = server.capped_response_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the origin's cap to answer at least {expected} request(s) with its cap \
+                 status but it answered {seen}; the cap never bit, so this case would pass with \
+                 no cap at all"
+            ));
+        }
+    }
+    if let Some(expected) = case.expect.min_refused_connections {
+        let seen = server.refused_connection_count();
+        if seen < expected {
+            failures.push(format!(
+                "expected the origin's cap to drop at least {expected} connections but it dropped \
+                 {seen}; the cap never bit, so this case would pass with no cap at all"
             ));
         }
     }

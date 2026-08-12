@@ -93,3 +93,134 @@ fn valid_crc_sequence_gap_stops_before_gap() {
     assert_eq!(fs::metadata(path).unwrap().len(), first_end);
     assert!(first_end > HEADER_LEN as u64);
 }
+
+fn resume_header() -> FileHeader {
+    FileHeader::new([7_u8; 16], 64, 0, [9_u8; 32])
+}
+
+fn block_record(sequence: u64, offset: u64, len: u32) -> FramedRecord {
+    FramedRecord::new(
+        sequence,
+        JournalRecord::BlockComplete {
+            offset,
+            len,
+            blake3: [0_u8; 32],
+        },
+    )
+}
+
+/// B-25 — resume appends to the journal it recovered from, and only to that one.
+///
+/// A resumed transfer writes new durable evidence after the records replay already accepted. It
+/// has to land in the same file: a fresh journal would describe a representation whose earlier
+/// bytes it cannot account for, and the next replay would then contradict the part file it is
+/// supposed to explain.
+#[test]
+fn a_recovered_journal_reopens_for_append_and_keeps_every_earlier_record() {
+    use downpour_storage::writer::{DurableJournal, JournalFile};
+
+    let directory = TestDirectory::new();
+    let path = directory.path().join("resume.dpj");
+    {
+        let mut journal = JournalFile::create(&path, resume_header()).expect("create");
+        journal
+            .append(&block_record(0, 0, 8))
+            .expect("first record");
+        journal.sync_data().expect("first sync");
+    }
+
+    let before = recover_journal(&path).expect("the journal replays");
+    assert_eq!(before.records().len(), 1);
+
+    let mut reopened =
+        JournalFile::open_existing(&path, before.header()).expect("a recovered journal reopens");
+    reopened.append(&block_record(1, 8, 8)).expect("append");
+    reopened.sync_data().expect("sync");
+    drop(reopened);
+
+    let after = recover_journal(&path).expect("the appended journal replays");
+    assert_eq!(
+        after.records().len(),
+        2,
+        "the earlier record must survive the reopen"
+    );
+    assert_eq!(
+        after.header(),
+        before.header(),
+        "the header must not change"
+    );
+}
+
+/// The header on disk is compared, not trusted.
+///
+/// It binds the transfer id, the representation length and the validator hash. A journal that
+/// disagrees belongs to a different representation, and appending to it would produce durable
+/// evidence for a file that was never fetched (I-3, I-11).
+#[test]
+fn reopening_a_journal_for_a_different_representation_is_refused() {
+    use downpour_storage::writer::{JournalFile, WriterError};
+
+    let directory = TestDirectory::new();
+    let path = directory.path().join("other.dpj");
+    JournalFile::create(&path, resume_header()).expect("create");
+
+    // Same transfer, different validator: the file changed on the server between sessions.
+    let different = FileHeader::new([7_u8; 16], 64, 0, [1_u8; 32]);
+    let error = JournalFile::open_existing(&path, &different)
+        .expect_err("a journal for another representation must be refused");
+    assert!(
+        matches!(error, WriterError::JournalIdentityMismatch { .. }),
+        "the refusal must name the reason: {error:?}"
+    );
+
+    // Unchanged on disk: it is evidence for whatever download it does belong to.
+    let replayed = recover_journal(&path).expect("the journal is intact");
+    assert_eq!(replayed.header(), &resume_header());
+}
+
+/// A journal path is as plantable as a part path, and appending through a link writes this
+/// download's recovery evidence into somebody else's file (B-37, same policy).
+///
+/// The victim is itself a valid journal carrying the same header, deliberately. A victim that
+/// could not pass the header check would make this test green through the header read failing,
+/// which is not the property under test — removing `O_NOFOLLOW` would leave it passing.
+#[test]
+#[cfg(unix)]
+fn a_journal_path_that_is_a_symlink_is_refused_and_its_target_is_untouched() {
+    use downpour_storage::writer::{DurableJournal, JournalFile};
+
+    let directory = TestDirectory::new();
+    let victim_path = directory.path().join("someone-elses-journal.dpj");
+    {
+        let mut victim = JournalFile::create(&victim_path, resume_header()).expect("create");
+        victim
+            .append(&block_record(0, 0, 8))
+            .expect("victim record");
+        victim.sync_data().expect("victim sync");
+    }
+    let victim_bytes = fs::read(&victim_path).expect("read the victim");
+
+    let path = directory.path().join("linked.dpj");
+    std::os::unix::fs::symlink(&victim_path, &path).expect("plant the symlink");
+
+    let mut reopened = match JournalFile::open_existing(&path, &resume_header()) {
+        Err(_) => {
+            assert_eq!(
+                fs::read(&victim_path).expect("the victim is still readable"),
+                victim_bytes,
+                "the refusal must not have touched the target"
+            );
+            return;
+        }
+        // Followed the link. Show what that costs rather than only that it happened: the next
+        // append lands in the victim.
+        Ok(reopened) => reopened,
+    };
+    reopened.append(&block_record(1, 8, 8)).expect("append");
+    reopened.sync_data().expect("sync");
+    assert_eq!(
+        fs::read(&victim_path).expect("the victim is still readable"),
+        victim_bytes,
+        "this download's recovery evidence was appended to somebody else's journal"
+    );
+}

@@ -33,7 +33,9 @@ pub mod storage_sink;
 pub mod worker_pool;
 pub mod writer_service;
 
-pub use download::{DownloadError, SingleStream, StorageLayout};
+pub use download::{
+    DownloadError, SingleStream, StorageLayout, transfer_id_for, validator_hash_of,
+};
 pub use segmented::SegmentedDownload;
 pub use storage_sink::{Artifacts, StorageSink};
 
@@ -94,6 +96,17 @@ pub enum AllocatorError {
         /// Worker that made the invalid request.
         worker: WorkerId,
     },
+    /// Recovery state still claimed an owner, so it did not come from recovery.
+    ///
+    /// docs/04 §5 is explicit that no grant survives a restart: `InProgress` is in-memory
+    /// scheduling state and is never persisted. A map that still holds one has been built from
+    /// something other than durable evidence, and resuming into it would let the surviving owner
+    /// and a freshly granted worker both believe they hold the same bytes (I-2).
+    #[error("resumed state still claims worker {worker:?} owns bytes")]
+    ResumedGrantSurvived {
+        /// The owner that should not have survived.
+        worker: WorkerId,
+    },
     /// The canonical interval map rejected the mutation.
     #[error("interval map rejected allocation: {0}")]
     Interval(#[from] IntervalMapError),
@@ -114,6 +127,37 @@ impl SegmentAllocator {
         }
         Ok(Self {
             intervals: IntervalMap::new(total_length),
+            min_split_bytes,
+        })
+    }
+
+    /// Rebuild an allocator from what recovery proved durable.
+    ///
+    /// `intervals` comes from `downpour_storage::recovery::Reconciliation::intervals`: `Complete`
+    /// where the journal proves it, `Pending` everywhere else. Everything already `Complete` is
+    /// therefore unreachable to every future grant, which is exactly what "resume does not
+    /// re-request completed bytes" means at this layer.
+    ///
+    /// # Errors
+    ///
+    /// When the split floor is zero, or when the supplied state still claims an owner.
+    pub fn resume(intervals: IntervalMap, min_split_bytes: u64) -> Result<Self, AllocatorError> {
+        if min_split_bytes == 0 {
+            return Err(AllocatorError::ZeroMinimumSplit);
+        }
+        if let Some(worker) =
+            intervals
+                .intervals()
+                .iter()
+                .find_map(|interval| match interval.state() {
+                    IntervalState::InProgress { worker } => Some(*worker),
+                    _ => None,
+                })
+        {
+            return Err(AllocatorError::ResumedGrantSurvived { worker });
+        }
+        Ok(Self {
+            intervals,
             min_split_bytes,
         })
     }

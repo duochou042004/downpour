@@ -19,15 +19,16 @@
 //! gone and its unflushed bytes were never durable. The download is left `Paused` — the user,
 //! not the daemon, decides whether ten transfers should restart on boot.
 
+use std::fs::File;
 use std::io;
 use std::ops::Range;
 use std::path::Path;
 
-use downpour_intervals::{IntervalMap, IntervalMapError, WorkerId};
+use downpour_intervals::{IntervalMap, IntervalMapError, IntervalState, WorkerId};
 use thiserror::Error;
 
 use crate::journal::state::{CompletedBlock, effective_state};
-use crate::journal::{ReplayError, ReplayStop, recover_journal};
+use crate::journal::{JournalRecord, ReplayError, ReplayStop, recover_journal};
 use crate::metadata::{
     Checkpoint, CompleteInterval, DownloadErrorKind, DownloadId, DownloadState, MetadataError,
     MetadataStore,
@@ -208,10 +209,245 @@ pub enum RecoveryError {
     /// The rebuilt interval map rejected a replayed range.
     #[error("recovery could not rebuild the interval map: {0}")]
     Interval(#[from] IntervalMapError),
+    /// Records that frame and checksum cleanly but cannot all be true at once.
+    ///
+    /// Refusing is the only safe reading. The artifacts stay exactly as they are, for `dp repair`
+    /// and for a bug report.
+    #[error("recovery journal records contradict each other")]
+    JournalInvalid,
+    /// The journal could not be replayed at all: a damaged header, or an unsupported version.
+    #[error("recovery journal could not be replayed: {0}")]
+    Replay(#[from] ReplayError),
 }
 
 /// Reconcile one download's part file, journal, interval coverage, and SQLite record.
 ///
+/// What the journal alone proves about one download, with no metadata store involved.
+#[derive(Debug)]
+pub struct DurableState {
+    effective_length: u64,
+    intervals: IntervalMap,
+    covered_bytes: u64,
+    next_sequence: u64,
+    sealed: Option<[u8; 32]>,
+}
+
+impl DurableState {
+    /// `Complete` where the journal proves it, `Pending` everywhere else. No grant survives.
+    #[must_use]
+    pub const fn intervals(&self) -> &IntervalMap {
+        &self.intervals
+    }
+
+    /// Total bytes the journal proves durable.
+    #[must_use]
+    pub const fn covered_bytes(&self) -> u64 {
+        self.covered_bytes
+    }
+
+    /// The sequence the next append must carry. Reusing one makes replay stop at the reuse.
+    #[must_use]
+    pub const fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    /// Representation length the journal header binds, after any recorded truncation.
+    #[must_use]
+    pub const fn effective_length(&self) -> u64 {
+        self.effective_length
+    }
+
+    /// The recorded completion seal, when the download already finished verification.
+    #[must_use]
+    pub const fn sealed(&self) -> Option<[u8; 32]> {
+        self.sealed
+    }
+
+    /// Take the rebuilt map, for a resuming allocator.
+    #[must_use]
+    pub fn into_intervals(self) -> IntervalMap {
+        self.intervals
+    }
+}
+
+/// How much of a resumed download's durable evidence is re-checked against the file (docs/04 §3.4).
+///
+/// The journal records a BLAKE3 per block precisely so this is cheap later. A block whose bytes no
+/// longer hash to what was recorded is not durable, whatever the record says.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VerifyOnResume {
+    /// Trust the journal. Fastest, and what recovery did before this existed.
+    Off,
+    /// Verify roughly one block in a hundred. The default, per docs/04 §3.4.
+    #[default]
+    Sample,
+    /// Verify every block. Slow, and conclusive after a hardware fault.
+    Full,
+}
+
+/// Whether `sample` mode checks the block written by `sequence` of this transfer.
+///
+/// Derived from the transfer id and the sequence rather than from an RNG, so the same journal
+/// always samples the same blocks: a fault a user can reproduce is a fault that can be diagnosed,
+/// and `full` is then a superset of what `sample` already checked. Keying on the transfer id as
+/// well as the sequence stops one unlucky position pattern from hiding identically in every file.
+#[must_use]
+pub fn samples_block(transfer_id: [u8; 16], sequence: u64) -> bool {
+    let mut input = [0_u8; 24];
+    input[..16].copy_from_slice(&transfer_id);
+    input[16..].copy_from_slice(&sequence.to_le_bytes());
+    let digest = blake3::hash(&input);
+    let draw = u32::from_le_bytes([
+        digest.as_bytes()[0],
+        digest.as_bytes()[1],
+        digest.as_bytes()[2],
+        digest.as_bytes()[3],
+    ]);
+    draw.is_multiple_of(100)
+}
+
+/// Rebuild what a journal proves durable, re-checking blocks against the part file.
+///
+/// A block that fails verification is dropped from the rebuilt map, so its range returns to
+/// `Pending` and is fetched again. Nothing is rehashed into the journal and the journal is not
+/// rewritten: recomputing a digest from bytes that just failed would bless the corruption into
+/// durable evidence, and the journal is the thing that caught the fault.
+///
+/// # Errors
+///
+/// When the journal cannot be replayed, or the part file cannot be read.
+pub fn durable_state_with(
+    journal_path: &Path,
+    part_path: &Path,
+    verify: VerifyOnResume,
+) -> Result<DurableState, RecoveryError> {
+    let replayed = recover_journal(journal_path).map_err(RecoveryError::Replay)?;
+    let rebuilt = rebuild_durable_state(&replayed, u64::MAX)?;
+    if verify == VerifyOnResume::Off {
+        return Ok(rebuilt);
+    }
+
+    let transfer_id = *replayed.header().transfer_id();
+    let mut file = File::open(part_path).map_err(RecoveryError::Io)?;
+    let mut refuted = Vec::new();
+    for (sequence, record) in replayed.records().iter().enumerate() {
+        let JournalRecord::BlockComplete {
+            offset,
+            len,
+            blake3,
+        } = record.record()
+        else {
+            continue;
+        };
+        let sequence = u64::try_from(sequence).unwrap_or(u64::MAX);
+        if verify == VerifyOnResume::Sample && !samples_block(transfer_id, sequence) {
+            continue;
+        }
+        let length = usize::try_from(*len).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "block length overflows usize")
+        })?;
+        let mut bytes = vec![0_u8; length];
+        if read_exact_at(&mut file, *offset, &mut bytes).is_err()
+            || blake3::hash(&bytes).as_bytes() != blake3
+        {
+            tracing::warn!(
+                offset = *offset,
+                len = *len,
+                "block failed verification on resume; it will be fetched again"
+            );
+            refuted.push(*offset..offset + u64::from(*len));
+        }
+    }
+    if refuted.is_empty() {
+        return Ok(rebuilt);
+    }
+    // Rebuilt rather than edited: the map is never allowed to exist in a state that claims bytes
+    // the file does not hold, and nothing has to undo a `Complete`.
+    rebuild_durable_state_excluding(&replayed, u64::MAX, &refuted)
+}
+
+fn read_exact_at(file: &mut File, offset: u64, bytes: &mut [u8]) -> io::Result<()> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(bytes)
+}
+
+/// Rebuild what a journal proves durable, without a metadata store.
+///
+/// [`reconcile_download`] needs SQLite because it arbitrates a checkpoint and records an outcome.
+/// A resuming transfer needs neither — only which bytes are durable and which sequence its next
+/// append must carry. This is the same computation reconciliation performs, called by it, so the
+/// two cannot drift into disagreeing about what is durable.
+///
+/// `observed_length` bounds the answer to bytes the part file physically still holds. Records
+/// beyond it are not durable whatever they say: discarding them costs a refetch, trusting them
+/// writes a hole into the finished file.
+pub fn durable_state(journal_path: &Path) -> Result<DurableState, RecoveryError> {
+    let replayed = recover_journal(journal_path).map_err(RecoveryError::Replay)?;
+    rebuild_durable_state(&replayed, u64::MAX)
+}
+
+fn rebuild_durable_state(
+    replayed: &crate::journal::ReplayOutcome,
+    observed_length: u64,
+) -> Result<DurableState, RecoveryError> {
+    rebuild_durable_state_excluding(replayed, observed_length, &[])
+}
+
+/// As [`rebuild_durable_state`], with blocks that failed verification left out entirely.
+///
+/// Excluded rather than removed afterwards, so the map is never built in a state that claims
+/// bytes the file does not hold, and so nothing has to undo a `Complete`.
+fn rebuild_durable_state_excluding(
+    replayed: &crate::journal::ReplayOutcome,
+    observed_length: u64,
+    refuted: &[Range<u64>],
+) -> Result<DurableState, RecoveryError> {
+    let next_sequence = u64::try_from(replayed.records().len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "journal record count overflows u64",
+        )
+    })?;
+    let state = effective_state(replayed.header(), replayed.records())
+        .map_err(|_| RecoveryError::JournalInvalid)?;
+    let effective_length = state.effective_length;
+    let sealed = state.sealed;
+
+    let mut blocks = state.blocks;
+    blocks.retain(|block| block.end().is_ok_and(|end| end <= observed_length));
+    blocks.retain(|block| {
+        block.end().is_ok_and(|end| {
+            !refuted
+                .iter()
+                .any(|range| block.offset < range.end && range.start < end)
+        })
+    });
+    let merged = merge_adjacent(&blocks)?;
+
+    let mut intervals = IntervalMap::new(effective_length);
+    let mut covered_bytes = 0_u64;
+    for range in &merged {
+        intervals.grant(range.clone(), RECOVERY_WORKER)?;
+        intervals.complete(range.clone(), RECOVERY_WORKER)?;
+        covered_bytes = covered_bytes
+            .checked_add(range.end - range.start)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "covered byte count overflows u64",
+                )
+            })?;
+    }
+    Ok(DurableState {
+        effective_length,
+        intervals,
+        covered_bytes,
+        next_sequence,
+        sealed,
+    })
+}
+
 /// Runs docs/04 §5 step 2 in its documented order — part-file presence, then extent, then
 /// journal replay, then checkpoint arbitration, then the rebuilt map — and persists the result.
 /// The download is left `Paused`, or `Failed` with a stable error kind and every artifact
@@ -235,8 +471,28 @@ pub fn reconcile_download(
     }
 
     // Step 2a — the bytes themselves. Without them nothing else is worth reading.
-    if !metadata.part_path.exists() {
-        return fail(store, &mut metadata, "storage.part-file-missing", now_ms);
+    //
+    // `symlink_metadata` rather than `exists`, which follows: a dangling symlink at this path
+    // reports as absent while a symlink to a real file reports as present, and neither answer is
+    // about the part file. The reopen below refuses a link outright (B-37); this only makes the
+    // diagnosis honest when the path holds something that is not this download's part file.
+    match std::fs::symlink_metadata(&metadata.part_path) {
+        Ok(found) if found.file_type().is_file() => {}
+        Ok(_) => {
+            return fail(
+                store,
+                &mut metadata,
+                "storage.part-file-not-regular",
+                now_ms,
+            );
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return fail(store, &mut metadata, "storage.part-file-missing", now_ms);
+        }
+        // A check that could not answer is not permission to proceed.
+        Err(_) => {
+            return fail(store, &mut metadata, "storage.part-file-unreadable", now_ms);
+        }
     }
     let Some(total_length) = metadata.total_length else {
         // A part file exists for a representation whose length was never recorded. The two
@@ -247,7 +503,19 @@ pub fn reconcile_download(
 
     // Step 2b — the extent, measured before it is restored.
     let part_path = metadata.part_path.clone();
-    let recovered = PartFile::open_existing(&part_path, total_length)?;
+    let recovered = match PartFile::open_existing(&part_path, total_length) {
+        Ok(recovered) => recovered,
+        // Refused between the check above and the open, or planted while the daemon was down.
+        Err(PartFileError::NotARegularFile { .. }) => {
+            return fail(
+                store,
+                &mut metadata,
+                "storage.part-file-not-regular",
+                now_ms,
+            );
+        }
+        Err(error) => return Err(error.into()),
+    };
     let observed_length = recovered.observed_length();
     let extent = if recovered.reextended() {
         PartFileExtent::Reextended {
@@ -316,35 +584,27 @@ pub fn reconcile_download(
         )
     })?;
 
-    let Ok(state) = effective_state(replayed.header(), replayed.records()) else {
-        // Records that frame and checksum cleanly but cannot all be true at once. Refusing is
-        // the only safe reading; the artifacts stay for `dp repair` and for a bug report.
-        return fail(store, &mut metadata, "storage.journal-invalid", now_ms);
+    // Step 2e is inside `rebuild_durable_state`: bytes the journal claims but the part file no
+    // longer physically holds are not durable, whatever the record says. Discarding them costs a
+    // refetch; trusting them writes a hole into the finished file. Shared with `durable_state` so
+    // a resuming transfer and this reconciliation cannot disagree about what is durable.
+    let rebuilt = match rebuild_durable_state(&replayed, observed_length) {
+        Ok(rebuilt) => rebuilt,
+        Err(RecoveryError::JournalInvalid) => {
+            return fail(store, &mut metadata, "storage.journal-invalid", now_ms);
+        }
+        Err(error) => return Err(error),
     };
-    let effective_length = state.effective_length;
-    let sealed = state.sealed;
-
-    // Step 2e — bytes the journal claims but the part file no longer physically holds are not
-    // durable, whatever the record says. Discarding them costs a refetch; trusting them writes
-    // a hole into the finished file.
-    let mut blocks = state.blocks;
-    blocks.retain(|block| block.end().is_ok_and(|end| end <= observed_length));
-    let merged = merge_adjacent(&blocks)?;
-
-    let mut intervals = IntervalMap::new(effective_length);
-    let mut covered_bytes = 0_u64;
-    for range in &merged {
-        intervals.grant(range.clone(), RECOVERY_WORKER)?;
-        intervals.complete(range.clone(), RECOVERY_WORKER)?;
-        covered_bytes = covered_bytes
-            .checked_add(range.end - range.start)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "covered byte count overflows u64",
-                )
-            })?;
-    }
+    let sealed = rebuilt.sealed();
+    let covered_bytes = rebuilt.covered_bytes();
+    let effective_length = rebuilt.effective_length();
+    let intervals = rebuilt.into_intervals();
+    let merged: Vec<Range<u64>> = intervals
+        .intervals()
+        .iter()
+        .filter(|interval| *interval.state() == IntervalState::Complete)
+        .map(|interval| interval.start()..interval.end())
+        .collect();
 
     // Step 2d — compare, report, and let the journal win regardless of the answer.
     let divergence = compare_checkpoint(store, id, covered_bytes, &merged);

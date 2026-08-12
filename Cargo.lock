@@ -484,6 +484,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "directories",
+ "downpour-corpus",
  "downpour-engine",
  "downpour-http",
  "downpour-intervals",

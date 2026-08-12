@@ -212,6 +212,170 @@ pub struct ServerSpec {
     pub if_range: IfRangeBehaviour,
     /// Ordered mid-transfer mutations (ADR-0010's `behaviour`), applied as bytes are served.
     pub behaviour: Vec<Mutation>,
+    /// Refuse to serve more than this many connections at once, the way a per-IP cap does.
+    ///
+    /// A capped origin does not politely queue: the connection beyond the cap is accepted by the
+    /// kernel and then dropped without a response, which is what makes this different from a
+    /// `429`. The engine has to notice the drop rather than wait out a timeout, and must not
+    /// treat "the origin allows four" as "four is the right number" (I-7).
+    pub max_concurrent_connections: Option<usize>,
+    /// Answer every request on a connection beyond the cap with this status, instead of dropping
+    /// the connection.
+    ///
+    /// The polite enforcement of the same cap, and a genuinely different pathology rather than a
+    /// different header: a drop reaches the engine as a transport error, which its retry
+    /// classification already treats as transient, while a status reaches it as a *response* and
+    /// has to be classified. I-7 names `429` as one of the signals concurrency must fall back on.
+    /// Only HTTP/1.1 enforces it this way; over h2c the cap still drops, because no case needs the
+    /// polite shape there and a half-implemented capability is worse than an absent one.
+    pub cap_status: Option<u16>,
+    /// Replace `max_concurrent_connections` with a new value once a number of requests have been
+    /// served.
+    ///
+    /// A limit that moves under a plan the engine has already committed to: another tenant
+    /// arrived, a load balancer shifted, a leaky-bucket allowance was spent. Distinct from a
+    /// steady cap in both directions — at the tightened value the engine would never have
+    /// segmented this wide, and at the original one nothing is ever refused.
+    pub tighten_cap: Option<TightenCap>,
+    /// Accept at most this many connections in total, ever.
+    ///
+    /// A budget, not a concurrency limit. It does not clear when a peer finishes, so an engine
+    /// whose only recovery is to back off and reconnect can never get in again; the transfer can
+    /// only finish through the connections it already holds.
+    pub max_total_connections: Option<usize>,
+    /// End this many responses part way through the header block, then close.
+    ///
+    /// The third point on the response timeline. `close_without_responding` is before any byte
+    /// and `transient_body_failures` is after the headers; this is the one in between, where a
+    /// client has a status line and an incomplete set of headers. A truncated header block is not
+    /// a short response — it is not a response — and reading it as one turns a missing
+    /// `Content-Length` into "unknown length" and a cut-off `Content-Range` into "absent".
+    pub close_mid_headers: usize,
+    /// Hang up on this many requests that arrived on a connection which had already answered one.
+    ///
+    /// The keep-alive race: the socket is alive when the client takes it out of its pool and dies
+    /// with a request already written into it. `close_after_requests` is the easier shape, where
+    /// the close happens first and nothing was ever in flight.
+    ///
+    /// Claimed from a budget, so the pathology is finite. Hanging up on every reused request is a
+    /// different thing entirely: a download needs at least a probe and a body, so no client that
+    /// reuses connections can ever finish one, and the only recovery is to stop reusing — pool
+    /// policy, not retry.
+    pub hangup_on_reused_request: usize,
+    /// After this many responses on a connection, write an extra complete response nobody asked
+    /// for.
+    ///
+    /// An appliance that replayed a buffered response, or a balancer that answered a request it
+    /// had already forwarded. The extra response stays in the socket, so the next request on that
+    /// connection reads an answer describing a different range — and an engine that writes a body
+    /// at the offset it *asked* for rather than the one the response *describes* corrupts the
+    /// file at exactly the right size.
+    pub duplicate_response_after: Option<usize>,
+    /// Write at most this many body bytes per response, then close, whatever was asked for.
+    ///
+    /// The `docs/01` §3.5 row "server closes after N bytes regardless of range". Every response
+    /// starts correctly and every attempt therefore advances, which is what separates it from a
+    /// truncation budget: the transfer finishes only if a retry asks for the part it has not
+    /// received rather than for the range it was granted.
+    pub close_after_body_bytes: Option<u64>,
+    /// Cut any response that reaches this offset in the representation, and close.
+    ///
+    /// A point in the *file*, not in the response, so it is fixed across attempts: the ranges
+    /// before it complete, and the one that spans it cannot be finished by repeating.
+    pub drop_at_offset: Option<u64>,
+    /// Serve the segment from an offset onward at a trickle, while its peers run at full speed.
+    pub slow_segment: Option<SlowSegment>,
+    /// Honour ranges for this many ranged responses, then answer every one with `200` and the
+    /// whole representation.
+    ///
+    /// Range evidence that was true when the probe took it. Distinct from [`RangeBehaviour::Lies`],
+    /// which never honours a range: there the probe observes the lie and segmentation is never
+    /// permitted, so there is no fan-out to be wrong about. Here the engine has already committed
+    /// its workers, which is the situation I-6's rationale describes.
+    pub withdraw_ranges_after: Option<usize>,
+    /// Answer exactly this ranged response, counting from one, with `200` and the whole
+    /// representation.
+    ///
+    /// One misconfigured node in a load-balanced fleet. Distinct from
+    /// [`Self::withdraw_ranges_after`]: the origin has not stopped supporting ranges, it never
+    /// agreed with itself, and the workers on either side of the unlucky one are served correctly.
+    pub ignore_range_at: Option<usize>,
+    /// Apply the shift in [`RangeBehaviour::ShiftedContentRange`] only after this many ranged
+    /// responses.
+    ///
+    /// Lets the probe be answered honestly, so segmentation happens on evidence that was true when
+    /// it was taken and the shift lands on workers writing into a part file.
+    pub shift_ranges_after: Option<usize>,
+    /// Answer every ranged response after this one with `416`, however satisfiable the range.
+    ///
+    /// The status that sounds like an ending: a client reading "not satisfiable" as "there is
+    /// nothing more" stops with a short block map.
+    pub status_416_after: Option<usize>,
+    /// State the total as `*` in every `Content-Range` after this many ranged responses.
+    pub unknown_total_after: Option<usize>,
+    /// Serve the body from offset zero while describing the requested range correctly.
+    ///
+    /// The only range pathology in this server where nothing it says is untrue. No header check
+    /// can catch it; the digest is the whole defence, which is what the case exists to show.
+    pub serve_wrong_offset: bool,
+    /// From this ranged response onward, honour a range's first byte position and serve to the
+    /// end of the representation.
+    ///
+    /// Self-consistent — the `Content-Range` honestly describes the oversized body — so the only
+    /// thing wrong with it is that nobody asked for that much. A body that runs past a grant is a
+    /// write into the next worker's territory (I-2).
+    ///
+    /// Gated on an ordinal, like the shift. Applied to the probe it is just a `Content-Range` that
+    /// disagrees with the request: the probe refuses to prove ranges, the transfer falls back to a
+    /// single stream, and the grant boundary is never reached at all.
+    pub ignore_range_end_after: Option<usize>,
+    /// Declare half the `Content-Range` span as the `Content-Length`, and send that much.
+    ///
+    /// Two descriptions of one body that cannot both be true (RFC 9110 §14.4). Distinct from
+    /// [`Framing::WrongContentLength`], which declares a fixed number unrelated to any range.
+    pub halve_content_length_on_ranges: bool,
+    /// Serve no more than this much of any one range, describing honestly what was served.
+    ///
+    /// The range-size cap that CDNs and object stores apply. Nothing is malformed: the response
+    /// describes exactly what it sends, and only the request goes unanswered in full. The hazard
+    /// is arithmetic — a grant marked complete because its request was answered leaves a hole in
+    /// a file of exactly the right length.
+    pub cap_range_span: Option<u64>,
+    /// Limit how many requests may be answered at once, across every connection.
+    ///
+    /// A limit on work rather than on sockets. It clears when a peer finishes rather than when a
+    /// connection closes, which is what makes it survivable where a permanent connection cap is
+    /// not: an idle pooled connection still counts against a socket cap forever.
+    pub concurrent_requests: Option<ConcurrentRequests>,
+    /// Close the listener after this many connections have been accepted.
+    ///
+    /// Every later connect is refused by the kernel before this server sees it, which is a
+    /// different signal from an accepted-then-dropped socket and a much faster one: an instant
+    /// error spends a retry budget in milliseconds where a silent drop takes a timeout.
+    pub stop_listening_after_connections: Option<usize>,
+    /// `Retry-After` to send with a response the cap rejected.
+    pub cap_retry_after: Option<String>,
+    /// After this many ranged responses, report a different total in `Content-Range`.
+    ///
+    /// The segmented shape of a representation changing underneath a transfer, and the most
+    /// dangerous one: several workers are fetching disjoint ranges of what they each believe is
+    /// the same file, and the origin — a CDN edge that rotated, a load balancer in front of two
+    /// versions — starts telling later workers a different size. Each individual response is
+    /// well-formed. Only comparing them reveals that they cannot all describe one representation.
+    pub inconsistent_total_after: Option<usize>,
+    /// Accept and immediately close this many connections, with no response at all.
+    ///
+    /// What a load balancer with no healthy backend does, and what a firewall dropping a flow
+    /// looks like from the client: the TCP handshake succeeds, so a client that treats "connected"
+    /// as "working" has already committed, and then the peer hangs up before a single byte of a
+    /// response. Distinct from a truncated body, where a response started and stopped — here there
+    /// is nothing to parse, no status, and no partial content to keep.
+    pub close_without_responding: usize,
+    /// Close the connection after serving this many requests on it, without an error.
+    ///
+    /// The `close-after-N` pathology: a keep-alive that the origin silently stops honouring.
+    /// A client that assumes its pooled connection is still good sends into a closed socket.
+    pub close_after_requests: Option<usize>,
 }
 
 impl Default for ServerSpec {
@@ -244,8 +408,64 @@ impl Default for ServerSpec {
             corrupt_from: None,
             if_range: IfRangeBehaviour::default(),
             behaviour: Vec::new(),
+            max_concurrent_connections: None,
+            cap_status: None,
+            tighten_cap: None,
+            max_total_connections: None,
+            close_mid_headers: 0,
+            hangup_on_reused_request: 0,
+            duplicate_response_after: None,
+            close_after_body_bytes: None,
+            drop_at_offset: None,
+            slow_segment: None,
+            withdraw_ranges_after: None,
+            ignore_range_at: None,
+            shift_ranges_after: None,
+            status_416_after: None,
+            unknown_total_after: None,
+            serve_wrong_offset: false,
+            ignore_range_end_after: None,
+            halve_content_length_on_ranges: false,
+            cap_range_span: None,
+            concurrent_requests: None,
+            stop_listening_after_connections: None,
+            cap_retry_after: None,
+            inconsistent_total_after: None,
+            close_without_responding: 0,
+            close_after_requests: None,
         }
     }
+}
+
+/// A limit on how many requests may be answered at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConcurrentRequests {
+    /// How many may be answered at once.
+    pub limit: usize,
+    /// Answer the ones over the limit with `429` instead of holding them.
+    pub reject: bool,
+}
+
+/// One segment served far more slowly than its peers.
+///
+/// Keyed by where the response body starts, not by which connection carries it: a connection
+/// ordinal is whichever socket the pool opened third, which may be a large range, a small one or
+/// a retry, and the observed delay count varied run to run because of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlowSegment {
+    /// Responses whose body begins at or after this offset are trickled.
+    pub from_offset: u64,
+    /// Pause taken before each chunk.
+    pub delay: std::time::Duration,
+}
+
+/// A concurrency cap that changes part way through the transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TightenCap {
+    /// Requests served under the original cap before the new one applies.
+    pub after_requests: usize,
+    /// The cap from then on.
+    pub to: usize,
 }
 
 /// What a server states in `Repr-Digest`.
@@ -322,12 +542,23 @@ impl RecordedRequest {
 /// would let every attempt fail forever, which would prove the opposite of what the case intends.
 #[derive(Debug)]
 struct TransientBudget {
+    /// Ranged responses served so far, across every connection. Ordinal-triggered range
+    /// pathologies fire on it.
+    ranged_served: AtomicUsize,
+    /// Connections still owed an immediate hang-up.
+    silent: AtomicU32,
+    /// Responses still owed a hang-up part way through their header block.
+    mid_headers: AtomicU32,
+    /// Reused connections still owed a hang-up with the request already written into them.
+    reused: AtomicU32,
     body: AtomicU32,
     status: AtomicU32,
     /// Body bytes served so far, across every connection. Mid-transfer mutations trigger on it.
     bytes_served: std::sync::atomic::AtomicU64,
     /// The `ETag` as it stands now, which a mutation may have replaced.
     etag: Mutex<Option<String>>,
+    /// Permits for requests in flight, when a case limits them.
+    in_flight: Option<Semaphore>,
 }
 
 #[derive(Debug, Default)]
@@ -336,6 +567,26 @@ struct ConnectionObservation {
     accepted: AtomicUsize,
     active: AtomicUsize,
     maximum_active: AtomicUsize,
+    /// Connections dropped without an answer because the cap was already reached.
+    refused: AtomicUsize,
+    /// Requests answered with the cap's status because the cap was already reached.
+    capped: AtomicUsize,
+    /// Extra responses written into a socket that nobody asked for.
+    desynced: AtomicUsize,
+    /// Body chunks held back by a shaper.
+    delayed_chunks: AtomicUsize,
+    /// Ranged requests answered with the whole representation.
+    ranges_ignored: AtomicUsize,
+    /// Ranged requests refused as unsatisfiable.
+    unsatisfiable: AtomicUsize,
+    /// `Content-Range` headers that stated their total as `*`.
+    starless_totals: AtomicUsize,
+    /// Responses that served a different span than the request asked for.
+    respanned: AtomicUsize,
+    /// Body bytes actually written, across every response.
+    body_bytes: AtomicU64,
+    /// Requests that had to wait for the origin's in-flight limit.
+    waited: AtomicUsize,
 }
 
 impl ConnectionObservation {
@@ -422,10 +673,21 @@ impl FirstRangeGate {
 impl TransientBudget {
     fn new(spec: &ServerSpec) -> Self {
         Self {
+            ranged_served: AtomicUsize::new(0),
+            silent: AtomicU32::new(
+                u32::try_from(spec.close_without_responding).unwrap_or(u32::MAX),
+            ),
+            mid_headers: AtomicU32::new(u32::try_from(spec.close_mid_headers).unwrap_or(u32::MAX)),
+            reused: AtomicU32::new(
+                u32::try_from(spec.hangup_on_reused_request).unwrap_or(u32::MAX),
+            ),
             body: AtomicU32::new(spec.transient_body_failures),
             status: AtomicU32::new(spec.transient_status_failures),
             bytes_served: std::sync::atomic::AtomicU64::new(0),
             etag: Mutex::new(spec.etag.clone()),
+            in_flight: spec
+                .concurrent_requests
+                .map(|limit| Semaphore::new(limit.limit)),
         }
     }
 
@@ -511,6 +773,14 @@ impl PathologyServer {
             let range_gate = range_gate.clone();
             async move {
                 loop {
+                    // Dropping the listener is the whole capability: from here every connect is
+                    // refused by the kernel, before this server is involved at all.
+                    if spec
+                        .stop_listening_after_connections
+                        .is_some_and(|limit| connections.accepted.load(Ordering::SeqCst) >= limit)
+                    {
+                        return;
+                    }
                     let Ok((stream, _peer)) = listener.accept().await else {
                         return;
                     };
@@ -518,11 +788,53 @@ impl PathologyServer {
                     let requests = Arc::clone(&requests);
                     let budget = Arc::clone(&budget);
                     let (connection_id, active_connection) = connections.accepted();
+                    // The cap in force *now*, which a case may have moved part way through the
+                    // transfer. Read per connection rather than once at startup, because a limit
+                    // that changes under a committed plan is itself one of the pathologies.
+                    let served = requests.lock().map_or(0, |log| log.len());
+                    let concurrency_cap = match spec.tighten_cap {
+                        Some(tighten) if served >= tighten.after_requests => Some(tighten.to),
+                        _ => spec.max_concurrent_connections,
+                    };
+                    let over_cap = concurrency_cap
+                        .is_some_and(|cap| connections.active.load(Ordering::SeqCst) > cap);
+                    // A lifetime budget counts every connection ever accepted, so unlike a
+                    // concurrency cap it never clears when a peer finishes.
+                    let over_budget = spec
+                        .max_total_connections
+                        .is_some_and(|budget| connections.accepted.load(Ordering::SeqCst) > budget);
+                    if over_budget {
+                        connections.refused.fetch_add(1, Ordering::SeqCst);
+                        drop(active_connection);
+                        drop(stream);
+                        continue;
+                    }
+                    // Two ways an origin enforces the same cap. Without `cap_status` it does not
+                    // answer and does not refuse politely: the socket is accepted by the kernel
+                    // and then dropped, with nothing to parse. With one, the excess connection is
+                    // served — and every request on it is answered with that status.
+                    if over_cap
+                        && (spec.cap_status.is_none() || !matches!(spec.protocol, Protocol::Http11))
+                    {
+                        connections.refused.fetch_add(1, Ordering::SeqCst);
+                        drop(active_connection);
+                        drop(stream);
+                        continue;
+                    }
                     let range_gate = range_gate.clone();
+                    let observation = Arc::clone(&connections);
                     tokio::spawn(async move {
                         let _active_connection = active_connection;
                         match spec.protocol {
                             Protocol::Http11 => {
+                                // Accepted, then hung up before any response. Claimed from a
+                                // budget so the pathology is finite and the download can recover,
+                                // which is what tells "the engine retried" apart from "the server
+                                // eventually gave up".
+                                if TransientBudget::claim(&budget.silent) {
+                                    drop(stream);
+                                    return;
+                                }
                                 serve_http11(
                                     stream,
                                     &spec,
@@ -530,6 +842,10 @@ impl PathologyServer {
                                     &budget,
                                     connection_id,
                                     range_gate.as_deref(),
+                                    Connection {
+                                        over_cap,
+                                        observation: &observation,
+                                    },
                                 )
                                 .await;
                             }
@@ -641,6 +957,104 @@ impl PathologyServer {
         self.connections.accepted.load(Ordering::SeqCst)
     }
 
+    /// Connections this server accepted and then dropped without answering, because its
+    /// concurrency cap was already reached.
+    ///
+    /// The only way a capped case can prove the cap actually bit. Without it, a case that simply
+    /// never opened a second connection is indistinguishable from one that was refused.
+    #[must_use]
+    pub fn refused_connection_count(&self) -> usize {
+        self.connections.refused.load(Ordering::SeqCst)
+    }
+
+    /// Requests this server answered with its cap status because the cap was already reached.
+    ///
+    /// The polite cap's counterpart to [`Self::refused_connection_count`], and load-bearing for
+    /// the same reason: it is what tells a case that recovered from a `429` apart from one whose
+    /// client never opened the extra connection.
+    #[must_use]
+    pub fn capped_response_count(&self) -> usize {
+        self.connections.capped.load(Ordering::SeqCst)
+    }
+
+    /// Extra responses this server wrote that no request asked for.
+    ///
+    /// A desync is invisible in the outcome when the engine handles it correctly, which is
+    /// exactly when the case is green — so without this counter the case would pass with the
+    /// capability removed.
+    #[must_use]
+    pub fn desynced_response_count(&self) -> usize {
+        self.connections.desynced.load(Ordering::SeqCst)
+    }
+
+    /// Body chunks a shaper held back before writing.
+    ///
+    /// A straggler is invisible in the outcome — the file is the same file — so this is what
+    /// tells the case apart from an ordinary download with one more connection.
+    #[must_use]
+    pub fn delayed_chunk_count(&self) -> usize {
+        self.connections.delayed_chunks.load(Ordering::SeqCst)
+    }
+
+    /// Ranged requests this server answered with the whole representation instead of the range.
+    #[must_use]
+    pub fn ignored_range_count(&self) -> usize {
+        self.connections.ranges_ignored.load(Ordering::SeqCst)
+    }
+
+    /// Ranged requests this server refused as unsatisfiable.
+    #[must_use]
+    pub fn unsatisfiable_response_count(&self) -> usize {
+        self.connections.unsatisfiable.load(Ordering::SeqCst)
+    }
+
+    /// `Content-Range` headers this server sent whose total was `*`.
+    #[must_use]
+    pub fn starless_total_count(&self) -> usize {
+        self.connections.starless_totals.load(Ordering::SeqCst)
+    }
+
+    /// Responses whose served span differed from the one requested, in either direction.
+    ///
+    /// A narrowed or widened range is well formed and honestly described, so no other observation
+    /// can see that the origin did anything at all.
+    #[must_use]
+    pub fn respanned_range_count(&self) -> usize {
+        self.connections.respanned.load(Ordering::SeqCst)
+    }
+
+    /// Body bytes this server actually wrote, summed over every response.
+    ///
+    /// What a case needs to see waste rather than outcome: a transfer that fetched the whole
+    /// representation once per worker and then failed is indistinguishable, in every other
+    /// observation here, from one that failed immediately.
+    #[must_use]
+    pub fn body_bytes_served(&self) -> u64 {
+        self.connections.body_bytes.load(Ordering::SeqCst)
+    }
+
+    /// Requests that had to wait for a peer to finish before they could be answered.
+    ///
+    /// A queue leaves no trace in the file or in the connection count, so this is the only thing
+    /// that distinguishes an engine queued behind the origin from one that never overlapped its
+    /// requests in the first place.
+    #[must_use]
+    pub fn waited_request_count(&self) -> usize {
+        self.connections.waited.load(Ordering::SeqCst)
+    }
+
+    /// Connections that reached the server rather than being dropped by a cap or a budget.
+    ///
+    /// The kernel completes the handshake before this server can decide anything, so
+    /// [`Self::accepted_connection_count`] counts sockets the origin then threw away. A case
+    /// bounding how many connections a transfer *used* has to exclude those, or the bound is
+    /// unsatisfiable against any origin that refuses anything.
+    #[must_use]
+    pub fn served_connection_count(&self) -> usize {
+        self.accepted_connection_count()
+            .saturating_sub(self.refused_connection_count())
+    }
+
     /// Number of accepted connections whose serving task is still alive.
     #[must_use]
     pub fn active_connection_count(&self) -> usize {
@@ -651,6 +1065,20 @@ impl PathologyServer {
     #[must_use]
     pub fn maximum_simultaneous_connections(&self) -> usize {
         self.connections.maximum_active.load(Ordering::SeqCst)
+    }
+
+    /// The most requests any one connection carried.
+    ///
+    /// Reuse, seen from the server. A healthy origin carries the probe and the first range on one
+    /// socket, so a case asserting this is one is asserting that something stopped that happening.
+    #[must_use]
+    pub fn most_requests_on_one_connection(&self) -> usize {
+        let mut per_connection: std::collections::BTreeMap<u64, usize> =
+            std::collections::BTreeMap::new();
+        for request in self.requests() {
+            *per_connection.entry(request.connection_id).or_default() += 1;
+        }
+        per_connection.into_values().max().unwrap_or(0)
     }
 
     /// Number of recorded requests carried by one accepted connection.
@@ -773,6 +1201,7 @@ fn plan(
     range_header: Option<&str>,
     if_range: Option<&str>,
     current_etag: Option<&str>,
+    ranged_served: usize,
 ) -> Plan {
     // A resume whose validator no longer matches is answered with the whole representation, so
     // the range is discarded before anything else looks at it.
@@ -837,19 +1266,45 @@ fn plan(
     }
 
     let requested = range_header.and_then(parse_range);
-    let honour = matches!(
-        spec.ranges,
-        RangeBehaviour::Supported
-            | RangeBehaviour::IgnoreButClaim
-            | RangeBehaviour::ShiftedContentRange { .. }
-            | RangeBehaviour::OmitContentRange
-            | RangeBehaviour::LiteralContentRange(_)
-            | RangeBehaviour::UnknownTotalLength
-            | RangeBehaviour::MultipartByteranges
-    );
+    // Evidence the probe took honestly, withdrawn afterwards. `ranged_served` counts the ranged
+    // responses BEFORE this one, so the probe sees zero and ordinals below are one-based.
+    let ordinal = ranged_served.saturating_add(1);
+    let withdrawn = spec
+        .withdraw_ranges_after
+        .is_some_and(|honoured| ranged_served >= honoured)
+        // One node in the fleet, rather than the whole origin changing its mind.
+        || spec.ignore_range_at == Some(ordinal);
+    let honour = !withdrawn
+        && matches!(
+            spec.ranges,
+            RangeBehaviour::Supported
+                | RangeBehaviour::IgnoreButClaim
+                | RangeBehaviour::ShiftedContentRange { .. }
+                | RangeBehaviour::OmitContentRange
+                | RangeBehaviour::LiteralContentRange(_)
+                | RangeBehaviour::UnknownTotalLength
+                | RangeBehaviour::MultipartByteranges
+        );
 
     let mut status = 200_u16;
     let mut body = Some((0_u64, total.saturating_sub(1)));
+
+    // A range the origin could serve and refuses to. Answered exactly as a genuinely
+    // unsatisfiable one would be, because the point is that the engine cannot tell them apart
+    // from the response and must decide from what it already knows about the representation.
+    if requested.is_some()
+        && spec
+            .status_416_after
+            .is_some_and(|served| ranged_served >= served)
+    {
+        headers.push(("Content-Range".to_owned(), format!("bytes */{total}")));
+        return Plan {
+            status: 416,
+            headers,
+            body: None,
+            literal_body: Some(Vec::new()),
+        };
+    }
 
     if let Some(requested) = requested
         && honour
@@ -869,6 +1324,20 @@ fn plan(
                 };
             }
             Some((first, last)) => {
+                // Honour where the range starts and disregard where it ends. The header below
+                // describes what is actually sent, so the response is self-consistent and only
+                // the request has been disregarded.
+                let last = if spec
+                    .ignore_range_end_after
+                    .is_some_and(|served| ranged_served >= served)
+                {
+                    total.saturating_sub(1)
+                } else if let Some(cap) = spec.cap_range_span {
+                    // Narrowed rather than widened, and described honestly either way.
+                    last.min(first.saturating_add(cap).saturating_sub(1))
+                } else {
+                    last
+                };
                 status = 206;
                 match &spec.ranges {
                     RangeBehaviour::OmitContentRange => {}
@@ -907,16 +1376,38 @@ fn plan(
                             format!("bytes {first}-{last}/*"),
                         ));
                     }
-                    RangeBehaviour::ShiftedContentRange { by } => {
+                    RangeBehaviour::ShiftedContentRange { by }
+                        if spec
+                            .shift_ranges_after
+                            .is_none_or(|served| ranged_served >= served) =>
+                    {
                         headers.push((
                             "Content-Range".to_owned(),
                             format!("bytes {}-{}/{total}", first + by, last + by),
                         ));
                     }
-                    _ => {
+                    // The origin stops being willing to state a length while still serving
+                    // ranges. Legal, and useless to an engine that has already segmented — which
+                    // is why the recorded total has to be the one that counts.
+                    _ if spec
+                        .unknown_total_after
+                        .is_some_and(|served| ranged_served >= served) =>
+                    {
                         headers.push((
                             "Content-Range".to_owned(),
-                            format!("bytes {first}-{last}/{total}"),
+                            format!("bytes {first}-{last}/*"),
+                        ));
+                    }
+                    _ => {
+                        // Each response is individually well-formed. Only comparing them across
+                        // workers shows that they cannot all describe one representation.
+                        let claimed = match spec.inconsistent_total_after {
+                            Some(after) if ranged_served > after => total + 1,
+                            _ => total,
+                        };
+                        headers.push((
+                            "Content-Range".to_owned(),
+                            format!("bytes {first}-{last}/{claimed}"),
                         ));
                     }
                 }
@@ -1027,6 +1518,14 @@ const STREAM_CHUNK: usize = 64 * 1024;
 
 // ---------------------------------------------------------------- HTTP/1.1
 
+/// What this one connection knows about itself, beyond the spec every connection shares.
+struct Connection<'a> {
+    /// This connection was opened while the origin's cap was already met, and the case asked for
+    /// the cap to be enforced by answering rather than by dropping.
+    over_cap: bool,
+    observation: &'a ConnectionObservation,
+}
+
 async fn serve_http11(
     mut stream: TcpStream,
     spec: &ServerSpec,
@@ -1034,8 +1533,10 @@ async fn serve_http11(
     budget: &Arc<TransientBudget>,
     connection_id: u64,
     range_gate: Option<&FirstRangeGate>,
+    connection: Connection<'_>,
 ) {
     let mut buffered: Vec<u8> = Vec::new();
+    let mut served_on_connection = 0_usize;
 
     loop {
         // Read until a complete request head has arrived.
@@ -1083,8 +1584,88 @@ async fn serve_http11(
             });
         }
 
+        // The polite cap answers before anything else looks at the request: an origin at its
+        // connection limit has not decided to serve this range, it has decided not to.
+        if let Some(status) = spec.cap_status.filter(|_| connection.over_cap) {
+            connection.observation.capped.fetch_add(1, Ordering::SeqCst);
+            let response = format!(
+                "HTTP/1.1 {status} {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                reason_phrase(status)
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.shutdown().await;
+            return;
+        }
+
+        // The keep-alive race: this request arrived on a connection that had already answered
+        // one, and it is the arrival that kills the socket. Recorded first, so the case can see
+        // the request the client committed and never got an answer to.
+        if spec.hangup_on_reused_request > 0
+            && served_on_connection >= 1
+            && TransientBudget::claim(&budget.reused)
+        {
+            return;
+        }
+
         if let Some(gate) = range_gate {
             gate.hold_if_matches(range_header.as_deref()).await;
+        }
+
+        served_on_connection += 1;
+
+        // A limit on requests in flight, held for as long as this response takes. Two enforcements
+        // of the same limit: hold the request until a peer finishes, telling the client nothing,
+        // or answer it and close. The permit is released when `_in_flight` drops at the end of the
+        // iteration, which is what makes this clear on a peer finishing rather than on a socket
+        // closing.
+        let mut _in_flight = None;
+        if let Some(gate) = &budget.in_flight {
+            // Hold the permit until the limit has actually turned someone away, or briefly. A
+            // case about an in-flight limit is only a case when requests are genuinely in flight
+            // together, and waiting for the runtime to overlap them is waiting on the machine's
+            // load: under `--test-threads 24` the three workers were serialised often enough that
+            // the cap never bit and the vacuity guard failed the run, which is the guard doing its
+            // job and the case being wrong. The rendezvous makes the overlap a property of the
+            // origin rather than of the scheduler.
+            let rendezvous = |connections: &ConnectionObservation| {
+                connections.capped.load(Ordering::SeqCst)
+                    + connections.waited.load(Ordering::SeqCst)
+            };
+            let before = rendezvous(connection.observation);
+            match gate.try_acquire() {
+                Ok(permit) => _in_flight = Some(permit),
+                Err(_) if spec.concurrent_requests.is_some_and(|limit| limit.reject) => {
+                    connection.observation.capped.fetch_add(1, Ordering::SeqCst);
+                    let retry_after = spec
+                        .cap_retry_after
+                        .as_ref()
+                        .map(|after| format!("Retry-After: {after}\r\n"))
+                        .unwrap_or_default();
+                    let response = format!(
+                        "HTTP/1.1 429 {}\r\n{retry_after}Content-Length: 0\r\nConnection: \
+                         close\r\n\r\n",
+                        reason_phrase(429)
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                    return;
+                }
+                Err(_) => {
+                    connection.observation.waited.fetch_add(1, Ordering::SeqCst);
+                    match gate.acquire().await {
+                        Ok(permit) => _in_flight = Some(permit),
+                        Err(_) => return,
+                    }
+                }
+            }
+            // Bounded: a transfer that never sends a second request still finishes, one wait
+            // later, rather than hanging.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            while rendezvous(connection.observation) == before
+                && std::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
         }
 
         let if_range = headers
@@ -1092,13 +1673,57 @@ async fn serve_http11(
             .find(|(name, _)| name == "if-range")
             .map(|(_, value)| value.clone());
         let current_etag = budget.current_etag();
+        let ranged_served = budget
+            .ranged_served
+            .fetch_add(usize::from(range_header.is_some()), Ordering::SeqCst);
         let mut plan = plan(
             spec,
             &path,
             range_header.as_deref(),
             if_range.as_deref(),
             current_etag.as_deref(),
+            ranged_served,
         );
+        // A ranged request answered with the whole representation. Counted here rather than in
+        // `plan`, which cannot see the observation, and from the status rather than from the spec,
+        // so it is the response that is recorded and not the intention.
+        if range_header.is_some() && plan.status == 200 {
+            connection
+                .observation
+                .ranges_ignored
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        // A span the origin chose rather than the one that was asked for, narrower or wider.
+        // Compared against the resolved request, so it counts what the response did and not what
+        // the spec intended.
+        if let Some((served_first, served_last)) = plan.body
+            && let Some((asked_first, asked_last)) = range_header
+                .as_deref()
+                .and_then(parse_range)
+                .and_then(|requested| requested.resolve(spec.content.len()))
+            && (served_first, served_last) != (asked_first, asked_last)
+        {
+            connection
+                .observation
+                .respanned
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        if range_header.is_some() && plan.status == 416 {
+            connection
+                .observation
+                .unsatisfiable
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        if plan
+            .headers
+            .iter()
+            .any(|(name, value)| name == "Content-Range" && value.ends_with("/*"))
+        {
+            connection
+                .observation
+                .starless_totals
+                .fetch_add(1, Ordering::SeqCst);
+        }
         budget.serve(spec, bytes_to_write(spec, &plan));
         let mut full_len = planned_body_len(spec, &plan);
         let mut send_len = bytes_to_write(spec, &plan);
@@ -1129,6 +1754,28 @@ async fn serve_http11(
             send_len = full_len / 2;
             forced_close = true;
         }
+        // A fixed number of bytes per response, whatever was asked for. The declared length is
+        // untouched, so the client sees a response that promised more than it delivered.
+        if let Some(cap) = spec.close_after_body_bytes {
+            send_len = send_len.min(cap);
+        }
+        // A fixed point in the representation. Computed from where this response's body starts, so
+        // it is the same offset on every attempt: a range beyond it delivers nothing at all.
+        if let Some(offset) = spec.drop_at_offset
+            && let Some((first, _)) = plan.body
+        {
+            send_len = send_len.min(offset.saturating_sub(first));
+        }
+
+        // Two descriptions of one body that cannot both be true. The `Content-Range` above still
+        // spans the whole range; only what is declared and sent is halved. Bodies of one byte are
+        // exempt so the capability probe still works and segmentation is still permitted — the
+        // contradiction belongs on the workers, where there is a grant to get wrong.
+        if spec.halve_content_length_on_ranges && plan.status == 206 && full_len > 1 {
+            full_len /= 2;
+            send_len = send_len.min(full_len);
+        }
+
         // A HEAD response carries the headers a GET would, Content-Length included, and no body.
         if method.eq_ignore_ascii_case("HEAD") && spec.answer_head {
             send_len = 0;
@@ -1169,19 +1816,55 @@ async fn serve_http11(
         }
         response.push_str("\r\n");
 
+        // Stop inside the header block. Half the bytes rather than a fixed count, so the cut lands
+        // in the middle of a header line whatever the case's headers are, and never on the blank
+        // line that would make the message look complete.
+        if spec.close_mid_headers > 0 && TransientBudget::claim(&budget.mid_headers) {
+            let cut = response.len() / 2;
+            let partial = response.get(..cut).unwrap_or_default();
+            let _ = stream.write_all(partial.as_bytes()).await;
+            let _ = stream.shutdown().await;
+            return;
+        }
+
         if stream.write_all(response.as_bytes()).await.is_err() {
             return;
         }
 
         let wrote_body = match framing {
-            Framing::Chunked => write_chunked(&mut stream, spec, &plan, send_len).await,
-            _ => write_plain(&mut stream, spec, &plan, send_len).await,
+            Framing::Chunked => {
+                write_chunked(&mut stream, spec, &plan, send_len, &connection).await
+            }
+            _ => write_plain(&mut stream, spec, &plan, send_len, &connection).await,
         };
         if wrote_body.is_err() {
             return;
         }
         if stream.flush().await.is_err() {
             return;
+        }
+
+        // One request, two responses. The copy is byte-identical to the answer just sent, so
+        // nothing about it is malformed — it is only unasked for. It stays in the socket, and the
+        // next request the client sends on this connection reads it instead of its own answer.
+        if spec
+            .duplicate_response_after
+            .is_some_and(|limit| served_on_connection == limit)
+        {
+            connection
+                .observation
+                .desynced
+                .fetch_add(1, Ordering::SeqCst);
+            let _ = stream.write_all(response.as_bytes()).await;
+            let extra = match framing {
+                Framing::Chunked => {
+                    write_chunked(&mut stream, spec, &plan, send_len, &connection).await
+                }
+                _ => write_plain(&mut stream, spec, &plan, send_len, &connection).await,
+            };
+            if extra.is_err() || stream.flush().await.is_err() {
+                return;
+            }
         }
 
         // Any of these three means the response cannot be followed by another on this
@@ -1194,7 +1877,12 @@ async fn serve_http11(
             )
             || truncated
             || forced_close
-            || spec.omit_chunked_terminator;
+            || spec.omit_chunked_terminator
+            // close-after-N: the origin stops honouring keep-alive without saying so and without
+            // erroring. The response just served is complete; the connection simply ends.
+            || spec
+                .close_after_requests
+                .is_some_and(|limit| served_on_connection >= limit);
         if must_close {
             let _ = stream.shutdown().await;
             return;
@@ -1208,7 +1896,9 @@ async fn write_plain(
     spec: &ServerSpec,
     plan: &Plan,
     send_len: u64,
+    connection: &Connection<'_>,
 ) -> std::io::Result<()> {
+    let shaper = shaper_for(spec, plan);
     let mut buffer = vec![0_u8; STREAM_CHUNK];
     let mut written = 0_u64;
     while written < send_len {
@@ -1216,6 +1906,17 @@ async fn write_plain(
         if piece.is_empty() {
             break;
         }
+        if let Some(delay) = shaper {
+            connection
+                .observation
+                .delayed_chunks
+                .fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(delay).await;
+        }
+        connection
+            .observation
+            .body_bytes
+            .fetch_add(u64::try_from(piece.len()).unwrap_or(0), Ordering::SeqCst);
         stream.write_all(piece).await?;
         written = written.saturating_add(u64::try_from(piece.len()).unwrap_or(0));
     }
@@ -1228,7 +1929,9 @@ async fn write_chunked(
     spec: &ServerSpec,
     plan: &Plan,
     send_len: u64,
+    connection: &Connection<'_>,
 ) -> std::io::Result<()> {
+    let shaper = shaper_for(spec, plan);
     // Several chunks rather than one: a single chunk covering the whole body would not exercise a
     // client's chunk-boundary handling, which is the point of the chunked case.
     let mut buffer = vec![0_u8; 16 * 1024];
@@ -1238,6 +1941,17 @@ async fn write_chunked(
         if piece.is_empty() {
             break;
         }
+        if let Some(delay) = shaper {
+            connection
+                .observation
+                .delayed_chunks
+                .fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(delay).await;
+        }
+        connection
+            .observation
+            .body_bytes
+            .fetch_add(u64::try_from(piece.len()).unwrap_or(0), Ordering::SeqCst);
         stream
             .write_all(format!("{:x}\r\n", piece.len()).as_bytes())
             .await?;
@@ -1250,6 +1964,13 @@ async fn write_chunked(
         return Ok(());
     }
     stream.write_all(b"0\r\n\r\n").await
+}
+
+/// The pause this response takes before each chunk, when it serves the straggling segment.
+fn shaper_for(spec: &ServerSpec, plan: &Plan) -> Option<std::time::Duration> {
+    let slow = spec.slow_segment?;
+    let (first, _) = plan.body?;
+    (first >= slow.from_offset).then_some(slow.delay)
 }
 
 /// Fill `buffer` with the next piece of the planned body and return the filled slice.
@@ -1279,7 +2000,14 @@ fn next_chunk<'b>(
         return out;
     }
 
-    let first = plan.body.map_or(0, |(first, _)| first);
+    // Correct headers over the wrong bytes: the body is generated from the start of the
+    // representation while the response describes the range that was asked for. Nothing a client
+    // can read is untrue, which is exactly the point — only the digest catches this.
+    let first = if spec.serve_wrong_offset {
+        0
+    } else {
+        plan.body.map_or(0, |(first, _)| first)
+    };
     let absolute = first.saturating_add(offset);
     let out = buffer.get_mut(..take).unwrap_or(&mut []);
     spec.content.fill(absolute, out);
@@ -1436,12 +2164,16 @@ async fn serve_h2c(
                     .find(|(name, _)| name == "if-range")
                     .map(|(_, value)| value.clone());
                 let current_etag = budget.current_etag();
+                let ranged_served = budget
+                    .ranged_served
+                    .fetch_add(usize::from(range_header.is_some()), Ordering::SeqCst);
                 let mut plan = plan(
                     &spec,
                     &path,
                     range_header.as_deref(),
                     if_range.as_deref(),
                     current_etag.as_deref(),
+                    ranged_served,
                 );
                 budget.serve(&spec, bytes_to_write(&spec, &plan));
                 let mut send_len = bytes_to_write(&spec, &plan);

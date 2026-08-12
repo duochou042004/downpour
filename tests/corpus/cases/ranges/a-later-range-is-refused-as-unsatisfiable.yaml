@@ -1,0 +1,26 @@
+id: a-later-range-is-refused-as-unsatisfiable
+category: ranges
+description: >
+  Ranges are proven and the first segments are served, and then the origin begins answering
+  `416 Range Not Satisfiable` to ranges that are plainly inside the representation it just
+  described. An object that was replaced by a shorter one, an edge that lost the tail, a range
+  server reading a length from somewhere else.
+  `416` is the dangerous status here because it is the one that sounds like an ending. A client
+  that reads "not satisfiable" as "there is nothing more to fetch" stops, finds its block map
+  short, and — if it trusts the server over its own arithmetic — renames what it has. The engine
+  must treat a refusal of a range it knows to be inside the representation as a failure of the
+  transfer, not as its completion, and must leave the part file unrenamed for a resume to build on.
+references: ["RFC 9110 §15.5.17", "docs/agent/INVARIANTS.md#i-4", "docs/01-idm-teardown.md §3.1"]
+
+connections: 3
+
+server:
+  content: { size: 6MiB, seed: 162 }
+  # The probe and one worker are served; everything after is refused.
+  status_416_after: 2
+
+expect:
+  final_state: failed
+  error_kind: segmented_transfer
+  file_renamed: false
+  min_unsatisfiable_responses: 1

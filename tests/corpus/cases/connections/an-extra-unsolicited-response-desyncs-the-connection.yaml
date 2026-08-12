@@ -1,0 +1,39 @@
+id: an-extra-unsolicited-response-desyncs-the-connection
+category: connections
+description: >
+  The origin answers one request with two responses. The second is complete and well-formed and
+  nobody asked for it — a request-smuggling appliance, a proxy that replayed a buffered response,
+  a load balancer that answered a request it had already forwarded. The extra response sits in
+  the socket, and the next request sent on that connection reads *it* instead of its own answer.
+  This is the connection pathology with a corruption outcome. Every response involved is
+  syntactically valid, so nothing in the framing objects; the danger is that a reused connection
+  returns a body for a range nobody requested, and writing it at the offset that was *asked for*
+  rather than the one the response *describes* puts the wrong bytes in the file at exactly the
+  right size.
+  What the case proves is that the poisoned socket is never reused: the transport layer refuses to
+  return a connection with unread bytes to its pool, so the stale response is never read as an
+  answer to anything and the corruption path is unreachable. That is asserted rather than assumed,
+  because it is the whole defence — the first version of this case asserted only that the extra
+  response was written, and the run showed three requests spread over three connections, meaning
+  no request ever met the desynchronised socket. It was green and it was proving nothing.
+references: ["docs/agent/INVARIANTS.md#i-5", "docs/03-transfer-engine-spec.md §7", "docs/09-testing-strategy.md §3.2"]
+
+# Segmented, because the danger only exists when a reused connection carries a *different* range
+# next. On one connection fetching one whole body there is no wrong offset to write at.
+connections: 3
+
+server:
+  content: { size: 2MiB, seed: 148 }
+  # After the probe, one extra copy of the response is written into the socket.
+  duplicate_response_after: 1
+
+expect:
+  final_state: completed
+  file_renamed: true
+  # The extra response was really written. Without this the case is an ordinary segmented
+  # download and would pass with the capability removed.
+  min_desynced_responses: 1
+  # The defence, stated so it can fail. A healthy origin serves the probe and the first range on
+  # one socket, so this is one exactly when something retired the poisoned connection; remove the
+  # duplicate response and a connection carries two requests, which turns this red.
+  max_requests_per_connection: 1

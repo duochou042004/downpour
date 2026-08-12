@@ -17,8 +17,8 @@ use serde::Deserialize;
 
 use crate::content::{Content, GENERATOR_V1};
 use crate::server::{
-    Framing, IfRangeBehaviour, Mutation, MutationEffect, Protocol, RangeBehaviour,
-    RedirectLocation, ServerSpec,
+    ConcurrentRequests, Framing, IfRangeBehaviour, Mutation, MutationEffect, Protocol,
+    RangeBehaviour, RedirectLocation, ServerSpec, SlowSegment, TightenCap,
 };
 
 /// One corpus case.
@@ -43,6 +43,15 @@ pub struct Case {
     /// a target that already exists, a directory nobody may write to, a `.dppart` another process
     /// already owns. None of them can be expressed by a server, which is why they need their own
     /// section rather than another server knob.
+    /// How many connections the engine may use, when the case is about concurrency.
+    ///
+    /// Defaults to one, which is the single-stream path every case used before this existed. A
+    /// connection pathology — a per-IP cap, a per-connection cap, a concurrent-request limit —
+    /// only exists when more than one connection is open, so a whole category of cases about them
+    /// is unreachable without this.
+    #[serde(default)]
+    pub connections: Option<usize>,
+    /// The local preconditions this case sets up before the transfer runs.
     #[serde(default)]
     pub local: LocalCase,
     /// What the server should do.
@@ -201,6 +210,186 @@ pub struct ServerCase {
     /// is what would make an `etag-changed-midway` case pass without any ETag ever changing.
     #[serde(default)]
     pub behaviour: Vec<BehaviourCase>,
+    /// Serve at most this many connections at once, dropping the rest without answering.
+    ///
+    /// A per-IP cap as an origin actually applies one: the socket is accepted and then dropped,
+    /// with no status and no reason. Answering would make it the `429` pathology instead.
+    #[serde(default)]
+    pub max_concurrent_connections: Option<usize>,
+    /// Answer the connection beyond `max_concurrent_connections` with this status instead of
+    /// dropping it.
+    ///
+    /// The other way an origin enforces a cap. A drop produces a transport error; an answer
+    /// produces a *status*, which is a different path through the engine's retry classification
+    /// and the one I-7 names when it says concurrency falls back on `429`.
+    #[serde(default)]
+    pub cap_status: Option<u16>,
+    /// Change `max_concurrent_connections` to a new value once this many requests have been
+    /// served.
+    ///
+    /// A limit that moves under a plan the engine already committed to. Distinct from a steady
+    /// cap: at the low value the engine would never have segmented this far, and at the high one
+    /// nothing is ever refused.
+    #[serde(default)]
+    pub tighten_cap: Option<TightenCapCase>,
+    /// Accept at most this many connections in total, ever, dropping every one after them.
+    ///
+    /// A budget rather than a concurrency limit: it does not clear when a peer finishes, so
+    /// waiting cannot recover it and only reuse of an already-open connection can.
+    #[serde(default)]
+    pub max_total_connections: Option<usize>,
+    /// End this many responses part way through the header block.
+    ///
+    /// The point on the response timeline between "nothing arrived" and "the body was cut short":
+    /// the client has parsed a status line and some headers, and has no complete message.
+    #[serde(default)]
+    pub close_mid_headers: usize,
+    /// Read and discard this many requests that arrived on a connection which had already
+    /// answered one, without responding to them.
+    ///
+    /// The keep-alive race. Unlike `close_after_requests`, the socket is alive when the client
+    /// picks it out of the pool and dies with a request already written into it. A count rather
+    /// than a switch, because a race is an occasional event: an origin that hangs up on *every*
+    /// reused request cannot be survived by a client that reuses connections at all, and
+    /// adapting to that is pool policy rather than retry (see the backlog).
+    #[serde(default)]
+    pub hangup_on_reused_request: usize,
+    /// After this many responses on a connection, write a second copy of one nobody asked for.
+    ///
+    /// The extra response stays in the socket, so the next request sent on that connection reads
+    /// an answer belonging to a different range.
+    #[serde(default)]
+    pub duplicate_response_after: Option<usize>,
+    /// Close after this many body bytes on every response, whatever was asked for.
+    ///
+    /// Every attempt advances, which is what separates this from a truncation: the transfer
+    /// finishes only if a retry asks for the remainder rather than for the grant again.
+    #[serde(default)]
+    pub close_after_body_bytes: Option<ByteSize>,
+    /// Cut every response that reaches this offset in the representation, and close.
+    ///
+    /// A point in the *file* rather than in the response, so the ranges before it finish and the
+    /// one across it never can.
+    #[serde(default)]
+    pub drop_at_offset: Option<ByteSize>,
+    /// Serve the segment from this offset onward at a trickle, while its peers run at full speed.
+    #[serde(default)]
+    pub slow_segment: Option<SlowSegmentCase>,
+    /// Honour ranges for this many ranged responses, then answer every one with the whole
+    /// representation.
+    ///
+    /// Range evidence that was real when the probe took it and worthless afterwards. Distinct
+    /// from `ranges: lies`, which never honours one: there the probe refuses to segment, so the
+    /// engine never commits workers to ranges it cannot get.
+    #[serde(default)]
+    pub withdraw_ranges_after: Option<usize>,
+    /// Answer exactly this ranged response, counting from one, with the whole representation.
+    ///
+    /// One node in a fleet that was never configured for ranges, rather than an origin that
+    /// withdraws them for good.
+    #[serde(default)]
+    pub ignore_range_at: Option<usize>,
+    /// Apply `ranges: shifted_content_range` only from this ranged response onward.
+    ///
+    /// The probe is answered honestly, so segmentation is permitted on evidence that was true.
+    #[serde(default)]
+    pub shift_ranges_after: Option<usize>,
+    /// Answer every ranged response after this one with `416`, however satisfiable the range is.
+    #[serde(default)]
+    pub status_416_after: Option<usize>,
+    /// State the total as `*` in every `Content-Range` after this ranged response.
+    #[serde(default)]
+    pub unknown_total_after: Option<usize>,
+    /// Serve the body from the start of the representation while describing the requested range.
+    ///
+    /// The one range pathology no header check can catch: nothing the server says is untrue.
+    #[serde(default)]
+    pub serve_wrong_offset: bool,
+    /// From this ranged response onward, honour a range's first byte position and serve to the
+    /// end of the representation.
+    ///
+    /// Gated on an ordinal for the same reason the shift is: applied to the probe it is simply a
+    /// `Content-Range` that does not match the request, the probe refuses to prove ranges, and the
+    /// transfer never segments — so the grant boundary this is meant to press against is never
+    /// reached.
+    #[serde(default)]
+    pub ignore_range_end_after: Option<usize>,
+    /// Declare a `Content-Length` of half what the `Content-Range` spans, and send that much.
+    #[serde(default)]
+    pub halve_content_length_on_ranges: bool,
+    /// Serve no more than this much of any range, describing honestly what was served.
+    #[serde(default)]
+    pub cap_range_span: Option<ByteSize>,
+    /// Limit how many requests may be in flight at once, across every connection.
+    ///
+    /// A limit on work rather than on sockets: it clears when a peer finishes, not when a
+    /// connection closes, so nothing in the connection count reveals it.
+    #[serde(default)]
+    pub concurrent_requests: Option<ConcurrentRequestsCase>,
+    /// Close the listener after this many connections, refusing every later connect at the kernel.
+    #[serde(default)]
+    pub stop_listening_after_connections: Option<usize>,
+    /// `Retry-After` on a response rejected by `concurrent_requests` or by the connection cap.
+    #[serde(default)]
+    pub cap_retry_after: Option<String>,
+    /// After this many ranged responses, report a different total in `Content-Range`.
+    #[serde(default)]
+    pub inconsistent_total_after: Option<usize>,
+    /// Accept and immediately close this many connections, with no response at all.
+    #[serde(default)]
+    pub close_without_responding: usize,
+    /// Close the connection after this many requests on it, without an error.
+    ///
+    /// A keep-alive the origin silently stops honouring. A client that assumes its pooled
+    /// connection is still good writes into a closed socket.
+    #[serde(default)]
+    pub close_after_requests: Option<usize>,
+}
+
+/// One segment served far more slowly than the others.
+///
+/// Keyed by the offset the response body starts at rather than by which connection it arrives on.
+/// A connection ordinal is not stable — the third socket to be accepted is whichever one the pool
+/// happened to open third, and it may carry a large range, a small one, or a retry — which made
+/// the observed delay count vary between runs. The straggler is a property of the *segment*, which
+/// is also what `docs/01` §3.5 describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlowSegmentCase {
+    /// Responses whose body begins at or after this offset are trickled.
+    pub from_offset: ByteSize,
+    /// How long to pause before each chunk.
+    pub delay_ms: u64,
+}
+
+/// A limit on requests in flight, and what the origin does with the ones over it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConcurrentRequestsCase {
+    /// How many requests may be answered at once.
+    pub limit: usize,
+    /// What happens to a request that arrives over the limit.
+    pub then: OverLimitCase,
+}
+
+/// What an origin does with a request beyond its in-flight limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverLimitCase {
+    /// Hold it until a peer finishes. The client is told nothing and sees only latency.
+    Wait,
+    /// Answer `429` and close.
+    Reject,
+}
+
+/// A concurrency cap that changes part way through the transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TightenCapCase {
+    /// How many requests are served under the original cap before it changes.
+    pub after_requests: usize,
+    /// The cap that applies from then on.
+    pub to: usize,
 }
 
 /// The local preconditions a case sets up before the transfer runs.
@@ -507,6 +696,108 @@ pub struct Expect {
     /// accidental outcome.
     #[serde(default)]
     pub forbids_if_range: Option<bool>,
+    /// The server must have accepted at least this many transport connections.
+    ///
+    /// What distinguishes a connection pathology from an ordinary download that happens to
+    /// succeed. A probe and a body normally share one keep-alive connection, so a case whose
+    /// point is "the origin stopped honouring keep-alive" is indistinguishable from a healthy
+    /// transfer unless the connection count is asserted.
+    #[serde(default)]
+    pub min_connections: Option<usize>,
+    /// The server must have dropped at least this many connections for exceeding its cap.
+    ///
+    /// The only way a capped case can prove the cap bit. Without it, a client that simply never
+    /// opened a second connection passes identically to one that was refused, and the case would
+    /// stay green if the cap were removed from the server entirely.
+    #[serde(default)]
+    pub min_refused_connections: Option<usize>,
+    /// The origin's cap must have answered at least this many requests with its cap status.
+    ///
+    /// The polite cap's equivalent of `min_refused_connections`, and needed for the same reason:
+    /// a client that never opened the extra connection produces exactly the same file as one that
+    /// was told `429` and recovered, so without this the case stays green with the cap removed.
+    #[serde(default)]
+    pub min_capped_responses: Option<usize>,
+    /// No more than this many connections may have carried a request.
+    ///
+    /// The only upper bound among the connection observations, and the only one that can say
+    /// "the transfer finished inside the origin's budget". Every floor is satisfied by an engine
+    /// that opened far too many and had the excess dropped, which is the opposite of the
+    /// behaviour a connection budget requires.
+    ///
+    /// Counted as accepted minus refused, not as accepted: the kernel completes the handshake
+    /// before the server can decide anything, so a connection the origin dropped is one the
+    /// engine opened and got nothing from — it must not count against a budget the origin itself
+    /// enforced.
+    #[serde(default)]
+    pub max_served_connections: Option<usize>,
+    /// The server must have written at least this many responses nobody asked for.
+    ///
+    /// Without it a desync case is an ordinary download: the extra response is invisible in the
+    /// outcome when the engine handles it correctly, which is precisely when the case is green.
+    #[serde(default)]
+    pub min_desynced_responses: Option<usize>,
+    /// No single connection may have carried more than this many requests.
+    ///
+    /// Reuse, asserted from the server's side. A healthy origin carries the probe and the first
+    /// range on one socket, so pinning this to one says something actively prevented that — which
+    /// is the only way a case can show that a poisoned connection was retired rather than reused.
+    #[serde(default)]
+    pub max_requests_per_connection: Option<usize>,
+    /// The server must have seen no more than this many requests.
+    ///
+    /// The only upper bound on requests, and the only way to assert that the engine did *not*
+    /// retry. Every other case can show recovery; a case whose point is that recovery was never
+    /// needed has nothing to show unless the absence is asserted.
+    #[serde(default)]
+    pub max_requests: Option<usize>,
+    /// The server must have delayed at least this many body chunks.
+    ///
+    /// Without it a shaper that never fired leaves an ordinary download that passes for the wrong
+    /// reason.
+    #[serde(default)]
+    pub min_delayed_chunks: Option<usize>,
+    /// At least this many ranged requests must have been answered with the whole representation.
+    #[serde(default)]
+    pub min_ranges_ignored: Option<usize>,
+    /// At least this many ranged requests must have been refused as unsatisfiable.
+    #[serde(default)]
+    pub min_unsatisfiable_responses: Option<usize>,
+    /// At least this many `Content-Range` headers must have stated their total as `*`.
+    #[serde(default)]
+    pub min_starless_totals: Option<usize>,
+    /// At least this many responses must have served a different span than was requested.
+    ///
+    /// Covers both directions — a range narrowed by a cap and one widened to the end of the file.
+    /// Neither is malformed, so no other observation here can see that anything happened.
+    #[serde(default)]
+    pub min_respanned_ranges: Option<usize>,
+    /// The server must not have written more than this many body bytes in total.
+    ///
+    /// The only observation that bounds *work* rather than outcome, and the only way to see the
+    /// first half of what I-6 warns about: "downloads the file eight times and assembles
+    /// nonsense". The second half is caught by the byte comparison; the waste is invisible to
+    /// every other assertion here, because a download that fetched the representation once per
+    /// worker and then failed looks exactly like one that failed immediately.
+    #[serde(default)]
+    pub max_body_bytes_served: Option<ByteSize>,
+    /// At least this many requests must have waited for the origin's in-flight limit.
+    ///
+    /// A queue is invisible in the outcome: the file is identical whether the requests overlapped
+    /// or were issued one at a time. Without this the case cannot tell an engine that queued
+    /// behind the origin from one that never asked for concurrency at all.
+    #[serde(default)]
+    pub min_waited_requests: Option<usize>,
+    /// The run must have taken at least this long.
+    ///
+    /// The only assertion in the corpus that is about the clock, and it exists for the one claim
+    /// an outcome cannot carry: that a wait the server asked for was actually taken. The same file
+    /// arrives whether the engine honoured `Retry-After` or substituted its own curve, so nothing
+    /// else can tell them apart. Safe as a *floor* only because every other delay in a corpus run
+    /// is collapsed to milliseconds; it must never be paired with an upper bound, which would make
+    /// it a performance test on shared CI hardware.
+    #[serde(default)]
+    pub min_elapsed_ms: Option<u64>,
     /// Whether the final URL must be on a different origin than the submitted one.
     ///
     /// Without this, a cross-host case is indistinguishable from a same-host one: the chain length
@@ -696,6 +987,43 @@ impl Case {
     #[must_use]
     pub fn server_spec(&self) -> ServerSpec {
         ServerSpec {
+            max_concurrent_connections: self.server.max_concurrent_connections,
+            cap_status: self.server.cap_status,
+            tighten_cap: self.server.tighten_cap.map(|tighten| TightenCap {
+                after_requests: tighten.after_requests,
+                to: tighten.to,
+            }),
+            max_total_connections: self.server.max_total_connections,
+            close_mid_headers: self.server.close_mid_headers,
+            hangup_on_reused_request: self.server.hangup_on_reused_request,
+            duplicate_response_after: self.server.duplicate_response_after,
+            close_after_body_bytes: self.server.close_after_body_bytes.map(|size| size.0),
+            drop_at_offset: self.server.drop_at_offset.map(|size| size.0),
+            concurrent_requests: self
+                .server
+                .concurrent_requests
+                .map(|limit| ConcurrentRequests {
+                    limit: limit.limit,
+                    reject: matches!(limit.then, OverLimitCase::Reject),
+                }),
+            stop_listening_after_connections: self.server.stop_listening_after_connections,
+            cap_retry_after: self.server.cap_retry_after.clone(),
+            withdraw_ranges_after: self.server.withdraw_ranges_after,
+            ignore_range_at: self.server.ignore_range_at,
+            shift_ranges_after: self.server.shift_ranges_after,
+            status_416_after: self.server.status_416_after,
+            unknown_total_after: self.server.unknown_total_after,
+            serve_wrong_offset: self.server.serve_wrong_offset,
+            ignore_range_end_after: self.server.ignore_range_end_after,
+            halve_content_length_on_ranges: self.server.halve_content_length_on_ranges,
+            cap_range_span: self.server.cap_range_span.map(|size| size.0),
+            slow_segment: self.server.slow_segment.map(|slow| SlowSegment {
+                from_offset: slow.from_offset.0,
+                delay: std::time::Duration::from_millis(slow.delay_ms),
+            }),
+            inconsistent_total_after: self.server.inconsistent_total_after,
+            close_without_responding: self.server.close_without_responding,
+            close_after_requests: self.server.close_after_requests,
             protocol: match self.server.protocol {
                 ProtocolCase::Http11 => Protocol::Http11,
                 ProtocolCase::Http2 => Protocol::H2c,
