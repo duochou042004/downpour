@@ -2,7 +2,7 @@
   "$schema": "./progress.schema.json",
   "spec_version": "1.0.0",
   "project": "downpour",
-  "updated_at": "2026-08-11T02:00:00Z",
+  "updated_at": "2026-08-11T03:30:00Z",
   "updated_by": "claude-code",
   "current_stage": "S3",
   "stages": [
@@ -2369,7 +2369,7 @@
     },
     {
       "id": "B-65",
-      "text": "FOUND 2026-08-11 while writing the S3-T13 retention tests, and not chased. A resumed download that cannot succeed does not appear to reach a terminal state. The test drove the daemon's real path — leave an interrupted download, recover, DownloadResume — against an origin answering 416 to every ranged request after the probe. 416 is a 4xx, so TransientKind::from_status makes it NotRetryable and the pool should give up at once; instead the stored record sat at Paused with no error_kind for the full 30 second timeout, polled every 20 ms. Either the resume task never ran, or it failed somewhere that does not reach record_terminal, or the failure is being retried somewhere above the pool. A download that can never succeed and never stops being Paused is a download the user is never told about, and it would also mean the daemon's Failed path is unproven for resumes. The integration test was removed rather than left timing out, and the rule it was written for — that a failed download keeps its journal — is proved directly by retention.rs::only_a_completed_download_releases_its_journal. Reproduce with ServerSpec { status_416_after: Some(1) } and the leave_an_interrupted_download fixture in crates/downpour-daemon/tests/server.rs.",
+      "text": "FIXED 2026-08-11, and it was worse than it looked when filed. A resumed download that cannot succeed does not appear to reach a terminal state. The test drove the daemon's real path — leave an interrupted download, recover, DownloadResume — against an origin answering 416 to every ranged request after the probe. 416 is a 4xx, so TransientKind::from_status makes it NotRetryable and the pool should give up at once; instead the stored record sat at Paused with no error_kind for the full 30 second timeout, polled every 20 ms. Either the resume task never ran, or it failed somewhere that does not reach record_terminal, or the failure is being retried somewhere above the pool. A download that can never succeed and never stops being Paused is a download the user is never told about, and it would also mean the daemon's Failed path is unproven for resumes. The integration test was removed rather than left timing out, and the rule it was written for — that a failed download keeps its journal — is proved directly by retention.rs::only_a_completed_download_releases_its_journal. Reproduce with ServerSpec { status_416_after: Some(1) } and the leave_an_interrupted_download fixture in crates/downpour-daemon/tests/server.rs. CAUSE: DownloadErrorKind::new validated a lowercase DOTTED identifier and allowed hyphens between dots but not underscores, while every kind the engine emits is snake_case — fifteen of the thirty-five in the codebase contain an underscore — and docs/08 section 3's own worked example is \"kind\": \"validator_mismatch\". The validator refused the vocabulary the normative spec defines. It was silent because write_terminal built the kind and the state in one fallible operation, so a rejected kind discarded the state with it behind a tracing::warn. Measured on the real daemon path: registry Failed with segmented_transfer inside 100 ms, store still Paused after 30 s. FIX: the grammar accepts underscores inside a segment while still refusing uppercase, spaces, punctuation and a leading or trailing separator, so server text with a signature in it still cannot be stored (I-14); and write_terminal drops an unstorable kind, reports it, and records the terminal state regardless, so the next unanticipated kind costs a label rather than a download. Proofs: downpour-storage tests every_error_kind_the_engine_emits_is_storable and an_error_kind_still_cannot_carry_server_text, downpour-daemon test a_transfer_that_fails_is_recorded_as_failed, and the unit test a_terminal_state_survives_an_error_kind_that_cannot_be_stored. Mutation-checked: restoring the grammar turns the storage enumeration AND the daemon regression red, and re-coupling the kind to the state turns the unit test red.",
       "found_in_stage": "S3",
       "target_stage": "S3",
       "rationale": "A terminal state that is never reached is a download stuck forever and an error the user never sees; it also leaves the daemon's resume-failure path untested"
@@ -4487,6 +4487,23 @@
         "state/progress.json"
       ],
       "left_in_progress": "S3 is 14/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; PRs 41, 43, 44 stacked and unmerged in that order. Corpus 101 cases, simulation 17 scenarios, 357 tests in the workspace. Two tasks left: T14, the digest cost re-measurement on the segmented path, and T15, the stage-gate mutation audit. B-65 should be settled before T15 rather than during it — a resume that cannot succeed and never leaves Paused is either a stuck download or an untested failure path, and T15 has to be able to trust the daemon's terminal states. The audit should also revisit B-56, B-60 and B-63, the three corpus cases that assert current behaviour rather than required behaviour; each names its backlog item in the case file so none can change quietly."
+    },
+    {
+      "at": "2026-08-11T03:30:00Z",
+      "agent": "claude-code",
+      "stage": "S3",
+      "summary": "B-65 fixed, and it was a user-visible data fault rather than the tidy-up it looked like when filed. A download that failed was never recorded as failed: DownloadErrorKind rejected underscores while every kind the engine emits is snake_case and docs/08 section 3's own example is validator_mismatch, and because write_terminal built the kind and the state in one fallible operation, the rejected kind discarded the state with it. Measured on the real daemon path — registry Failed with segmented_transfer inside 100 ms, store still Paused after 30 seconds — so the user is never told, the client shows a transfer going nowhere, and the next startup reconciles a download that is already dead. Fixed on both sides: the grammar accepts underscores while still refusing server text, and a kind that cannot be stored is dropped and reported rather than taking the state with it. Found only because a retention test could not reach its assertion, which is the argument for chasing a test that will not go green instead of deleting it.",
+      "tasks_touched": [
+        "S3-T13"
+      ],
+      "files_touched": [
+        "crates/downpour-storage/src/metadata.rs",
+        "crates/downpour-storage/tests/metadata.rs",
+        "crates/downpour-daemon/src/server.rs",
+        "crates/downpour-daemon/tests/server.rs",
+        "state/progress.json"
+      ],
+      "left_in_progress": "S3 is 14/16 tasks and 3/5 exit criteria; current_stage is S3 and was never advanced. Working branch feature/s3-cross-process-resume; PRs 41, 43, 44 stacked and unmerged in that order. 361 tests in the workspace, corpus 101 cases, simulation 17 scenarios. B-30 and B-65 are closed. Two tasks left: T14, the digest cost re-measurement on the segmented path, and T15, the stage-gate mutation audit, which should also revisit B-56, B-60 and B-63 — the three corpus cases that assert current behaviour rather than required behaviour, each naming its backlog item in the case file. IMPORTANT, not a code issue: the GitLab remote could not be pushed. `git push origin` fails with HTTP Basic access denied and then asks for a username; there is no ~/.ssh directory, no credential helper configured and no GitLab token in the environment, so origin is stranded while github has everything. Whoever picks this up needs to supply a credential and push origin before treating the two remotes as synced."
     }
   ],
   "metrics": {
